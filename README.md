@@ -1,3 +1,34 @@
+
+<div align="right">
+  <details>
+    <summary >🌐 Language</summary>
+    <div>
+      <div align="right">
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=en">English</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=zh-CN">简体中文</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=zh-TW">繁體中文</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=ja">日本語</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=ko">한국어</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=hi">हिन्दी</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=th">ไทย</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=fr">Français</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=de">Deutsch</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=es">Español</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=it">Itapano</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=ru">Русский</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=pt">Português</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=nl">Nederlands</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=pl">Polski</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=ar">العربية</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=fa">فارسی</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=tr">Türkçe</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=vi">Tiếng Việt</a></p>
+        <p><a href="https://openaitx.github.io/view.html?user=machinegpt&project=agent&lang=id">Bahasa Indonesia</a></p>
+      </div>
+    </div>
+  </details>
+</div>
+
 ![2](https://github.com/user-attachments/assets/a18257a3-a678-4fd4-bf77-750dab4d99bb)
 
 # Agent
