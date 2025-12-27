@@ -1,53 +1,87 @@
 from __future__ import annotations
 
 import os
-from typing import Iterable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, Iterable, Optional
 
-# Try to ensure python-dotenv is available at runtime; if not, proceed with noop
-dotenv = None  # type: ignore[assignment]
+
+@dataclass(slots=True)
+class EnvLoadResult:
+    path: str
+    variables_loaded: int
+    variables_skipped: int
+    loaded_keys: list[str] = field(default_factory=list)
 
 
-def load_env(paths: Iterable[str] | None = None) -> None:
-    """Best-effort load of environment variables via python-dotenv.
+class EnvLoader:
+    __slots__ = ("_loaded", "_results")
 
-    If python-dotenv is unavailable, this is a no-op.
-    """
-    def _iter_paths() -> list[str]:
-        if paths:
-            return [str(p) for p in paths if p]
-        cands: list[str] = []
-        try:
-            cands.append(os.path.join(os.getcwd(), ".env"))
-        except Exception:
-            pass
-        try:
-            repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-            cands.append(os.path.join(repo_root, ".env"))
-        except Exception:
-            pass
-        return [p for p in cands if p and os.path.exists(p)]
+    def __init__(self) -> None:
+        self._loaded: Dict[str, str] = {}
+        self._results: list[EnvLoadResult] = []
 
+    @staticmethod
     def _strip_quotes(v: str) -> str:
-        t = (v or "").strip()
-        if len(t) >= 2 and ((t[0] == '"' and t[-1] == '"') or (t[0] == "'" and t[-1] == "'")):
+        t = v.strip()
+        if len(t) >= 2 and t[0] == t[-1] and t[0] in ('"', "'"):
             return t[1:-1]
         return t
 
-    for p in _iter_paths():
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                for line in f:
-                    s = line.strip()
-                    if not s or s.startswith("#"):
-                        continue
-                    if "=" not in s:
-                        continue
-                    k, v = s.split("=", 1)
-                    k = (k or "").strip()
-                    if not k:
-                        continue
-                    if os.environ.get(k):
-                        continue
-                    os.environ[k] = _strip_quotes(v)
-        except Exception:
-            pass
+    @staticmethod
+    def _default_paths() -> list[Path]:
+        paths = []
+        cwd = Path.cwd()
+        paths.append(cwd / ".env")
+        repo_root = Path(__file__).parent.parent.parent
+        paths.append(repo_root / ".env")
+        return [p for p in paths if p.exists()]
+
+    def load_file(self, path: Path, override: bool = False) -> EnvLoadResult:
+        result = EnvLoadResult(path=str(path), variables_loaded=0, variables_skipped=0)
+
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key:
+                    continue
+
+                value = self._strip_quotes(value)
+
+                if not override and os.environ.get(key):
+                    result.variables_skipped += 1
+                    continue
+
+                os.environ[key] = value
+                self._loaded[key] = value
+                result.variables_loaded += 1
+                result.loaded_keys.append(key)
+
+        self._results.append(result)
+        return result
+
+    def load(self, paths: Optional[Iterable[str]] = None, override: bool = False) -> list[EnvLoadResult]:
+        target_paths = [Path(p) for p in paths] if paths else self._default_paths()
+        return [self.load_file(p, override) for p in target_paths if p.exists()]
+
+    def get_loaded(self) -> Dict[str, str]:
+        return dict(self._loaded)
+
+    def get_results(self) -> list[EnvLoadResult]:
+        return list(self._results)
+
+
+_loader = EnvLoader()
+
+
+def load_env(paths: Optional[Iterable[str]] = None) -> list[EnvLoadResult]:
+    return _loader.load(paths)
+
+
+def get_env_loader() -> EnvLoader:
+    return _loader

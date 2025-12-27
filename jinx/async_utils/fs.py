@@ -1,207 +1,127 @@
 from __future__ import annotations
 
+import asyncio
 import os
-from typing import Optional, TypeVar, Callable, Any
-from functools import wraps
-import hashlib
+import time
+from collections import OrderedDict
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Optional, Tuple
 
 import aiofiles
 from aiofiles import ospath
-import asyncio as _asyncio
-from collections import OrderedDict as _OD
-import os as _os
 
-T = TypeVar('T')
+
+@dataclass(slots=True)
+class CacheEntry:
+    content: str
+    size: int
+    timestamp: float
+
+
+class FileCache:
+    __slots__ = ("_cache", "_total_size", "_lock", "_capacity", "_ttl_s", "_max_bytes")
+
+    def __init__(self, capacity: int = 256, ttl_s: float = 300, max_bytes: int = 10 * 1024 * 1024) -> None:
+        self._cache: OrderedDict[Tuple[str, int, int], CacheEntry] = OrderedDict()
+        self._total_size = 0
+        self._lock = asyncio.Lock()
+        self._capacity = capacity
+        self._ttl_s = ttl_s
+        self._max_bytes = max_bytes
+
+    async def get(self, key: Tuple[str, int, int]) -> Optional[str]:
+        async with self._lock:
+            if key not in self._cache:
+                return None
+            entry = self._cache[key]
+            if (time.time() - entry.timestamp) >= self._ttl_s:
+                self._total_size -= entry.size
+                del self._cache[key]
+                return None
+            self._cache.move_to_end(key)
+            return entry.content
+
+    async def put(self, key: Tuple[str, int, int], content: str) -> None:
+        size = len(content.encode("utf-8", errors="ignore"))
+        async with self._lock:
+            while self._cache and (self._total_size + size) > self._max_bytes:
+                _, old = self._cache.popitem(last=False)
+                self._total_size -= old.size
+
+            self._cache[key] = CacheEntry(content, size, time.time())
+            self._total_size += size
+
+            while len(self._cache) > self._capacity:
+                _, old = self._cache.popitem(last=False)
+                self._total_size -= old.size
+
+    async def invalidate(self, path: str) -> None:
+        async with self._lock:
+            keys = [k for k in self._cache if k[0] == path]
+            for k in keys:
+                entry = self._cache.pop(k, None)
+                if entry:
+                    self._total_size -= entry.size
+
+
+_file_cache = FileCache()
+
+
+def _ensure_dir(path: str) -> None:
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
 
 
 async def read_text_raw(path: str) -> str:
-    """Read entire text file if it exists else return empty string (no strip)."""
-    try:
-        if not path:
-            return ""
-        
-        # Ensure path exists
-        if not await ospath.exists(path):
-            return ""
-        
-        # Check if it's a file
-        if not await ospath.isfile(path):
-            return ""
-        
-        # Check if event loop is running
-        try:
-            loop = _asyncio.get_running_loop()
-        except RuntimeError:
-            # No running loop, return empty
-            return ""
-        
-        async with aiofiles.open(path, "r", encoding="utf-8", errors='ignore') as f:
-            try:
-                content = await f.read()
-                return content if content else ""
-            except RuntimeError:
-                # Loop closed during operation
-                return ""
-    except (OSError, IOError, UnicodeDecodeError):
-        # File access errors - return empty
+    if not path or not await ospath.exists(path) or not await ospath.isfile(path):
         return ""
-    except RuntimeError:
-        # Event loop closed
-        return ""
-    except Exception:
-        # Any other error - return empty but don't crash
-        return ""
+    async with aiofiles.open(path, "r", encoding="utf-8", errors="ignore") as f:
+        return await f.read() or ""
 
 
 async def read_text(path: str) -> str:
-    """Read entire text file if it exists else return empty string (strip)."""
-    txt = await read_text_raw(path)
-    return txt.strip() if txt else ""
+    return (await read_text_raw(path)).strip()
 
 
 async def append_line(path: str, text: str) -> None:
-    """Append a single line to a log file, creating it if needed."""
-    try:
-        # Ensure directory exists
-        d = os.path.dirname(path)
-        if d:
-            os.makedirs(d, exist_ok=True)
-        async with aiofiles.open(path, "a", encoding="utf-8") as f:
-            await f.write((text or "") + "\n")
-    except Exception:
-        # Best-effort semantics
-        pass
+    _ensure_dir(path)
+    async with aiofiles.open(path, "a", encoding="utf-8") as f:
+        await f.write(f"{text or ''}\n")
 
 
 async def append_and_trim(path: str, text: str, keep_lines: int = 500) -> None:
-    """Append text to transcript and trim file to last ``keep_lines`` lines."""
-    try:
-        d = os.path.dirname(path)
-        if d:
-            os.makedirs(d, exist_ok=True)
-        lines: list[str]
-        if await ospath.exists(path):
-            try:
-                async with aiofiles.open(path, "r", encoding="utf-8") as f:
-                    content = await f.read()
-                lines = content.splitlines()
-            except FileNotFoundError:
-                lines = []
-        else:
-            lines = []
-        lines = lines + ["", text]
-        async with aiofiles.open(path, "w", encoding="utf-8") as f:
-            await f.write("\n".join(lines[-keep_lines:]) + "\n")
-    except Exception:
-        # Best-effort; swallow I/O errors to mirror existing semantics
-        pass
+    _ensure_dir(path)
+    lines: list[str] = []
+    if await ospath.exists(path):
+        async with aiofiles.open(path, "r", encoding="utf-8") as f:
+            lines = (await f.read()).splitlines()
+    lines.extend(["", text])
+    async with aiofiles.open(path, "w", encoding="utf-8") as f:
+        await f.write("\n".join(lines[-keep_lines:]) + "\n")
 
 
 async def write_text(path: str, text: str) -> None:
-    """Overwrite a text file with provided contents (creates parent dirs).
-
-    Best-effort semantics consistent with other helpers: swallow I/O errors.
-    Invalidates cache entries for the written file.
-    """
-    try:
-        d = os.path.dirname(path)
-        if d:
-            os.makedirs(d, exist_ok=True)
-        async with aiofiles.open(path, "w", encoding="utf-8") as f:
-            await f.write(text or "")
-        
-        # Invalidate cache entries for this path
-        global _read_lru_total_size
-        async with _read_lru_lock:
-            keys_to_remove = [k for k in _read_lru.keys() if k[0] == path]
-            for key in keys_to_remove:
-                entry = _read_lru.pop(key, None)
-                if entry:
-                    _read_lru_total_size -= entry.size
-    except Exception:
-        pass
+    _ensure_dir(path)
+    async with aiofiles.open(path, "w", encoding="utf-8") as f:
+        await f.write(text or "")
+    await _file_cache.invalidate(path)
 
 
-# --- Advanced LRU cache with TTL and size limits ---
-_READ_LRU_CAP = 256  # Increased capacity for better hit rates
-_READ_LRU_TTL_S = 300  # 5 minute TTL for cache entries
-_READ_LRU_MAX_SIZE_BYTES = 10 * 1024 * 1024  # 10MB max total cache size
-
-class _LRUEntry:
-    __slots__ = ('content', 'size', 'timestamp')
-    def __init__(self, content: str, size: int, timestamp: float):
-        self.content = content
-        self.size = size
-        self.timestamp = timestamp
-
-_read_lru: _OD[tuple[str, int, int], _LRUEntry] = _OD()
-_read_lru_total_size: int = 0
-_read_lru_lock = _asyncio.Lock()
-
-
-def _read_abs_sync(path: str) -> str:
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            return f.read()
-    except Exception:
-        return ""
+def _read_sync(path: str) -> str:
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.read()
 
 
 async def read_text_abs_thread(path: str) -> str:
-    """Read absolute file text via thread with advanced LRU cache (TTL + size limits).
+    st = os.stat(path)
+    key = (path, int(st.st_mtime), int(st.st_size))
 
-    Cache features:
-    - LRU eviction policy
-    - TTL-based expiration (5 min)
-    - Total size limit (10MB)
-    - Async-safe with lock protection
-    
-    Returns empty string on error.
-    """
-    global _read_lru_total_size
-    
-    try:
-        st = _os.stat(path)
-        key = (path, int(st.st_mtime), int(st.st_size))
-        file_size = int(st.st_size)
-    except Exception:
-        key = (path, 0, 0)
-        file_size = 0
-    
-    async with _read_lru_lock:
-        # Check cache with TTL validation
-        if key in _read_lru:
-            entry = _read_lru[key]
-            import time
-            if (time.time() - entry.timestamp) < _READ_LRU_TTL_S:
-                # move to end (most recent)
-                _read_lru.move_to_end(key)
-                return entry.content
-            else:
-                # Expired entry, remove it
-                _read_lru_total_size -= entry.size
-                del _read_lru[key]
-    
-    # Cache miss - read from disk
-    txt = await _asyncio.to_thread(_read_abs_sync, path)
-    txt_size = len(txt.encode('utf-8', errors='ignore'))
-    
-    async with _read_lru_lock:
-        import time
-        entry = _LRUEntry(txt, txt_size, time.time())
-        
-        # Evict entries if adding this would exceed size limit
-        while _read_lru and (_read_lru_total_size + txt_size) > _READ_LRU_MAX_SIZE_BYTES:
-            oldest_key, oldest_entry = _read_lru.popitem(last=False)
-            _read_lru_total_size -= oldest_entry.size
-        
-        # Add new entry
-        _read_lru[key] = entry
-        _read_lru_total_size += txt_size
-        
-        # Also enforce count limit
-        while len(_read_lru) > _READ_LRU_CAP:
-            oldest_key, oldest_entry = _read_lru.popitem(last=False)
-            _read_lru_total_size -= oldest_entry.size
-    
-    return txt
+    cached = await _file_cache.get(key)
+    if cached is not None:
+        return cached
+
+    content = await asyncio.to_thread(_read_sync, path)
+    await _file_cache.put(key, content)
+    return content

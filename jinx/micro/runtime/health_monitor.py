@@ -11,11 +11,17 @@ Real-time monitoring with:
 from __future__ import annotations
 
 import asyncio
-import psutil
 import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+
+try:
+    import psutil
+    _HAS_PSUTIL = True
+except ImportError:
+    _HAS_PSUTIL = False
+    psutil = None  # type: ignore
 
 
 @dataclass
@@ -92,11 +98,16 @@ class HealthMonitor:
         """Collect current health metrics."""
         
         try:
-            # System metrics
-            cpu = psutil.cpu_percent(interval=0.1)
-            memory = psutil.virtual_memory()
-            memory_mb = memory.used / (1024 * 1024)
-            memory_percent = memory.percent
+            # System metrics (fallback if psutil unavailable)
+            if _HAS_PSUTIL and psutil:
+                cpu = psutil.cpu_percent(interval=0.1)
+                memory = psutil.virtual_memory()
+                memory_mb = memory.used / (1024 * 1024)
+                memory_percent = memory.percent
+            else:
+                cpu = 0.0
+                memory_mb = 0.0
+                memory_percent = 0.0
             
             # Jinx state
             try:

@@ -1,202 +1,216 @@
-"""Global state and synchronization primitives.
-
-Minimal, explicit globals to coordinate async behavior. Environment variables:
-- ``PULSE``: integer pulse displayed by the spinner (default: 100)
-- ``TIMEOUT``: inactivity timeout in seconds before "<no_response>" (default: 30)
-
-Advanced features:
-- Thread-safe atomic operations via contextvars
-- Memory-mapped state for multi-process coordination
-- Event bus for state change notifications
-"""
-
 from __future__ import annotations
 
 import asyncio
-from typing import Callable, Any
-from contextvars import ContextVar
-from dataclasses import dataclass, field
+import time
 import threading
 import weakref
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from enum import IntEnum
+from typing import Any, Awaitable, Callable, Dict, Generic, Optional, TypeVar
 
-# --- Advanced State Management ---
+T = TypeVar("T")
 
-class _LoopBoundLock:
+
+class Priority(IntEnum):
+    CRITICAL = 0
+    HIGH = 1
+    NORMAL = 2
+    LOW = 3
+    BACKGROUND = 4
+
+
+@dataclass(slots=True, frozen=True)
+class StateChangeEvent:
+    key: str
+    old_value: Any
+    new_value: Any
+    timestamp: float = field(default_factory=time.perf_counter)
+    source: str = "unknown"
+
+
+class EventBus(Generic[T]):
+    __slots__ = ("_handlers", "_lock", "_async_handlers")
+
     def __init__(self) -> None:
-        self._locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
+        self._handlers: list[Callable[[T], None]] = []
+        self._async_handlers: list[Callable[[T], Awaitable[None]]] = []
+        self._lock = threading.RLock()
+
+    def subscribe(self, handler: Callable[[T], None]) -> Callable[[], None]:
+        with self._lock:
+            self._handlers.append(handler)
+        return lambda: self._unsubscribe(handler)
+
+    def subscribe_async(self, handler: Callable[[T], Awaitable[None]]) -> Callable[[], None]:
+        with self._lock:
+            self._async_handlers.append(handler)
+        return lambda: self._unsubscribe_async(handler)
+
+    def _unsubscribe(self, handler: Callable[[T], None]) -> None:
+        with self._lock:
+            if handler in self._handlers:
+                self._handlers.remove(handler)
+
+    def _unsubscribe_async(self, handler: Callable[[T], Awaitable[None]]) -> None:
+        with self._lock:
+            if handler in self._async_handlers:
+                self._async_handlers.remove(handler)
+
+    def publish(self, event: T) -> None:
+        with self._lock:
+            handlers = list(self._handlers)
+        for h in handlers:
+            h(event)
+
+    async def publish_async(self, event: T) -> None:
+        with self._lock:
+            handlers = list(self._async_handlers)
+        for h in handlers:
+            await h(event)
+
+
+class ReactiveVar(Generic[T]):
+    __slots__ = ("_value", "_lock", "_observers")
+
+    def __init__(self, initial: T) -> None:
+        self._value = initial
+        self._lock = threading.RLock()
+        self._observers: list[Callable[[T, T], None]] = []
+
+    def get(self) -> T:
+        with self._lock:
+            return self._value
+
+    def set(self, value: T, notify: bool = True) -> None:
+        with self._lock:
+            old = self._value
+            self._value = value
+            if notify and old != value:
+                for obs in list(self._observers):
+                    obs(old, value)
+
+    def subscribe(self, callback: Callable[[T, T], None]) -> Callable[[], None]:
+        with self._lock:
+            self._observers.append(callback)
+        return lambda: self._observers.remove(callback) if callback in self._observers else None
+
+    def __repr__(self) -> str:
+        return f"ReactiveVar({self._value!r})"
+
+
+class LoopBoundLock:
+    __slots__ = ("_locks",)
+
+    def __init__(self) -> None:
+        self._locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()
 
     def _get(self) -> asyncio.Lock:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # No running loop: create a best-effort lock bound to the current default loop
             loop = asyncio.get_event_loop()
-        lk = self._locks.get(loop)
-        if lk is None:
-            lk = asyncio.Lock()
-            self._locks[loop] = lk
-        return lk
+        if loop not in self._locks:
+            self._locks[loop] = asyncio.Lock()
+        return self._locks[loop]
 
     async def acquire(self) -> bool:
         return await self._get().acquire()
 
     def release(self) -> None:
-        return self._get().release()
+        self._get().release()
 
     def locked(self) -> bool:
         return self._get().locked()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "LoopBoundLock":
         await self.acquire()
         return self
 
-    async def __aexit__(self, exc_type, exc, tb):
+    async def __aexit__(self, *_) -> bool:
         self.release()
         return False
 
 
-class _LoopBoundEvent:
-    def __init__(self) -> None:
-        self._events: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Event]" = weakref.WeakKeyDictionary()
-        self._flag: bool = False
+class LoopBoundEvent:
+    __slots__ = ("_events", "_flag")
 
-    def _get(self) -> tuple[asyncio.AbstractEventLoop, asyncio.Event]:
+    def __init__(self) -> None:
+        self._events: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Event] = weakref.WeakKeyDictionary()
+        self._flag = False
+
+    def _get(self) -> asyncio.Event:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = asyncio.get_event_loop()
-        ev = self._events.get(loop)
-        if ev is None:
+        if loop not in self._events:
             ev = asyncio.Event()
             if self._flag:
-                try:
-                    ev.set()
-                except Exception:
-                    pass
+                ev.set()
             self._events[loop] = ev
-        return loop, ev
+        return self._events[loop]
 
     def is_set(self) -> bool:
-        return bool(self._flag)
+        return self._flag
 
     def set(self) -> None:
         self._flag = True
-        # Best-effort propagate to known loops
         for loop, ev in list(self._events.items()):
-            try:
-                if loop.is_running():
-                    loop.call_soon_threadsafe(ev.set)
-                else:
-                    ev.set()
-            except Exception:
-                pass
+            if loop.is_running():
+                loop.call_soon_threadsafe(ev.set)
+            else:
+                ev.set()
 
     def clear(self) -> None:
         self._flag = False
         for loop, ev in list(self._events.items()):
-            try:
-                if loop.is_running():
-                    loop.call_soon_threadsafe(ev.clear)
-                else:
-                    ev.clear()
-            except Exception:
-                pass
+            if loop.is_running():
+                loop.call_soon_threadsafe(ev.clear)
+            else:
+                ev.clear()
 
     async def wait(self) -> bool:
         if self._flag:
             return True
-        _loop, ev = self._get()
-        await ev.wait()
+        await self._get().wait()
         return True
 
 
-# Shared async lock (reentrant for nested calls)
-shard_lock: Any = _LoopBoundLock()
-
-# Thread-safe lock for synchronous access
+shard_lock: Any = LoopBoundLock()
 _sync_lock = threading.RLock()
+_state_bus: EventBus[StateChangeEvent] = EventBus()
 
-# Global mutable state with safe defaults and validation
 pulse: int = 100
 boom_limit: int = 30
-
-# Human-readable activity description shown by spinner (set by pipeline)
 activity: str = ""
-# Monotonic timestamp when activity was last updated (perf_counter seconds)
 activity_ts: float = 0.0
-
-# Optional structured detail for current activity (e.g., progress numbers)
-activity_detail: dict | None = None
-# Timestamp of last detail update
+activity_detail: Optional[Dict[str, Any]] = None
 activity_detail_ts: float = 0.0
-
-# Timestamp (perf_counter seconds) when the agent last produced an answer/output.
-# Used to pause the <no_response> timer after a reply so the user gets the full TIMEOUT window.
 last_agent_reply_ts: float = 0.0
-
-# Whether the current UI loop is using prompt_toolkit PromptSession (toolbar available).
 ui_prompt_toolkit: bool = False
-
-# Whether the user is currently in an active input() prompt (simple input mode).
-# Used to prevent the line spinner from overwriting the user's typing.
 ui_input_active: bool = False
-
-# Whether the system is currently printing multi-line output.
-# Used so the line spinner can pause rendering while output is emitted.
 ui_output_active: bool = False
-
-# In-process gate for StateCompiler LLM (replaces env-driven JINX_STATE_COMPILER_LLM).
 state_compiler_llm_on: bool = False
 
-shutdown_event: Any = _LoopBoundEvent()
+shutdown_event: Any = LoopBoundEvent()
+throttle_event: Any = LoopBoundEvent()
 
-throttle_event: Any = _LoopBoundEvent()
 
-# --- Advanced State Observers (Event Bus Pattern) ---
+def register_state_observer(callback: Callable[[StateChangeEvent], None]) -> Callable[[], None]:
+    return _state_bus.subscribe(callback)
 
-@dataclass
-class StateChangeEvent:
-    """Event emitted when global state changes."""
-    key: str
-    old_value: Any
-    new_value: Any
-    timestamp: float = field(default_factory=lambda: __import__('time').perf_counter())
-
-_state_observers: list[Callable[[StateChangeEvent], None]] = []
-
-def register_state_observer(callback: Callable[[StateChangeEvent], None]) -> None:
-    """Register a callback to be notified of state changes.
-    
-    Args:
-        callback: Function called with StateChangeEvent when state mutates
-    """
-    with _sync_lock:
-        if callback not in _state_observers:
-            _state_observers.append(callback)
 
 def unregister_state_observer(callback: Callable[[StateChangeEvent], None]) -> None:
-    """Remove a state observer callback."""
-    with _sync_lock:
-        if callback in _state_observers:
-            _state_observers.remove(callback)
+    _state_bus._unsubscribe(callback)
 
-def _notify_observers(key: str, old_val: Any, new_val: Any) -> None:
-    """Notify all observers of a state change (internal use)."""
-    event = StateChangeEvent(key=key, old_value=old_val, new_value=new_val)
-    with _sync_lock:
-        observers = list(_state_observers)  # Copy to avoid modification during iteration
-    
-    for observer in observers:
-        try:
-            observer(event)
-        except Exception:
-            pass  # Don't let observer errors crash the system
 
-def set_activity(new_activity: str, detail: dict | None = None) -> None:
-    """Thread-safe activity setter with observer notification."""
+def _notify(key: str, old: Any, new: Any, source: str = "unknown") -> None:
+    _state_bus.publish(StateChangeEvent(key=key, old_value=old, new_value=new, source=source))
+
+
+def set_activity(new_activity: str, detail: Optional[Dict[str, Any]] = None) -> None:
     global activity, activity_ts, activity_detail, activity_detail_ts
-    import time
-    
     with _sync_lock:
         old = activity
         activity = new_activity
@@ -204,21 +218,30 @@ def set_activity(new_activity: str, detail: dict | None = None) -> None:
         if detail is not None:
             activity_detail = detail
             activity_detail_ts = activity_ts
-        _notify_observers('activity', old, new_activity)
+        _notify("activity", old, new_activity, "set_activity")
+
 
 def atomic_pulse_decrement(amount: int = 1) -> int:
-    """Thread-safe pulse decrement. Returns new pulse value."""
     global pulse
     with _sync_lock:
         old = pulse
         pulse = max(0, pulse - amount)
         if old != pulse:
-            _notify_observers('pulse', old, pulse)
+            _notify("pulse", old, pulse, "atomic_pulse_decrement")
         return pulse
 
 
-# --- Context-aware state (for multi-task scenarios) ---
+def get_state_snapshot() -> Dict[str, Any]:
+    with _sync_lock:
+        return {
+            "pulse": pulse,
+            "boom_limit": boom_limit,
+            "activity": activity,
+            "activity_ts": activity_ts,
+            "shutdown": shutdown_event.is_set(),
+            "throttle": throttle_event.is_set(),
+        }
 
-# Per-task context variables for isolated state
-ctx_current_operation: ContextVar[str] = ContextVar('current_operation', default='')
-ctx_priority_level: ContextVar[int] = ContextVar('priority_level', default=1)
+
+ctx_current_operation: ContextVar[str] = ContextVar("current_operation", default="")
+ctx_priority_level: ContextVar[int] = ContextVar("priority_level", default=Priority.NORMAL)

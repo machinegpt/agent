@@ -29,7 +29,7 @@ class Plugin:
 @dataclass
 class PluginContext:
     loop: asyncio.AbstractEventLoop
-    shutdown_event: asyncio.Event
+    shutdown_event: Any
     settings: Any | None = None
     publish: Callable[[str, Any], None] | None = None
 

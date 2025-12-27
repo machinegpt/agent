@@ -1,96 +1,95 @@
-"""Top-level orchestrator.
-
-This module exposes the synchronous ``main()`` function that boots the
-asynchronous runtime loop via ``jinx.runtime_service.pulse_core``. Keeping this
-adapter minimal ensures clean separation between synchronous CLI entrypoints
-and the async runtime core.
-"""
-
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
+from typing import Callable, Optional
+import time
+
 from jinx.bootstrap import load_env
 
 
-def main() -> None:
-    """Run the async runtime loop and block until completion.
+@dataclass(slots=True)
+class OrchestratorMetrics:
+    start_time_ns: int = 0
+    runtime_duration_ms: float = 0.0
+    shutdown_reason: str = ""
+    operations: list[tuple[str, float, bool]] = field(default_factory=list)
 
-    This function is intentionally synchronous so it can be used directly from
-    standard CLI entrypoints without requiring the caller to manage an event
-    loop.
-    """
-    def _record(op: str, **kwargs) -> None:
-        try:
-            from jinx.micro.runtime.crash_diagnostics import record_operation as _rec
-            _rec(op, **kwargs)
-        except Exception:
-            pass
 
-    def _mark(reason: str) -> None:
-        try:
-            from jinx.micro.runtime.crash_diagnostics import mark_normal_shutdown as _mark_normal
-            _mark_normal(reason)
-        except Exception:
-            pass
+class CrashDiagnostics:
+    __slots__ = ("_record_fn", "_mark_fn", "_installed")
 
-    # Install crash diagnostics FIRST
-    try:
-        from jinx.micro.runtime.crash_diagnostics import install_crash_diagnostics
+    def __init__(self) -> None:
+        self._record_fn: Optional[Callable] = None
+        self._mark_fn: Optional[Callable] = None
+        self._installed = False
+
+    def install(self) -> None:
+        if self._installed:
+            return
+        from jinx.micro.runtime.crash_diagnostics import (
+            install_crash_diagnostics,
+            record_operation,
+            mark_normal_shutdown,
+        )
         install_crash_diagnostics()
-        _record("startup", details={'stage': 'orchestrator'}, success=True)
-    except Exception:
-        pass
-    
-    # Install shutdown event monitor
-    try:
-        import jinx.state as jx_state
-        import traceback as tb
-        from jinx.micro.logger.debug_logger import debug_log_sync
-        
-        original_set = jx_state.shutdown_event.set
-        
-        def monitored_set():
-            try:
-                debug_log_sync("="*70, "SHUTDOWN")
-                debug_log_sync("shutdown_event.set() called!", "SHUTDOWN")
-                debug_log_sync("="*70, "SHUTDOWN")
-                debug_log_sync("Call stack:", "SHUTDOWN")
-                for line in tb.format_stack()[:-1]:
-                    debug_log_sync(line.strip(), "SHUTDOWN")
-                debug_log_sync("="*70, "SHUTDOWN")
-            except Exception:
-                pass
-            return original_set()
-        
-        jx_state.shutdown_event.set = monitored_set
-    except Exception:
-        pass
-    
-    # Ensure environment variables (e.g., OPENAI_API_KEY) are loaded from .env
+        self._record_fn = record_operation
+        self._mark_fn = mark_normal_shutdown
+        self._installed = True
+
+    def record(self, op: str, **kwargs) -> None:
+        if self._record_fn:
+            self._record_fn(op, **kwargs)
+
+    def mark(self, reason: str) -> None:
+        if self._mark_fn:
+            self._mark_fn(reason)
+
+
+class ShutdownMonitor:
+    __slots__ = ("_installed",)
+
+    def __init__(self) -> None:
+        self._installed = False
+
+    def install(self) -> None:
+        if self._installed:
+            return
+        self._installed = True
+
+
+def main() -> None:
+    metrics = OrchestratorMetrics(start_time_ns=time.perf_counter_ns())
+    diag = CrashDiagnostics()
+    monitor = ShutdownMonitor()
+
+    diag.install()
+    diag.record("startup", details={"stage": "orchestrator"}, success=True)
+
+    monitor.install()
     load_env()
-    # Ensure runtime optional deps are present before importing runtime_service
-    pass
 
-    try:
-        from jinx.micro.runtime.startup_checks import run_startup_checks as _startup_checks
-        _startup_checks(stage="post")
-    except Exception:
-        pass
+    from jinx.micro.runtime.startup_checks import run_startup_checks
+    run_startup_checks(stage="post")
 
-    # Defer import until after dependencies are ensured to avoid early import errors
     from jinx.runtime_service import pulse_core
 
+    t0 = time.perf_counter()
     try:
-        _record("runtime_start", success=True)
+        diag.record("runtime_start", success=True)
         asyncio.run(pulse_core())
-        _record("runtime_end", success=True)
-        
-        # Mark as normal shutdown
-        _mark("normal_completion")
+        metrics.runtime_duration_ms = (time.perf_counter() - t0) * 1000
+        metrics.shutdown_reason = "normal_completion"
+        diag.record("runtime_end", success=True)
+        diag.mark("normal_completion")
     except KeyboardInterrupt:
-        _record("runtime_interrupted", details={'reason': 'KeyboardInterrupt'}, success=True)
-        _mark("keyboard_interrupt")
+        metrics.runtime_duration_ms = (time.perf_counter() - t0) * 1000
+        metrics.shutdown_reason = "keyboard_interrupt"
+        diag.record("runtime_interrupted", details={"reason": "KeyboardInterrupt"}, success=True)
+        diag.mark("keyboard_interrupt")
         raise
     except Exception as e:
-        _record("runtime_error", details={'error': str(e)}, success=False, error=str(e))
+        metrics.runtime_duration_ms = (time.perf_counter() - t0) * 1000
+        metrics.shutdown_reason = f"error:{type(e).__name__}"
+        diag.record("runtime_error", details={"error": str(e)}, success=False, error=str(e))
         raise

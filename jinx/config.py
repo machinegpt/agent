@@ -1,50 +1,83 @@
-"""Configuration and tagging utilities."""
-
 from __future__ import annotations
 
-import platform, getpass, time, os, uuid
+import getpass
+import os
+import platform
+import time
+import uuid
+from dataclasses import dataclass
+from enum import Enum
+from typing import Dict, FrozenSet, Optional, Tuple
 
-# Tags used by parser_service and openai_service outputs
-CODE_TAGS = {"python", "python_question"}
-ALL_TAGS = {"machine", *CODE_TAGS}
+
+class Tag(str, Enum):
+    PYTHON = "python"
+    PYTHON_QUESTION = "python_question"
+    MACHINE = "machine"
 
 
-# Active prompt selection (None -> let prompts.get_prompt() resolve via env/default)
-PROMPT_NAME: str | None = "burning_logic"
+CODE_TAGS: FrozenSet[str] = frozenset({Tag.PYTHON, Tag.PYTHON_QUESTION})
+ALL_TAGS: FrozenSet[str] = frozenset({Tag.MACHINE, *CODE_TAGS})
 
 
-def set_prompt(name: str | None) -> None:
-    """Set active prompt name (e.g., "burning_logic", "chaos_bloom").
+@dataclass(slots=True, frozen=True)
+class HostInfo:
+    os: str
+    arch: str
+    host: str
+    user: str
 
-    Pass None or empty string to defer to environment/default resolution.
-    """
+    @classmethod
+    def capture(cls) -> "HostInfo":
+        return cls(
+            os=f"{platform.system()} {platform.release()}",
+            arch=platform.machine(),
+            host=platform.node(),
+            user=getpass.getuser(),
+        )
+
+    def to_dict(self) -> Dict[str, str]:
+        return {"os": self.os, "arch": self.arch, "host": self.host, "user": self.user}
+
+
+@dataclass(slots=True, frozen=True)
+class TagBlock:
+    start: str
+    end: str
+
+
+class PromptRegistry:
+    __slots__ = ("_active",)
+
+    def __init__(self, default: str = "burning_logic") -> None:
+        self._active: Optional[str] = default
+
+    def get(self) -> Optional[str]:
+        return self._active
+
+    def set(self, name: Optional[str]) -> None:
+        self._active = (name or "").strip().lower() or None
+
+
+_prompt_registry = PromptRegistry()
+PROMPT_NAME: Optional[str] = _prompt_registry.get()
+
+
+def set_prompt(name: Optional[str]) -> None:
     global PROMPT_NAME
-    PROMPT_NAME = (name or "").strip().lower() or None
+    _prompt_registry.set(name)
+    PROMPT_NAME = _prompt_registry.get()
 
 
-def neon_stat() -> dict[str, str]:
-    """Return a snapshot of host identity for instruction headers."""
-    return dict(
-        os=platform.system() + " " + platform.release(),
-        arch=platform.machine(),
-        host=platform.node(),
-        user=getpass.getuser(),
-    )
+def neon_stat() -> Dict[str, str]:
+    return HostInfo.capture().to_dict()
 
 
-def jinx_tag() -> tuple[str, dict[str, dict[str, str]]]:
-    """Return a unique fuse id and corresponding start/end tags for all blocks.
+def generate_fuse_id() -> str:
+    return uuid.uuid4().hex[:12]
 
-    Use a high-entropy identifier to avoid collisions across rapid successive calls.
-    """
-    try:
-        # 12-hex UID: compact yet high-entropy; includes randomness and time component
-        fuse = uuid.uuid4().hex[:12]
-    except Exception:
-        # Fallback: monotonic ns + pid
-        try:
-            fuse = f"{time.monotonic_ns():x}{os.getpid():x}"[-16:]
-        except Exception:
-            fuse = str(int(time.time()))
-    flames = {b: dict(start=f"<{b}_{fuse}>\n", end=f"</{b}_{fuse}>") for b in ALL_TAGS}
+
+def jinx_tag() -> Tuple[str, Dict[str, TagBlock]]:
+    fuse = generate_fuse_id()
+    flames = {tag: TagBlock(start=f"<{tag}_{fuse}>\n", end=f"</{tag}_{fuse}>") for tag in ALL_TAGS}
     return fuse, flames

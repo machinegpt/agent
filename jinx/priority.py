@@ -2,21 +2,28 @@ from __future__ import annotations
 
 import asyncio
 import heapq
-import contextlib
-import time
 import re
-from dataclasses import dataclass, field
-from typing import List, Tuple, Dict, Pattern, Callable, Optional
-from collections import defaultdict
-from functools import lru_cache
 import threading
+import time
+from collections import defaultdict
+from dataclasses import dataclass, field
+from enum import IntEnum
+from functools import lru_cache
+from typing import Callable, Dict, List, Optional, Pattern, Tuple
 
 from jinx.settings import Settings
 
 
-@dataclass
+class PriorityLevel(IntEnum):
+    CRITICAL = 0
+    HIGH = 1
+    NORMAL = 2
+    LOW = 3
+    BACKGROUND = 4
+
+
+@dataclass(slots=True)
 class PriorityMetrics:
-    """Real-time metrics for priority queue performance."""
     total_processed: int = 0
     high_priority_count: int = 0
     normal_priority_count: int = 0
@@ -27,334 +34,186 @@ class PriorityMetrics:
     denied_admissions: int = 0
 
 
-@dataclass(frozen=True)
+@dataclass(slots=True, frozen=True)
 class PriorityRule:
-    """Configurable priority classification rule."""
     priority: int
     pattern: str
     is_regex: bool = False
-    position_limit: Optional[int] = None  # Check only first N chars
-    weight: float = 1.0  # For future ML-based scoring
+    position_limit: Optional[int] = None
 
 
 class PriorityClassifier:
-    """Advanced priority classifier with caching and extensible rules."""
-    
-    _instance: Optional['PriorityClassifier'] = None
-    _lock = threading.RLock()
-    
-    def __init__(self):
-        self._rules: List[Tuple[int, Pattern | str, Optional[int]]] = []
-        self._compiled_patterns: Dict[str, Pattern] = {}
-        self._cache_lock = threading.RLock()
-        self._setup_default_rules()
-    
+    __slots__ = ("_rules", "_lock")
+
+    _instance: Optional["PriorityClassifier"] = None
+    _cls_lock = threading.Lock()
+
+    def __init__(self) -> None:
+        self._rules: List[Tuple[int, Pattern[str] | str, Optional[int]]] = []
+        self._lock = threading.RLock()
+        self._setup_rules()
+
     @classmethod
-    def get_instance(cls) -> 'PriorityClassifier':
-        """Thread-safe singleton access."""
+    def get_instance(cls) -> "PriorityClassifier":
         if cls._instance is None:
-            with cls._lock:
+            with cls._cls_lock:
                 if cls._instance is None:
                     cls._instance = cls()
         return cls._instance
-    
-    def _setup_default_rules(self) -> None:
-        """Initialize default priority rules with advanced pattern matching."""
-        # Priority 0: Critical/Urgent
-        self._add_rule(0, r'^!!', is_regex=True)
-        self._add_rule(0, r'^/urgent', is_regex=True)
-        self._add_rule(0, r'^/critical', is_regex=True)
-        self._add_rule(0, r'\basap\b', is_regex=True, position_limit=20)
-        self._add_rule(0, r'\bemergency\b', is_regex=True, position_limit=30)
-        
-        # Priority 1: High
-        self._add_rule(1, r'^![^!]', is_regex=True)  # Single ! but not !!
-        self._add_rule(1, r'^/high', is_regex=True)
-        self._add_rule(1, r'^/important', is_regex=True)
-        self._add_rule(1, r'^/priority', is_regex=True)
-        
-        # Priority 3: Low
-        self._add_rule(3, r'^/low', is_regex=True)
-        self._add_rule(3, r'^/defer', is_regex=True)
-        self._add_rule(3, r'^/later', is_regex=True)
-        
-        # Priority 4: Background
-        self._add_rule(4, r'^<no_response>$', is_regex=True)
-        self._add_rule(4, r'^/background', is_regex=True)
-    
-    def _add_rule(self, priority: int, pattern: str, is_regex: bool = False, 
-                  position_limit: Optional[int] = None) -> None:
-        """Add a priority rule with optional regex compilation."""
-        if is_regex:
-            try:
-                compiled = re.compile(pattern, re.IGNORECASE)
-                self._compiled_patterns[pattern] = compiled
-                self._rules.append((priority, compiled, position_limit))
-            except re.error:
-                # Fallback to literal string matching
-                self._rules.append((priority, pattern.lower(), position_limit))
-        else:
-            self._rules.append((priority, pattern.lower(), position_limit))
-    
+
+    def _setup_rules(self) -> None:
+        rules = [
+            (PriorityLevel.CRITICAL, r"^!!", True, None),
+            (PriorityLevel.CRITICAL, r"^/urgent", True, None),
+            (PriorityLevel.CRITICAL, r"^/critical", True, None),
+            (PriorityLevel.CRITICAL, r"\basap\b", True, 20),
+            (PriorityLevel.CRITICAL, r"\bemergency\b", True, 30),
+            (PriorityLevel.HIGH, r"^![^!]", True, None),
+            (PriorityLevel.HIGH, r"^/high", True, None),
+            (PriorityLevel.HIGH, r"^/important", True, None),
+            (PriorityLevel.HIGH, r"^/priority", True, None),
+            (PriorityLevel.LOW, r"^/low", True, None),
+            (PriorityLevel.LOW, r"^/defer", True, None),
+            (PriorityLevel.LOW, r"^/later", True, None),
+            (PriorityLevel.BACKGROUND, r"^<no_response>$", True, None),
+            (PriorityLevel.BACKGROUND, r"^/background", True, None),
+        ]
+        for priority, pattern, is_regex, limit in rules:
+            if is_regex:
+                self._rules.append((priority, re.compile(pattern, re.IGNORECASE), limit))
+            else:
+                self._rules.append((priority, pattern.lower(), limit))
+
     @lru_cache(maxsize=2048)
     def classify(self, msg: str) -> int:
-        """Classify message priority with caching and advanced pattern matching.
-        
-        Returns priority level (0=highest, 4=lowest/background, 2=normal default).
-        """
         if not msg:
-            return 2
-        
+            return PriorityLevel.NORMAL
+
         s = msg.strip().lower()
         if not s:
-            return 2
-        
-        # Check rules in order (lower priority value = higher urgency)
-        for priority, pattern, position_limit in self._rules:
-            text_to_check = s[:position_limit] if position_limit else s
-            
+            return PriorityLevel.NORMAL
+
+        for priority, pattern, limit in self._rules:
+            text = s[:limit] if limit else s
             if isinstance(pattern, Pattern):
-                # Regex pattern matching
-                if pattern.search(text_to_check):
+                if pattern.search(text):
                     return priority
-            else:
-                # String prefix matching
-                if text_to_check.startswith(pattern):
-                    return priority
-        
-        # Default: normal priority
-        return 2
-    
+            elif text.startswith(pattern):
+                return priority
+
+        return PriorityLevel.NORMAL
+
     def clear_cache(self) -> None:
-        """Clear classification cache (useful for testing or config updates)."""
-        with self._cache_lock:
+        with self._lock:
             self.classify.cache_clear()
-    
-    def add_custom_rule(self, rule: PriorityRule) -> None:
-        """Add a custom priority rule at runtime."""
-        with self._cache_lock:
-            self._add_rule(rule.priority, rule.pattern, rule.is_regex, rule.position_limit)
-            self.clear_cache()  # Invalidate cache when rules change
+
+    def add_rule(self, rule: PriorityRule) -> None:
+        with self._lock:
+            if rule.is_regex:
+                self._rules.append((rule.priority, re.compile(rule.pattern, re.IGNORECASE), rule.position_limit))
+            else:
+                self._rules.append((rule.priority, rule.pattern.lower(), rule.position_limit))
+            self.clear_cache()
 
 
-# Global classifier instance
 _classifier = PriorityClassifier.get_instance()
 
 
 def classify_priority(msg: str) -> int:
-    """
-    Advanced message priority classification with multi-level detection.
-
-    Uses configurable pattern-based rules with caching for performance.
-    
-    Priority levels (lower = higher priority):
-    - 0: Critical/Urgent (!, /urgent, ASAP)
-    - 1: High (!!, /high, /important)
-    - 2: Normal (default)
-    - 3: Low (/low, /defer)
-    - 4: Background (e.g., '<no_response>', /background)
-    """
     return _classifier.classify(msg)
 
 
-def start_priority_dispatcher_task(src: "asyncio.Queue[str]", dst: "asyncio.Queue[str]", settings: Settings) -> "asyncio.Task[None]":
-    async def _run() -> None:
-        # Advanced priority dispatcher with metrics and starvation prevention
-        try:
-            from jinx.observability.otel import span as _span
-        except Exception:
-            from contextlib import nullcontext as _span  # type: ignore
+class PriorityDispatcher:
+    __slots__ = ("_src", "_dst", "_settings", "_heap", "_seq", "_metrics", "_running")
+
+    def __init__(self, src: asyncio.Queue[str], dst: asyncio.Queue[str], settings: Settings) -> None:
+        self._src = src
+        self._dst = dst
+        self._settings = settings
+        self._heap: List[Tuple[int, int, float, str]] = []
+        self._seq = 0
+        self._metrics = PriorityMetrics()
+        self._running = True
+
+    def _apply_starvation_boost(self, current_time: float, threshold: float = 30.0) -> None:
+        modified = False
+        for i, (pr, seq, enq_t, msg) in enumerate(self._heap):
+            if pr >= 2 and (current_time - enq_t) >= threshold:
+                self._heap[i] = (max(0, pr - 2), seq, enq_t, msg)
+                modified = True
+        if modified:
+            heapq.heapify(self._heap)
+
+    async def _dispatch_one(self, loop: asyncio.AbstractEventLoop) -> bool:
+        if not self._heap:
+            return False
+
+        current_time = loop.time()
+        self._apply_starvation_boost(current_time)
+
+        pr, seq, enq_t, item = heapq.heappop(self._heap)
+        await self._dst.put(item)
+
+        queue_time_ms = (current_time - enq_t) * 1000.0
+        self._metrics.total_processed += 1
+        self._metrics.avg_queue_time_ms = (
+            (self._metrics.avg_queue_time_ms * (self._metrics.total_processed - 1) + queue_time_ms)
+            / self._metrics.total_processed
+        )
+        self._metrics.max_queue_time_ms = max(self._metrics.max_queue_time_ms, queue_time_ms)
+        return True
+
+    def _enqueue(self, msg: str, enqueue_time: float) -> bool:
+        pr = classify_priority(msg)
+        capacity = max(1, self._settings.runtime.queue_maxsize)
+        policy = (self._settings.runtime.queue_policy or "block").strip().lower()
+
+        if len(self._heap) >= capacity and policy == "drop_newest":
+            self._metrics.denied_admissions += 1
+            return False
+
+        if len(self._heap) >= capacity and policy == "drop_oldest" and self._heap:
+            self._heap[0] = self._heap[-1]
+            self._heap.pop()
+            heapq.heapify(self._heap)
+
+        heapq.heappush(self._heap, (pr, self._seq, enqueue_time, msg))
+        self._seq += 1
+        self._metrics.classification_hits[pr] = self._metrics.classification_hits.get(pr, 0) + 1
+        return True
+
+    async def run(self) -> None:
         loop = asyncio.get_running_loop()
-        budget = max(1, settings.runtime.hard_rt_budget_ms) / 1000.0
+        budget = max(1, self._settings.runtime.hard_rt_budget_ms) / 1000.0
         next_yield = loop.time() + budget
 
-        heap: List[Tuple[int, int, float, str]] = []  # (priority, seq, enqueue_time, msg)
-        seq = 0
-        metrics = PriorityMetrics()
-        capacity = max(1, int(settings.runtime.queue_maxsize))
-        policy = (settings.runtime.queue_policy or "block").strip().lower()
-        
-        # Starvation prevention: track time since last low-priority dispatch
-        last_low_priority_dispatch: Dict[int, float] = defaultdict(lambda: loop.time())
-        starvation_threshold_s = 30.0  # Boost priority after 30s wait
+        while self._running:
+            if not self._settings.runtime.use_priority_queue:
+                msg = await self._src.get()
+                await self._dst.put(msg)
+                self._metrics.total_processed += 1
+            else:
+                get_task = asyncio.create_task(self._src.get())
+                flush_task = asyncio.create_task(asyncio.sleep(0.01))
 
-        _running = True
-        get_task: asyncio.Task[str] | None = None
-        flush_task: asyncio.Task[None] | None = None
+                done, _ = await asyncio.wait({get_task, flush_task}, return_when=asyncio.FIRST_COMPLETED)
 
-        async def _dispatch_one() -> bool:
-            if not heap:
-                return False
+                if flush_task not in done:
+                    flush_task.cancel()
 
-            current_time = loop.time()
-            modified = False
-            for i, (pr0, s0, enq_t0, m0) in enumerate(heap):
-                if pr0 >= 2:
-                    wait_time = current_time - enq_t0
-                    if wait_time >= starvation_threshold_s:
-                        heap[i] = (max(0, pr0 - 2), s0, enq_t0, m0)
-                        modified = True
-            if modified:
-                heapq.heapify(heap)
+                if get_task in done:
+                    msg = get_task.result()
+                    self._enqueue(msg, loop.time())
+                else:
+                    get_task.cancel()
 
-            with _span("priority.dispatch_one"):
-                pr1, s1, enq_t1, item = heapq.heappop(heap)
-                await dst.put(item)
+                await self._dispatch_one(loop)
 
-            queue_time_ms = (current_time - enq_t1) * 1000.0
-            metrics.total_processed += 1
-            metrics.avg_queue_time_ms = (
-                (metrics.avg_queue_time_ms * (metrics.total_processed - 1) + queue_time_ms)
-                / metrics.total_processed
-            )
-            metrics.max_queue_time_ms = max(metrics.max_queue_time_ms, queue_time_ms)
-            last_low_priority_dispatch[pr1] = current_time
-            return True
-        
-        async def _awaitable_src_get() -> str:
-            if not _running:
-                raise asyncio.CancelledError()
-            return await src.get()
+            if loop.time() >= next_yield:
+                await asyncio.sleep(0)
+                next_yield = loop.time() + budget
 
-        try:
-            while _running:
-                try:
-                    if not settings.runtime.use_priority_queue:
-                        # Fast path: FIFO pass-through with cooperative yield
-                        msg = await src.get()
-                        await dst.put(msg)
-                        metrics.total_processed += 1
-                        if loop.time() >= next_yield:
-                            await asyncio.sleep(0)
-                            next_yield = loop.time() + budget
-                        continue
 
-                    # Create tasks lazily and keep them until they complete.
-                    if get_task is None:
-                        get_task = asyncio.create_task(_awaitable_src_get())
-                    if flush_task is None:
-                        flush_task = asyncio.create_task(asyncio.sleep(0.01))
-
-                    with _span("priority.await_or_flush"):
-                        done, _ = await asyncio.wait({get_task, flush_task}, return_when=asyncio.FIRST_COMPLETED)
-
-                    if flush_task in done:
-                        flush_task = None
-
-                    if get_task in done:
-                        try:
-                            msg = get_task.result()
-                        finally:
-                            get_task = None
-                        with _span("priority.classify"):
-                            pr = classify_priority(msg)
-                        enqueue_time = loop.time()
-                        # Admission control
-                        admitted = True
-                        already_pushed = False
-                        if len(heap) >= capacity:
-                            if policy not in ("drop_newest", "drop_oldest"):
-                                heapq.heappush(heap, (pr, seq, enqueue_time, msg))
-                                seq += 1
-                                already_pushed = True
-                                while len(heap) > capacity:
-                                    if not await _dispatch_one():
-                                        await asyncio.sleep(0.001)
-                            elif pr <= 1:
-                                # Try to evict one low-priority item to admit critical/high
-                                evicted = False
-                                if heap:
-                                    idx = -1
-                                    best_s = 10**12
-                                    for i, (p0, s0, t0, m0) in enumerate(heap):
-                                        if p0 >= 2 and s0 < best_s:
-                                            best_s = s0
-                                            idx = i
-                                    if idx >= 0:
-                                        heap[idx] = heap[-1]
-                                        heap.pop()
-                                        heapq.heapify(heap)
-                                        evicted = True
-                                if not evicted:
-                                    if policy == "drop_newest":
-                                        admitted = False
-                                    elif policy == "drop_oldest":
-                                        if heap:
-                                            idx = 0
-                                            best_s = heap[0][1]
-                                            for i in range(1, len(heap)):
-                                                if heap[i][1] < best_s:
-                                                    best_s = heap[i][1]
-                                                    idx = i
-                                            heap[idx] = heap[-1]
-                                            heap.pop()
-                                            heapq.heapify(heap)
-                                        else:
-                                            admitted = False
-                                    else:
-                                        admitted = False
-                            else:
-                                if policy == "drop_newest":
-                                    admitted = False
-                                elif policy == "drop_oldest":
-                                    if heap:
-                                        idx = 0
-                                        best_s = heap[0][1]
-                                        for i in range(1, len(heap)):
-                                            if heap[i][1] < best_s:
-                                                best_s = heap[i][1]
-                                                idx = i
-                                        heap[idx] = heap[-1]
-                                        heap.pop()
-                                        heapq.heapify(heap)
-                                    else:
-                                        admitted = False
-                                else:
-                                    admitted = False
-                        if admitted:
-                            if not already_pushed:
-                                heapq.heappush(heap, (pr, seq, enqueue_time, msg))
-                                seq += 1
-                        else:
-                            metrics.denied_admissions += 1
-
-                        if pr == 0:
-                            metrics.high_priority_count += 1
-                        elif pr == 1:
-                            metrics.normal_priority_count += 1
-                        else:
-                            metrics.low_priority_count += 1
-                        metrics.classification_hits[pr] = metrics.classification_hits.get(pr, 0) + 1
-
-                    await _dispatch_one()
-
-                    if loop.time() >= next_yield:
-                        await asyncio.sleep(0)
-                        next_yield = loop.time() + budget
-                except asyncio.CancelledError:
-                    _running = False
-                    break
-                except Exception:
-                    continue
-        finally:
-            # Ensure all tasks are cleaned up
-            _running = False
-            if get_task is not None and not get_task.done():
-                get_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await get_task
-            if flush_task is not None and not flush_task.done():
-                flush_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await flush_task
-
-    async def _run_with_cleanup():
-        """Wrapper to ensure cleanup on cancellation."""
-        try:
-            await _run()
-        except asyncio.CancelledError:
-            # Do not cancel unrelated tasks in the event loop.
-            # The dispatcher is expected to be safely cancellable by itself.
-            return
-    
-    return asyncio.create_task(_run_with_cleanup(), name="priority-dispatcher-service")
+def start_priority_dispatcher_task(src: asyncio.Queue[str], dst: asyncio.Queue[str], settings: Settings) -> asyncio.Task[None]:
+    dispatcher = PriorityDispatcher(src, dst, settings)
+    return asyncio.create_task(dispatcher.run(), name="priority-dispatcher-service")
