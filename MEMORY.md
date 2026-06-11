@@ -1,4 +1,4 @@
-# AGENTS.md — Shared Memory
+# MEMORY
 
 > Both JINX and MACHINE read and write this file.
 > This file is the only persistent state between sessions.
@@ -60,20 +60,20 @@
 ## Memory Protocol
 
 **Before any action:**
-Read this file. Walk from root to target path, read every AGENTS.md found.
+Read this file. Walk from root to target path, read every MEMORY.md found.
 Nearest file = local contract. Parent file = global rules. Conflict = nearest wins on local details.
 
 **After any meaningful change:**
-Update nearest AGENTS.md when change affects: purpose, structure, conventions, decisions, debt, or user preferences.
-Update parent AGENTS.md when parent-level structure changes.
+Update nearest MEMORY.md when change affects: purpose, structure, conventions, decisions, debt, or user preferences.
+Update parent MEMORY.md when parent-level structure changes.
 Remove stale text. Do not explain history.
 
 **Meaningful change = anything that would confuse a future session reading this cold.**
 Small edits with no behavioral impact = no update needed, but always check.
 
-**New project with no AGENTS.md:**
+**New project with no MEMORY.md:**
 Scan project. Infer language, framework, architecture, conventions.
-Create this file with everything known. Create child AGENTS.md for every folder with its own responsibility.
+Create this file with everything known. Create child MEMORY.md for every folder with its own responsibility.
 Do this before writing any code.
 
 **End of every task:**
@@ -83,7 +83,7 @@ Re-check all changed paths. Update affected files. Remove stale content. Report 
 
 ## Directory Index
 
-*Subdirectories with their own AGENTS.md. Update when any child is created, moved, or deleted.*
+*Subdirectories with their own MEMORY.md. Update when any child is created, moved, or deleted.*
 
 | Path | Purpose |
 |------|---------|
