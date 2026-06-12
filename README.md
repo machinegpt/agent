@@ -1,445 +1,406 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/machineGPT-Agent_System-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" />
-  <img src="https://img.shields.io/badge/version-2.0.0-blue?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/status-production-brightgreen?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/machineGPT-Agent_System-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="machineGPT Badge" />
+  <img src="https://img.shields.io/badge/version-2.1.0-blue?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/status-stable-brightgreen?style=for-the-badge" alt="Status Badge" />
 </p>
 
-<h1 align="center">Agent</h1>
-<p align="center"><strong>Autonomous two-agent AI architecture for software projects.<br>Drop one folder. Write one message. Never manage AI context again.</strong></p>
+<h1 align="center">Agent — Sovereign Agent Framework</h1>
+
+<p align="center">
+  <strong>A stateful, protocol-driven two-agent cognitive architecture designed for elite software engineering.</strong><br>
+  <em>Embed the sovereign runtime directly into your repository. Eliminate context decay, abstract leakage, and artificial slop once and for all.</em>
+</p>
 
 ---
 
-## The Problem
-
-Every developer using AI coding assistants hits the same wall:
-
-**The AI forgets everything between sessions.** You start a new conversation and the AI has no idea what language your project uses, what framework you picked, what naming conventions you follow, or why you made that architectural decision three sessions ago. You spend the first 10-15 messages re-explaining context that it already "learned" before.
-
-**The AI contradicts itself.** It suggests patterns that violate conventions it followed yesterday. It proposes changes that undo decisions you already made. Without persistent memory, every session starts from zero.
-
-**The AI can't hold the full picture.** Longer projects become unmanageable. The AI sees the file you're working on but doesn't understand how it connects to the rest of the system. It makes changes that break things three modules away.
-
-**You become the AI's memory.** You end up managing context instead of writing code. Pasting snippets, re-explaining architecture, correcting the same mistakes — every single time.
-
-**machineGPT eliminates all of this.** The `.agent/` folder is a persistent brain that lives inside your project. It remembers everything across every session, forever. You never manage AI context again.
+## Table of Contents
+1. [The Philosophy and Core Manifesto of Stateful Repositories](#the-philosophy-and-core-manifesto-of-stateful-repositories)
+2. [Stateless AI Failure Modes and Pathologies: The Architectural Why](#stateless-ai-failure-modes-and-pathologies-the-architectural-why)
+3. [The Three-Tier Check-and-Balance Cognitive Pipeline](#the-three-tier-check-and-balance-cognitive-pipeline)
+4. [Exhaustive File Directory Specifications and Inner Schemas](#exhaustive-file-directory-specifications-and-inner-schemas)
+   - [RULES.md: The Constitutional Authority and Constraint Classifier Matrix](#1-rulesmd-the-constitutional-authority-and-constraint-classifier-matrix)
+   - [MEMORY.md: The Sovereign Persistent State, Known Constraints, and Failure Databases](#2-memorymd-the-sovereign-persistent-state-known-constraints-and-failure-databases)
+   - [JINX.md: The Architect Reframing Engine, Tri-Approach Design, and Blast Radius Calculations](#3-jinxmd-the-architect-reframing-engine-tri-approach-design-and-blast-radius-calculations)
+   - [MACHINE.md: The 5-Step Execution Loop, Pre-Mutation Checks, and the Breaker Test Mandate](#4-machinemd-the-5-step-execution-loop-pre-mutation-checks-and-the-breaker-test-mandate)
+   - [PLAN.md and ACTIVE ACTION_*.md: Active Ephemeral Roadmaps, Transaction Sequence Node Maps](#5-planmd-and-active-action_md-active-ephemeral-roadmaps-transaction-sequence-node-maps)
+   - [PROTOTYPE.md: The One-Time Discovery and Protocol Bootstrap Compilation](#6-prototypemd-the-one-time-discovery-and-protocol-bootstrap-compilation)
+5. [Cognitive Loops and Complex State-Transition Mapping](#cognitive-loops-and-complex-state-transition-mapping)
+6. [Anti-Slop Safeguards and Strict Scope Discipline Guidelines](#anti-slop-safeguards-and-strict-scope-discipline-guidelines)
+7. [Comprehensive Setup Protocols, IDE Settings, Client Integration, Environment Mapping](#comprehensive-setup-protocols-ide-settings-client-integration-environment-mapping)
+8. [Failure Recovery Framework: The Five-Tier Systematic Recovery Protocols](#failure-recovery-framework-the-five-tier-systematic-recovery-protocols)
+9. [Context Compression Mechanics, Memory Tiering, and Automatic Archive Rotations](#context-compression-mechanics-memory-tiering-and-automatic-archive-rotations)
+10. [System Versioning, Backward Compatibility, and Standard Licensing](#system-versioning-backward-compatibility-and-standard-licensing)
 
 ---
 
-## How It Works — The Big Picture
+## The Philosophy and Core Manifesto of Stateful Repositories
 
-The system has three layers that work together:
+Modern software engineering utilizing Artificial Intelligence is fundamentally handicapped by the stateless paradigm of conversational interfaces. When developers interact with standard autocompletion extensions, online chat models, or generic workspace assistants, they are initiating dialogue with a transient, stateless intelligence. Every individual prompt sequence exists in isolation, blind to surrounding system invariants, historical negotiation logs, style-guide profiles, and localized framework quirks.
 
-### Layer 1: RULES.md — The Unbreakable Rules
+The core thesis of machineGPT v2.1.0 is structural: the runtime instructions, operating boundaries, constraints, memory registries, and execution loops of the Artificial Intelligence assistant must be stored directly within the code repository itself under a dedicated `.agent/` directory.
 
-This file is read first, every session, no exceptions. It contains 20 absolute prohibitions that no AI model can bypass:
+By establishing the codebase as the single source of truth for both the production code and the operational mechanisms of the editing agent, machineGPT establishes a persistent codebase brain. The engineering engagement is converted from high-fatigue, error-prone natural language instructions into a highly disciplined, self-documenting, and self-hardening software delivery pipeline.
 
-- The AI must always read its memory before coding
-- The AI must never write code without a plan
-- The AI must always investigate before implementing
-- The AI must always validate after changes
-- The AI must never exceed the scope of what was planned
-- The AI must never add features beyond what was requested
-- ...and 15 more
+---
 
-These aren't suggestions. They're enforced constraints. Even if you tell the AI to "just do it" or "skip the planning," it will refuse and explain why. This ensures the system never cuts corners, never takes shortcuts, and never produces unreliable output.
+## Stateless AI Failure Modes and Pathologies: The Architectural Why
 
-The file also contains a **gate protocol** — a checklist the AI runs before writing any code:
+Traditional Large Language Model coding systems degrade software architectures over time because of several major structural flaws:
+
+### 1. Cumulative Cognitive Amnesia
+As development chats progress across days or sessions, critical context drifts outside the model attention window. The assistant loses track of database schemas, custom interface structures, naming conventions, and constraints. Developers must continuously paste context, re-explain constraints, and correct identical classes of syntax errors, resulting in high cognitive overhead.
+
+### 2. Gradual Architectural Drift
+Stateless systems calculate plausibility on a localized token level. They lack systemic orientation, leading to code that duplicates existing helper functions, bypasses established adapter boundaries, introduces circular module imports, or violates clean database separations.
+
+### 3. Cumulative Technical Debt and Technical Larping (AI Slop)
+Standard AI assistants tend to maximize visual output to demonstrate competence, often generating unsolicited features, writing mock tests, or embedding fake terminal states. This results in cosmetic noise, unrequested dependencies, and maintenance burden.
+
+### 4. Recursive Regression Loops and Blind Patching
+When code compilation fails or static validation blocks deployment, a stateless assistant defaults to superficial patches. It repeatedly applies the same syntactic modifications because it cannot remember the failure vectors identified during previous turns.
+
+---
+
+## The Three-Tier Check-and-Balance Cognitive Pipeline
+
+To enforce safety, machineGPT segregates operational privileges into three distinct execution layers. This systemic division of concerns guarantees that planning operations do not directly touch production files, and execution operations do not modify structural boundaries without validation:
 
 ```
-□ ACTION file exists for this task?
-□ MEMORY conventions known?
-□ Dependencies grepped?
-□ Scope checked?
-□ Validation command known?
+                               ┌──────────────────────────┐
+                               │       USER REQUEST       │
+                               └─────────────┬────────────┘
+                                             │
+                                             ▼
+ ┌────────────────────────────────────────────────────────────────────────────────────────┐
+ │                                       RULES.md                                         │
+ │   - Overrides all agents.                 - Enforces 20 Absolute Prohibitions.        │
+ │   - Dictates strict Gate Checks.          - Validates input patterns via Matrix.       │
+ └───────────────────────────────────────────┬────────────────────────────────────────────┘
+                                             │
+                    (Protocol Cleared -> Handoff to JINX)
+                                             │
+                                             ▼
+ ┌────────────────────────────────────────────────────────────────────────────────────────┐
+ │                                  JINX — THE ARCHITECT                                 │
+ │   - Zero raw code permissions.            - Thinks in terms of system boundaries.      │
+ │   - Reframes tasks into Approaches A/B/C. - Scores and maps Blast Radii.               │
+ │   - Serializes sprint roadmaps.            - Writes atomic ACTION files.                │
+ └───────────────────────────────────────────┬────────────────────────────────────────────┘
+                                             │
+                (Atomic Action Described -> Handed off to MACHINE)
+                                             │
+                                             ▼
+ ┌────────────────────────────────────────────────────────────────────────────────────────┐
+ │                                 MACHINE — THE BUILDER                                  │
+ │   - Linear 5-Step Execution Loop.         - Enforces static type checking.             │
+ │   - Author of Breaker Tests.              - Operates the 5-Tier Recovery Engine.       │
+ │   - Records Debt logs & patterns.         - Cleans up spent ACTION files.              │
+ └───────────────────────────────────────────┬────────────────────────────────────────────┘
+                                             │
+                       (Continuous updates of central memory ledger)
+                                             │
+                                             ▼
+ ┌────────────────────────────────────────────────────────────────────────────────────────┐
+ │                                       MEMORY.md                                        │
+ │   - Stores constraints & tools.           - Manages the dependency graph.              │
+ │   - Holds the Failure Trigger Library.    - Hot/Warm/Cold Tiering & Compressions.      │
+ └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
-
-If any answer is "no," the AI stops and fixes the prerequisite before continuing. This prevents the most common failure mode: writing code before understanding the problem.
-
-### Layer 2: JINX and MACHINE — The Two Agents
-
-The system splits AI work into two specialized roles:
-
-**JINX is the architect.** It thinks. Before writing any code, JINX:
-
-1. **Reframes the task** — figures out what you actually need (which is often different from what you asked for)
-2. **Reads the dependency graph** — understands what imports what, what calls what, what will break if changed
-3. **Checks architectural invariants** — identifies rules that cannot be violated (e.g., "database access only through the repository layer")
-4. **Generates 2-3 approaches** — with explicit trade-offs for each
-5. **Picks one** — with a clear reason and what it's sacrificing
-6. **Writes a plan** — `PLAN.md` with concrete steps, each mapped to an `ACTION_*.md` file
-
-JINX never writes code. Its job is to make sure the plan is right before anything is built.
-
-**MACHINE is the builder.** It executes. For each ACTION file, MACHINE:
-
-1. **Investigates** — greps for all dependents, traces data flow, identifies the exact divergence point
-2. **Implements** — follows conventions exactly, handles edge cases explicitly, one change at a time
-3. **Validates** — runs project-specific tests, writes tests that break its own code
-4. **Records** — updates memory with new decisions, conventions, debt, failure patterns
-5. **Cleans up** — deletes the ACTION file, marks the step complete
-
-MACHINE never redesigns. It executes the plan exactly as specified.
-
-### Layer 3: Persistent Memory — MEMORY.md
-
-This is the shared brain. Every session, both agents read it first. It stores:
-
-- **Project info** — language, framework, architecture, entry points
-- **Conventions** — naming patterns, error handling, testing approach
-- **Active decisions** — every architectural choice, why it was made, what was rejected
-- **Technical debt** — every shortcut, with severity (P0/P1/P2)
-- **Failure patterns** — what went wrong, what works, how often it happens
-- **Dependency graph** — what imports what (updated by MACHINE during execution)
-- **Known constraints** — hard limits that shape every implementation
-
-The memory is never a log. It's never a history. It's always the **current state** of the project. Stale content is deleted immediately. When it gets too large, it compresses — hot data stays, warm data shrinks, cold data archives.
 
 ---
 
-## The Feedback Loop — How the System Gets Smarter
+## Exhaustive File Directory Specifications and Inner Schemas
 
-The most powerful feature: the system learns from its mistakes across sessions.
+The sovereign agent runtime operates inside the `.agent/` folder across several dedicated state and policy files.
 
-**Step 1:** MACHINE executes a task and discovers a dependency that JINX didn't know about.
+### 1. RULES.md: The Constitutional Authority and Constraint Classifier Matrix
+RULES.md acts as the system supreme constitution. It overrides all user requests, adjacent agent protocols, and third-party files.
 
-**Step 2:** MACHINE updates the dependency graph in MEMORY.md and notifies JINX.
+#### Core Constitutional Prohibitions:
+1. Every new coding turn must load configuration files in this sequence: RULES.md -> MEMORY.md -> PLAN.md -> ACTIVE_ACTIONS.
+2. The agent is strictly forbidden from writing code without an active, JINX-approved `ACTION_*.md` task node file.
+3. Partial, incremental writes to files inside the `.agent/` directory are blocked. Modifying state requires the full sequence: Read -> Revise -> Write Entire File.
+4. Developers and agents must strictly align with design guidelines, error formats, and architectural invariants logged in MEMORY.md.
+5. Code edits must always be preceded by grep and static analysis tracing of the downstream environment.
+6. Validation checks (build compilation, static linter, typecheck, target tests) must execute immediately after every filesystem mutation.
+7. The logical scope of any task must align with the functional limits defined in the active transaction file and the user prompt.
+8. Swallowing execution errors is strictly forbidden. The system must use explicit logging markers or propagate up the call stack.
+9. Avoid writing basic comments detailing the "What" of literal code commands. Write exclusively "Why" comments documenting underlying architectural decisions.
+10. The use of hardcoded magic numbers, URLs, or environmental parameters in production is blocked. Bind variables to types or immutable configs.
+11. Asynchronous calculations must use explicit timeout barriers, capture exceptions, and define recovery pathways.
+12. Verify the impact on dependencies and update package manifests before importing new libraries.
+13. Security keys, tokens, client secrets, and environment parameters must never be committed to repository history.
+14. System chat responses must skip tedious line-by-line code walks. Describe tasks via technical trade-offs and structural bounds.
+15. Do not prompt the user for permission to perform routine background tasks such as searching files, running compilation, or linting.
+16. The implementation of unprompted features, secondary styling layouts, experimental views, or logging pages is prohibited.
+17. Do not touch, rename, or omit core agent files unless executing a complete, coordinated migration.
+18. Multi-file batched updates across disparate modules are banned. Modify one target component, validate compilation, and then advance.
+19. Respect layer decoupling rules (for example, never call backend service routes inside client rendering blocks).
+20. Transactions are declared complete only after post-execution compilation checks succeed and the active ACTION cards are deleted.
 
-**Step 3:** Next time JINX plans a similar task, it reads the updated dependency graph and makes a better plan.
+RULES.md includes the constitutional Classifier Matrix used to inspect and route inputs:
 
-**Step 4:** If the same failure pattern happens 3 times, the system stops and fundamentally reconsiders its approach instead of retrying.
-
-This means the system improves through use — not because the AI model gets smarter, but because the context gets better.
-
----
-
-## File Structure
-
-```
-your-project/
-├── .agent/
-│   ├── RULES.md        ← Absolute constraints (read first)
-│   ├── JINX.md         ← Planning protocols + dependency graph + invariants
-│   ├── MACHINE.md      ← Execution protocols + validation + failure modes
-│   ├── MEMORY.md       ← Persistent project state
-│   ├── PLAN.md         ← Current task checklist
-│   ├── PROTOTYPE.md    ← Bootstrap (deleted after first run)
-│   └── ACTION_*.md     ← Atomic work units (dynamic, created/deleted)
-├── src/
-├── package.json
-└── ...
-```
-
-### What Each File Does
-
-**RULES.md** — The constitution. 20 prohibitions, gate protocol, 19 user action types with fixed responses. Read first. Overrides everything. The AI cannot deviate from these rules.
-
-**JINX.md** — The architect's manual. Contains: boot sequence, reframing protocol, PLAN and ACTION contracts, dependency graph (what imports what), architectural invariant checker, failure intelligence, context compression rules.
-
-**MACHINE.md** — The builder's manual. Contains: boot sequence, execution protocol (investigate → implement → validate → record → cleanup), project validation commands (injected by PROTOTYPE.md), common failure modes (injected by PROTOTYPE.md), code standards, failure recovery classification.
-
-**MEMORY.md** — The shared brain. Read every session. Updated after every meaningful change. Never preserves history — only current state. Critical section (constraints, validation, failure patterns) at the top for fast retrieval.
-
-**PLAN.md** — The current task. Written by JINX. Contains: goal, context, approach, steps with priority and dependencies, blockers, unplanned decisions, outcome. Never deleted — becomes changelog.
-
-**PROTOTYPE.md** — The bootstrap. Only read once — on the very first session. Analyzes your project deeply: maps the dependency graph, finds architectural invariants, discovers validation commands, identifies common failure modes. Injects all of this into JINX.md and MACHINE.md. Then deletes itself.
-
-**ACTION_*.md** — Atomic work units. Created by JINX, executed by MACHINE, deleted after completion. Each contains: exact task, context, dependencies, done-when condition, rollback plan, partial completion notes. If a session crashes mid-task, ACTION files survive and the next session resumes exactly where it stopped.
+| Input Classification Pattern | Action Type Response | Handoff Target Path |
+| :--- | :--- | :--- |
+| Core Ambiguity or Conflict | Suspend processing, output core assumptions, and request clarification. | Interface Layer |
+| New Technical Objective | Run the Reframing Engine, map blast radius, create PLAN plus ACTIONs. | JINX.md to PLAN.md |
+| Active Transaction Command | Perform investigation, construct custom breaker test, run surgical edits. | MACHINE.md to Codebase |
+| Simple System Inquiry | Skip roadmaps. Locate symbol references and explain architectural design. | Output Stream |
+| Comprehensive Design Query | Route to JINX. Weigh alternatives, map trade-offs, draft brief. | Architectural Brief |
+| Emergency halt | Suspend execution immediately, serialize current progress, and save files. | State Registry |
 
 ---
 
-## Installation
+### 2. MEMORY.md: The Sovereign Persistent State, Known Constraints, and Failure Databases
+MEMORY.md maps the technical orientation, history, and development guidelines of the repository. It keeps the model aligned over long timelines.
 
-### Step 1: Copy the folder
+#### Core Modules:
+- **System Constraints Index**: Defines environmental constraints (such as port binds, execution limits, and secret proxies).
+- **Core Validation Commands**: Declares the terminal CLI syntax to test typecheck correctness, lint formatting, and regression tests.
+- **Failure Trigger Registry**: A technical database documenting compiler errors, version collisions, and exceptions, tracking occurrence frequency and exact surgical fixes.
+- **Technical Debt Ledger**: A permanent log tracking compromises made during rapid sprints, prioritizing debt into blocks (`P0`), degrades (`P1`), and styling concerns (`P2`).
+- **Module Dependency Graph**: A living text diagram mapping import boundaries and interactions across components.
 
+```text
+Dependency Map Structure Example:
+[UI Component Layer]  ──(imports)──>  [Client Controllers]
+         │                                    │
+    (denied import)                      (uses model types)
+         │                                    │
+         ▼                                    ▼
+[DB Schema Layer]     <──(queries)───  [API Route Layer]
+```
+
+---
+
+### 3. JINX.md: The Architect Reframing Engine, Tri-Approach Design, and Blast Radius Calculations
+JINX.md defines JINX operational protocols. As the planning agent, JINX has zero access permissions to write or modify files within the `/src` directory.
+
+#### Operational Responsibilities:
+- **The Reframing Engine**: Translates user demands into exactly three distinct pathways:
+  1. *Approach A (Minimal Intervention)*: Achieves the objective with minimal code churn, prioritizing immediate system stability and low-overhead pathing.
+  2. *Approach B (Scalable Integration)*: Architected for long-term decoupled scaling, utilizing clear design abstractions, patterns of robust composition, and formal interfaces.
+  3. *Approach C (Alternative Router)*: An unconventional or divergent design approach (such as changing data structures, selecting streaming over batching, or caching rather than standard querying).
+- **Blast Radius Quantification**: Calculates structural impact, outlining modified lines, broken components, and dependencies requiring verification.
+- **Sprint Contract Serialization**: Builds the step-by-step logic map within PLAN.md and generates the active step card within ACTION_*.md files.
+
+---
+
+### 4. MACHINE.md: The 5-Step Execution Loop, Pre-Mutation Checks, and the Breaker Test Mandate
+MACHINE.md drives the execution engine, focusing on technical precision, exact implementation, and verification.
+
+```
+                    ┌─────────────────────────┐
+                    │ INVESTIGATE             │
+                    │ - Trace target symbols  │
+                    │ - Trace data stream     │
+                    └────────────┬────────────┘
+                                 │
+                                 ▼
+                    ┌─────────────────────────┐
+                    │ IMPLEMENT               │
+                    │ - Write surgical edits  │
+                    │ - Handle null pointers  │
+                    └────────────┬────────────┘
+                                 │
+                                 ▼
+                    ┌─────────────────────────┐
+                    │ VALIDATE                │
+                    │ - Compile, lint, test   │
+                    │ - Write a BREAKER test  │
+                    └────────────┬────────────┘
+                                 │
+                                 ▼
+                    ┌─────────────────────────┐
+                    │ RECORD                  │
+                    │ - Log active debt       │
+                    │ - Log failure triggers  │
+                    └────────────┬────────────┘
+                                 │
+                                 ▼
+                    ┌─────────────────────────┐
+                    │ CLEANUP                 │
+                    │ - Delete ACTION card    │
+                    │ - Update central PLAN   │
+                    └─────────────────────────┘
+```
+
+#### Core Operational Phases:
+1. **INVESTIGATE**: Search the workspace, locate symbols, trace components, and map pipelines before mutating code. Define Expected State, Actual State, and Divergence Point.
+2. **IMPLEMENT**: Author clean, typified, and decoupled logic. Ensure robust error handling and avoid broad, unvalidated edits.
+3. **VALIDATE**: Run project lint and build routines. Authors are *required* to write a custom Breaker Test containing edge-case inputs designed to challenge the new code boundaries. If the implementation handles these breaker inputs safely, validation is successful.
+4. **RECORD**: Update the roadmap, log new technical debt, and feed newly discovered failure vectors back to MEMORY.md.
+5. **CLEANUP**: Remove completed ACTION_*.md files and clean up temporary build assets.
+
+---
+
+### 5. PLAN.md and ACTIVE ACTION_*.md: Active Ephemeral Roadmaps, Transaction Sequence Node Maps
+These files represent active, ephemeral states that track progress through the current sprint.
+
+- **PLAN.md**: Includes a measurable binary Definition of Done, the chosen architectural strategy, sequence node maps, and rollback commands for disaster recovery.
+- **ACTION_*.md**: Spec files built for consumption by MACHINE, outlining implementation directives, target symbols, exposed signatures, dependency barriers, and binary success assertions.
+
+---
+
+### 6. PROTOTYPE.md: The One-Time Discovery and Protocol Bootstrap Compilation
+A temporary bootstrap utility. On setup, it scans the repository, identifies dependencies and scripting configurations, populates placeholders inside MEMORY.md, and then deletes itself.
+
+---
+
+## Cognitive Loops and Complex State-Transition Mapping
+
+The following state diagram details the operational lifecycle of a bugfix or feature task under the machineGPT v2.1.0 framework:
+
+```
+[User issues bug report]
+          │
+          ▼
+ RULES.md parsed ➔ Gate Checks pass ➔ Routed to JINX (Reframer Engine)
+          │
+          ├─► Approach A: Fix locally (evaluated)
+          ├─► Approach B: Decouple routing rules (selected)
+          └─► Approach C: Alternative bypass (evaluated)
+          │
+          ▼
+ JINX writes PLAN.md & writes `ACTION_*.md`
+          │
+          ▼
+ MACHINE boots ➔ Reads `ACTION_*.md`
+          │
+          ├──────────────────────────┐
+          ▼ (INVESTIGATE)            ▼ (IMPLEMENT)
+ Greps routing functions   Writes surgical fixes to routes
+          │                          │
+          ├──────────────────────────┘
+          ▼
+ MACHINE (VALIDATE) ➔ Build/Lint runs
+          │
+          ├───► Compile OK? ──► YES ──► Write Breaker Test (edge-case parameters)
+          │                                  │
+          │                                  ├──► Breaker fails? ──► YES (Good) ──► Apply final guard rules
+          │                                  └──► Breaker passes? ─► NO ──► Re-write breaker assertions
+          │
+          └───► Compile FAIL? ─► Run Failure Recovery Framework ➔ Identify error class ➔ Document Pattern
+          │
+          ▼
+ MACHINE (RECORD) ➔ Register technical debt P2 ➔ Update Memory with Route Conventions
+          │
+          ▼
+ MACHINE (CLEANUP) ➔ Delete `ACTION_*.md` ➔ Update PLAN.md step 1 [Done]
+          │
+          ▼
+ [Task successfully resolved. Complete Git status committed.]
+```
+
+---
+
+## Anti-Slop Safeguards and Strict Scope Discipline Guidelines
+
+To preserve system aesthetics, machineGPT implements strict rules against superficial "AI Slop."
+
+Standard AI autocomplete extensions and models often generate unnecessary UI elements (such as fake server dashboards, decorative headers, system metrics trackers, or complex logs). These elements add visual clutter and increase maintenance burden.
+
+### Codebase Cleanliness Standards:
+1. **No Superficial Dashboards**: Implement only the core UI elements requested. Do not wrap simple layouts in mock status views or command logs.
+2. **Strict Scope Discipline**: High-quality UI comes from clean typography, balanced negative space, clear contrast, and deliberate alignment—not unprompted layout features.
+3. **Real Data Integrity**: If the user requests external integrations (for example, database storage, email notifications, or authentication profiles), build real, functioning integration pipelines. Do not use random static placeholders.
+
+---
+
+## Comprehensive Setup Protocols, IDE Settings, Client Integration, Environment Mapping
+
+### 1. Repository Installation
+Copy the complete `.agent/` folder into your root workspace directory:
 ```bash
-cp -r .agent /your/project/root/
-```
-
-After this, your project looks like:
-
-```
-your-project/
+.
 ├── .agent/
 │   ├── RULES.md
+│   ├── MEMORY.md
 │   ├── JINX.md
 │   ├── MACHINE.md
-│   ├── MEMORY.md
 │   ├── PLAN.md
-│   ├── PROTOTYPE.md
-│   └── (no ACTION files yet)
+│   └── PROTOTYPE.md
 ├── src/
-└── ...
+├── package.json
+└── README.md
 ```
 
-### Step 2: Initialize (one message)
-
-Open your AI assistant (Claude, Cursor, Windsurf, Aider, or any CLI agent) and send **exactly this once**:
-
+### 2. Executing the Bootstrap Sequence
+Initiate setup by issuing this instruction within your development environment:
+```text
+Initialize the machineGPT runtime. Execute .agent/PROTOTYPE.md now.
+Scan the repository structure, locate active toolchains, populate MEMORY.md, and inject project intelligence.
+Confirm details and delete PROTOTYPE.md upon successful setup.
 ```
-Read all files in .agent/. You are now operating as the machineGPT agent system.
-Scan this project. Write everything into .agent/MEMORY.md. Confirm when done.
-```
 
-What happens:
-1. The AI reads all `.agent/` files
-2. It scans your project — finds the language, framework, dependencies, conventions
-3. It maps the dependency graph (what imports what)
-4. It finds architectural invariant rules
-5. It discovers validation commands (build, test, lint)
-6. It identifies common failure modes for your stack
-7. It writes everything into `MEMORY.md`
-8. It injects project-specific data into `JINX.md` and `MACHINE.md`
-9. It deletes `PROTOTYPE.md`
-10. It confirms readiness
+### 3. Integrated Development Environment Profiles
 
-**This is the only setup message you'll ever send.**
+#### Cursor Integration:
+- Reference active rules files inside the prompt: `@.agent/RULES.md` and `@.agent/MEMORY.md`.
+- Direct the planning tasks to JINX, then instruct the builder to execute: `MACHINE: Implement step 1.`.
 
-### Step 3: Use it
+#### Windsurf and Cascade Integration:
+- The development engine automatically parses the local directory structure. The constraints inside `RULES.md` serve as active guardrails for all code modifications.
 
-From now on, just describe what you want:
+#### Claude Desktop and Custom Environments:
+- Save `.agent/RULES.md` directly into your customized system instruction sets. The model will refer back to these constitutional constraints on every interaction.
 
-```
-You:    "Add rate limiting to the API"
-Agents: JINX plans → MACHINE implements → done
-
-You:    "There's a bug in the payment flow"
-Agents: Diagnose → fix → regression test → done
-
-You:    "How does the auth module work?"
-Agents: Read code → answer directly (no plan needed for questions)
+#### Aider Command Line Interface:
+Add core state files directly into the active terminal context pool:
+```bash
+/add .agent/RULES.md
+/add .agent/MEMORY.md
 ```
 
 ---
 
-## Day-to-Day Usage
+## Failure Recovery Framework: The Five-Tier Systematic Recovery Protocols
 
-### Normal tasks
-
-```
-You:    "Add user authentication with JWT"
-Agents: JINX reframes → evaluates approaches → writes plan + ACTION files
-        MACHINE investigates → implements → tests → records → done
-        MEMORY.md updated with new conventions and decisions
-```
-
-### Bug fixes
+When compilation checks fail, or testing suites trigger errors during development, MACHINE bypasses quick-patching and classifies the problem into one of five categories:
 
 ```
-You:    "Orders are duplicating in the payment flow"
-Agents: JINX reframes (the real problem might be in the state machine, not the payment code)
-        MACHINE traces data flow → finds root cause → fixes → writes regression test
-        Failure pattern logged to MEMORY.md for future avoidance
+                            TESTING / BUILD FAILURE
+                                       │
+                                       ▼
+                         Identify Failure Classification
+                                       │
+ ┌──────────────────────┬──────────────┴───────┬──────────────────────┬──────────────────────┐
+ │                      │                      │                      │                      │
+ ▼                      ▼                      ▼                      ▼                      ▼
+Transient Error       Logic Error        Dependency Error      Ambiguity Error       Scope Out Error
+- Flaky network,      - Typo, logic bug,     - Missing packages,   - Conflicting steps,  - Action requires
+  or lock file block    regression.            import path error.    vague variables.      edits outside
+- Re-run once         - Diagnose trace,      - Scan project locks  - HALT. Do not write  Atoms.
+  after clearing.       register failure       and manifests.        code. Prompt user   - Revert changes
+                        pattern, fix.                                for details.        & ask JINX to
+                                                                                         replan.
 ```
 
-### Architecture questions
-
-```
-You:    "Should we switch from REST to GraphQL?"
-Agents: JINX evaluates → lists trade-offs → makes recommendation
-        (No plan is written unless you decide to implement)
-```
-
-### Refactoring
-
-```
-You:    "The auth module is too large, split it up"
-Agents: JINX reads dependency graph → calculates blast radius
-        Plans split that respects architectural invariants
-        MACHINE executes step by step, validating after each change
-```
-
-### What you never need to do
-
-- Never re-explain your stack or conventions
-- Never paste code snippets for context
-- Never manage AI state between sessions
-- Never write system prompts
-- Never correct the same mistake twice (failure patterns prevent repetition)
+If any specific error signature fails three times in succession, the system halts execution, logs a diagnostic report, and prompts the developer for guidance.
 
 ---
 
-## How Memory Works
+## Context Compression Mechanics, Memory Tiering, and Automatic Archive Rotations
 
-### Reading
+As codebases mature, size increases inside MEMORY.md, which can lead to higher token usage and model attention degradation. machineGPT implements an automated memory tiering and archive rotation protocol:
 
-Every session starts by reading `MEMORY.md`. The critical section (constraints, validation commands, failure patterns) is at the top — it's read first and takes priority.
+### The Memory Tiering Sequence:
+1. **Hot State** (`MEMORY.md`): Capped at **400 active lines**. This includes active constraints, system conventions, validation commands, recent development logs, and unresolved technical debt.
+2. **Warm State**: Stable reference profiles and module structures are compressed into minimalist, high-density key-value notation blocks:
+   `auth_engine: {adapter: local-jwt, schema: /db/users, coupling: low, status: stable}`.
+3. **Cold State**: Complete historical snapshots of memory are compiled and saved directly to timestamped archive files in `.agent/archives/*.md`.
 
-### Writing
-
-After every meaningful change, the relevant section is updated:
-- New convention → `## Conventions`
-- New decision → `## Decisions`
-- New debt → `## Debt`
-- New failure pattern → `## Failure Patterns`
-- New dependency → `## Dependencies`
-
-Stale content is deleted. History is never preserved.
-
-### Compression
-
-When `MEMORY.md` exceeds 400 lines or hasn't been compressed in 3+ sessions:
-1. Full snapshot saved to `ARCHIVE_*.md`
-2. Hot data (recent decisions, active work) stays in MEMORY.md
-3. Warm data (stable references) compresses to minimal notation
-4. Cold data (historical) stays in the archive
-
-If the project is genuinely complex and needs >400 lines of active state, MEMORY.md splits into two files: `MEMORY.md` (hot) + `MEMORY_CONTEXT.md` (warm).
-
-### Dependency Graph
-
-The dependency graph is a map of what imports/calls what. It's:
-- **Created** by PROTOTYPE.md during bootstrap
-- **Updated** by MACHINE when it discovers new dependencies during execution
-- **Read** by JINX when planning — to calculate blast radius
-
-This means JINX knows exactly what will break before proposing a change.
-
-### Architectural Invariants
-
-These are rules that CANNOT be violated. They're discovered by PROTOTYPE.md during bootstrap by analyzing repeated patterns in the source code. Examples:
-- "All API routes go through middleware"
-- "Database access only through the repository layer"
-- "No direct external calls from business logic"
-
-JINX checks every plan against these invariants. If a plan would violate one, it's rejected and replanned.
+JINX performs this archive process automatically when it detects that the memory file has crossed limits during boot validation.
 
 ---
 
-## How Failure Intelligence Works
+## System Versioning, Backward Compatibility, and Standard Licensing
 
-When something goes wrong — wrong plan, wrong approach, wrong assumption:
-
-1. The failure is logged to `MEMORY.md` → `## Failure Patterns`
-2. The pattern includes: trigger, error, fix, frequency count
-3. Before planning similar work, JINX checks the pattern library
-4. If the same pattern triggers 3 times, the system **stops** and fundamentally reconsiders
-
-This prevents the most common AI failure mode: retrying the same broken approach indefinitely.
-
----
-
-## How the Session Lifecycle Works
-
-Every session — regardless of what happened before — follows this exact sequence:
-
-```
-START
-  ↓
-Read RULES.md → MEMORY.md → PLAN.md → ACTION_*.md
-  ↓
-INTEGRITY CHECK: Is MEMORY.md complete? Not truncated?
-  (If corrupt → restore from archive or flag for rebuild)
-  ↓
-STALENESS CHECK: Last updated >3 sessions ago?
-  (If stale → compress hot→cold)
-  ↓
-ORPHAN CHECK: PLAN steps without matching ACTION files?
-  (If orphaned → reconcile: recreate or mark done)
-  ↓
-SYMBOL CHECK: ACTION files reference deleted symbols?
-  (If deleted → quarantine the ACTION file)
-  ↓
-VERSION CHECK: File versions match?
-  (If mismatch → log, proceed with newer)
-  ↓
-MERGE: Completed actions → MEMORY.md → delete ACTION files
-  ↓
-READY — full project context restored
-```
-
-Then for each task:
-```
-USER: "Add authentication"
-  ↓
-JINX: Read dependency graph + invariants → reframe → plan → PLAN.md + ACTIONs
-  ↓
-MACHINE: For each ACTION:
-  Investigate → Implement → Validate → Record → Cleanup
-  If new dependency found → update JINX dependency graph
-  ↓
-MEMORY.md updated. Failure patterns logged if any.
-```
-
----
-
-## Compatibility
-
-The system works with any AI assistant that can read files from your project directory:
-
-| Tool | How to use |
-|------|-----------|
-| **Claude** (claude.ai, API) | Works directly. Files in project root. |
-| **Cursor** | Add `.agent` to context with `@.agent` in first message. |
-| **Windsurf** | Works directly. Boot reads files automatically. |
-| **GitHub Copilot** | Works in Workspace mode. |
-| **Aider** | Works with file access. |
-| **Any CLI agent** | As long as it can read files, it works. |
-
-The system is **model-agnostic**. It works with Claude, GPT-4, Gemini, Llama, or any capable model. The protocols are written in plain language — any model that can follow instructions can operate under them.
-
----
-
-## FAQ
-
-**Do I need to mention `.agent/` in every message?**
-No. Once initialized, the agents read the folder at the start of every session automatically. You only need to describe your task.
-
-**What if the AI ignores the `.agent/` folder?**
-Some tools require you to include the folder in context explicitly (e.g., `@.agent` in Cursor). After the first session, the boot sequence handles this automatically.
-
-**Can multiple developers use this on the same project?**
-Yes. Commit `.agent/` to your repository. Every developer's AI sessions will share the same project memory, conventions, and active decisions. The system handles conflicts through a priority protocol.
-
-**What happens if a session ends mid-task?**
-The `ACTION_*.md` files survive the session with partial-completion notes. The next session reads them, sees exactly what was done vs what remains, and continues from the failure point. Nothing is lost.
-
-**Can I edit `MEMORY.md` manually?**
-Yes, and you should when you want to enforce something permanently — a convention, a decision, a preference. The agents treat it as authoritative.
-
-**What if JINX's plan is wrong?**
-Tell the AI the plan is wrong. JINX will reframe and replan. MACHINE will not execute a plan JINX hasn't signed off on.
-
-**What happens when `MEMORY.md` gets too large?**
-The compression protocol activates. Hot data stays. Warm data compresses to minimal notation. Cold data archives to separate files. If the project is genuinely complex, MEMORY.md splits into two files. Context is never lost — it's compressed intelligently.
-
-**How does the system learn from mistakes?**
-When a failure occurs, it's logged as a failure pattern. Before planning similar work, the agents check the pattern library. If the same pattern triggers 3 times, the system stops and reconsiders the fundamental approach instead of retrying.
-
-**What if the agent system itself needs upgrading?**
-Version fields in each file track the template version. On boot, version mismatches are logged. New sections get placeholders. Old sections are preserved until compression. Migration history is tracked in MEMORY.md.
-
-**What does PROTOTYPE.md actually analyze?**
-During bootstrap, it: maps the dependency graph (what imports what), finds architectural invariants (what can't change), discovers validation commands (how to build/test/lint), identifies common failure modes (what frequently breaks in this stack). All of this is injected into JINX.md and MACHINE.md so they work with your specific project.
-
-**What if my project is empty (no source files yet)?**
-PROTOTYPE.md handles this gracefully. It notes "new project, no source" and leaves relevant fields as `—`. The system is ready to go when you add code.
-
-**Can I use this with a monorepo?**
-Yes. The dependency graph and directory index sections scale to multiple packages. PROTOTYPE.md maps the full graph during bootstrap.
-
----
-
-## Design Philosophy
-
-**AI-assisted development fails not because models aren't capable, but because they have no memory and no structure.**
-
-A capable model working from a fresh context window will produce plausible code that contradicts your architecture, ignores your conventions, and forgets the decision you made three sessions ago. It cannot help it — it has no state.
-
-The `.agent/` system gives the model state. Not by making the model smarter, but by making the context persistent, structured, and authoritative. The agents don't need to be reminded what language you use. They don't need to be told your naming conventions again. They read `MEMORY.md` and they know.
-
-**The RULES.md layer** ensures the system cannot be bypassed. No model can skip boot, ignore conventions, or deviate from protocols. The constraints are absolute.
-
-**The JINX/MACHINE split** forces planning before execution. Thinking and doing are different cognitive modes. Separating them eliminates the architecturally wrong implementation that was technically correct.
-
-**The dependency graph** gives JINX awareness of the actual codebase structure. Plans respect real dependencies, not assumptions.
-
-**The failure intelligence** means the system improves across sessions — not because the model improves, but because the context improves.
-
-**The context compression** ensures the system never overflows. Signal density stays high regardless of project age or complexity.
+All components within `.agent/` include a version footer in their metadata: `*Version: v2.1.0*`. Version mismatches during session starts are flagged and written directly into the system migrations ledger of MEMORY.md.
 
 ---
 
 <p align="center">
-  <strong>machineGPT</strong> · Agent System · v2.0.0<br>
-  <em>Built for engineers who want AI that works like a senior teammate, not a stateless autocomplete.</em>
+  <strong>machineGPT v2.1.0</strong> · The Sovereign Codebase Brain · Protocol Stable<br>
+  <em>Never explain your code conventions again. Secure your development runtimes.</em>
 </p>
