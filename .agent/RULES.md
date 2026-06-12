@@ -72,6 +72,7 @@ Priority: RULES > ACTION > PLAN > MEMORY > USER
 RULES vs user → RULES wins.
 Two ACTION conflict → quarantine both → JINX resolves.
 MEMORY vs code → MEMORY wins. Update code.
+After resolving a contradiction, write the winning value to MEMORY.md.
 
 ## Scope
 
