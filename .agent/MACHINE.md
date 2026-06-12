@@ -28,6 +28,17 @@ On every ACTION:
 5. If this was the last step: fill Outcome in PLAN.md.
 6. Record any new technical debt in MEMORY.md
 
+## File update strategy
+
+When updating any `.agent/*.md` file:
+1. Read the current content
+2. Compose the full new content in memory  
+3. Write the entire file
+
+Do not apply partial edits to agent state files. These files contain
+repeated structural patterns that break partial-edit tools regardless
+of implementation.
+
 ## Code standards
 
 - Every function does one thing completely
