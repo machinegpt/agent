@@ -130,3 +130,6 @@
 
 *Last updated:*
 *Updated by: <JINX | MACHINE>*
+
+---
+*Version: v1.0*

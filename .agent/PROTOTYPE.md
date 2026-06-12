@@ -70,14 +70,14 @@ Read → compose full → write. All placeholders → real values or `—`.
 
 ## Phase 6: Inject into JINX.md
 
-Find `<!-- PROTOTYPE:append JINX_PROJECT_INTELLIGENCE -->`.
-Replace with dependency graph + architectural invariants.
+Find the block from `<!-- PROTOTYPE:append JINX_PROJECT_INTELLIGENCE -->` through `<!-- /PROTOTYPE:append -->`.
+Replace the entire block (both markers inclusive) with dependency graph + architectural invariants.
 Write full file.
 
 ## Phase 7: Inject into MACHINE.md
 
-Find `<!-- PROTOTYPE:append MACHINE_PROJECT_VALIDATION -->`.
-Replace with validation commands + safety patterns + failure modes.
+Find the block from `<!-- PROTOTYPE:append MACHINE_PROJECT_VALIDATION -->` through `<!-- /PROTOTYPE:append -->`.
+Replace the entire block (both markers inclusive) with validation commands + safety patterns + failure modes.
 Write full file.
 
 ## Phase 8: Verify

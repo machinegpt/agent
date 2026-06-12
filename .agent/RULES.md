@@ -68,7 +68,7 @@ NEVER add features beyond what ACTION specifies.
 
 ## Conflict
 
-Priority: RULES > ACTION > PLAN > MEMORY > user口头
+Priority: RULES > ACTION > PLAN > MEMORY > USER
 RULES vs user → RULES wins.
 Two ACTION conflict → quarantine both → JINX resolves.
 MEMORY vs code → MEMORY wins. Update code.
@@ -80,4 +80,7 @@ MACHINE never exceeds ACTION scope. Unlisted files → STOP → "Need JINX repla
 ## Versioning
 
 `Version: v<major>.<minor>` footer. Boot checks. Mismatch → log → proceed with newer.
+
+---
+*Version: v1.0*
 
