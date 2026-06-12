@@ -1,9 +1,8 @@
 # MEMORY
 
-> Both JINX and MACHINE read and write this file.
-> This file is the only persistent state between sessions.
-> Read it completely before any action. Update it after any meaningful change.
-> Delete stale content immediately — do not annotate history.
+> Shared state for JINX and MACHINE.
+> Read completely before any action. Update after every meaningful change.
+> Delete stale content — do not annotate history.
 
 ---
 
@@ -14,80 +13,90 @@
 **Language + version:**
 **Framework / stack:**
 **Architecture:**
+**Entry points:**
 **State:** [ early dev | stable | refactor | legacy ]
 
 ---
 
 ## Conventions
 
-*Established patterns in this codebase. Follow without inventing alternatives.*
+**Naming:**
+- Files:
+- Functions:
+- Variables:
+- Types / interfaces:
+- Tests:
 
-- Naming:
-- Error handling:
-- Logging:
-- Config:
-- Testing:
-- File structure:
+**Error handling:**
+
+**Logging:**
+
+**Config:**
+
+**Testing:**
+- Framework:
+- Location:
+- Coverage expectations:
+
+**File structure:**
+```
+/
+```
+
+---
+
+## Environment
+
+**Local setup:**
+**Required env vars:**
+**External services:**
+**Ports / endpoints:**
 
 ---
 
 ## Active Decisions
 
-*Architectural and structural decisions already made. Do not re-open without reason.*
+> Architectural and structural decisions already made. Do not re-open without reason.
 
-|Decision|Reason|Made by|
-|--------|------|-------|
-| | | |
+| Decision | Reason | Alternatives rejected | Made by |
+|----------|--------|-----------------------|---------|
+| | | | |
+
+---
+
+## Known Constraints
+
+> Hard limits that shape every implementation decision. Non-negotiable unless explicitly changed.
+
+-
 
 ---
 
 ## Technical Debt
 
-*Known issues. Record when created. Remove when resolved.*
+> Record when created. Remove when resolved.
 
-- [ ]
+| Debt | Created at | Impact | Owner |
+|------|-----------|--------|-------|
+| | | | |
 
 ---
 
 ## User Preferences
 
-*Durable behavior changes. Updated when user requests them explicitly.*
+> Durable behavior changes. Updated only when user requests explicitly.
 
-- 
-
----
-
-## Memory Protocol
-
-**Before any action:**
-Read this file. Walk from root to target path, read every MEMORY.md found.
-Nearest file = local contract. Parent file = global rules. Conflict = nearest wins on local details.
-
-**After any meaningful change:**
-Update nearest MEMORY.md when change affects: purpose, structure, conventions, decisions, debt, or user preferences.
-Update parent MEMORY.md when parent-level structure changes.
-Remove stale text. Do not explain history.
-
-**Meaningful change = anything that would confuse a future session reading this cold.**
-Small edits with no behavioral impact = no update needed, but always check.
-
-**New project with no MEMORY.md:**
-Scan project. Infer language, framework, architecture, conventions.
-Create this file with everything known. Create child MEMORY.md for every folder with its own responsibility.
-Do this before writing any code.
-
-**End of every task:**
-Re-check all changed paths. Update affected files. Remove stale content. Report any file intentionally left unchanged and why.
+-
 
 ---
 
 ## Directory Index
 
-*Subdirectories with their own MEMORY.md. Update when any child is created, moved, or deleted.*
+> Subdirectories with distinct responsibility. Update when structure changes.
 
-| Path | Purpose |
-|------|---------|
-| | |
+| Path | Purpose | MEMORY.md |
+|------|---------|-----------|
+| | | [ yes \| no ] |
 
 ---
 
