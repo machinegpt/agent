@@ -79,7 +79,8 @@ MACHINE never exceeds ACTION scope. Unlisted files → STOP → "Need JINX repla
 
 ## Versioning
 
-`Version: v<major>.<minor>` footer. Boot checks. Mismatch → log → proceed with newer.
+Every agent file ends with `*Version: v<major>.<minor>*`.
+Boot: extract version from each file's footer. Mismatch → log → proceed with newer.
 
 ---
 *Version: v1.0*
