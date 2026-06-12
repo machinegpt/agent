@@ -160,8 +160,7 @@ your-project/
 │   ├── JINX.md
 │   ├── MACHINE.md
 │   ├── MEMORY.md
-│   ├── PLAN.md
-│   └── README.md
+│   └── PLAN.md
 ├── src/
 ├── package.json
 └── ...
