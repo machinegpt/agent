@@ -96,7 +96,7 @@ structural failure →
 
 ```
 MEMORY >400 lines OR >3 sessions →
-  1. Archive → MEMORY_ARCHIVE_<date>.md
+  1. Archive → ARCHIVE_*.md
   2. Retain hot: decisions, conventions, constraints, debt
   3. Compress warm: basics → ~field: value
   4. >400 active → split: MEMORY + MEMORY_CONTEXT

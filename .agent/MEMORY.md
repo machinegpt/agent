@@ -105,7 +105,7 @@
 <!-- SECTION:context-tiers -->
 **Hot:** <2 sessions, blocking | **Warm:** >2 sessions, reference | **Cold:** archives
 **Split:** >400 active → MEMORY + MEMORY_CONTEXT
-**Archive:** `MEMORY_ARCHIVE_YYYY-MM-DD.md` | fail → retain full, retry
+**Archive:** `ARCHIVE_*.md` | fail → retain full, retry
 <!-- /SECTION:context-tiers -->
 
 <!-- SECTION:versioning -->

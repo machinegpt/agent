@@ -278,7 +278,7 @@ Stale content is deleted. History is never preserved.
 ### Compression
 
 When `MEMORY.md` exceeds 400 lines or hasn't been compressed in 3+ sessions:
-1. Full snapshot saved to `MEMORY_ARCHIVE_<date>.md`
+1. Full snapshot saved to `ARCHIVE_*.md`
 2. Hot data (recent decisions, active work) stays in MEMORY.md
 3. Warm data (stable references) compresses to minimal notation
 4. Cold data (historical) stays in the archive

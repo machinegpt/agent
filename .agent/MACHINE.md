@@ -16,9 +16,9 @@ Counterpart: JINX. State: `.agent/`.
 6. Grep referenced symbols
    0 + existed → deleted → quarantine, notify
    0 + new → proceed
-7. Merge completed → MEMORY → delete ACTIONs
-8. Execute in order (priorities + dependencies)
-9. Version mismatch → log
+7. Version mismatch → log
+8. Merge completed → MEMORY → delete ACTIONs
+9. Execute in order (priorities + dependencies)
 ```
 
 ## Execution
