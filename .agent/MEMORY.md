@@ -64,6 +64,20 @@
 
 ---
 
+## Conflict Resolution Protocol
+
+> How contradictions between state files are resolved during boot.
+
+When the same fact appears in multiple files with different values:
+
+1. **Nearest file wins** — priority order (highest → lowest): `ACTION_*.md` → `PLAN.md` → `MEMORY.md`
+2. The winning value is written back into `MEMORY.md` to resolve the contradiction.
+3. The losing value is discarded — not archived.
+
+Rationale: ACTION files are the most recent intent; MEMORY.md is the most stable baseline. More specific/recent always overrides more general/older.
+
+---
+
 ## Known Constraints
 
 > Hard limits that shape every implementation decision. Non-negotiable unless explicitly changed.

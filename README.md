@@ -82,8 +82,7 @@ MACHINE's value is not creativity. It's reliability: correct, typed, tested, mai
 ├── MACHINE.md      — MACHINE identity, protocols, and contracts
 ├── MEMORY.md       — Persistent project state (shared, always current)
 ├── PLAN.md         — Current task goal and step checklist
-├── ACTION_*.md     — Atomic work units (dynamic set, created by JINX, deleted by MACHINE)
-└── README.md       — This file
+└── ACTION_*.md     — Atomic work units (dynamic set, created by JINX, deleted by MACHINE)
 ```
 
 ### What each file does
