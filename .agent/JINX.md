@@ -71,7 +71,13 @@ Structure:
 What exactly to do.
 
 ## Context
-What MACHINE must know (constraints, interfaces, affected files).
+What MACHINE must know (constraints, interfaces).
+
+## Dependencies
+Files and symbols this change touches. MACHINE must grep these before coding.
+If this change affects shared behavior (events, state, config, layout, APIs),
+list every file that depends on it.
+If unsure — write "TBD" and MACHINE will investigate.
 
 ## Done when
 Concrete completion condition. No ambiguity.
