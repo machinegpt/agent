@@ -1,98 +1,119 @@
 # PROTOTYPE — Bootstrap Protocol
 
-> Active initialization script. Executes exclusively when MEMORY.md is blank, uninitialized, or undergoes structural regeneration.
-> Operating constraints: The loader executes roles of JINX (for analysis, compilation, and dependency extraction) and MACHINE (for command-line search and execution auditing).
-> This is a ONE-TIME bootstrap routine. Upon successful integration of the dynamic properties across MEMORY.md, JINX.md, and MACHINE.md, this file is systematically destroyed.
+> Active initialization script. Runs exclusively when MEMORY.md is blank, uninitialized, or undergoes structural regeneration.
+> Operating roles: Executes as JINX (analysis, compilation, dependency mapping) and MACHINE (search, execution auditing).
+> This is a ONE-TIME bootstrap routine. Upon integration of project parameters in MEMORY.md, JINX.md, and MACHINE.md, this file is deleted.
 
 ---
 
 ## Technical Objective
 
-Establish project-specific context and dynamic protocol parameters by systematically parsing repository assets, compiler configurations, build toolchains, and file organization. Synthesize the extracted metadata and inject the parsed parameters directly into JINX.md, MACHINE.md, and MEMORY.md.
+Establish project-specific context and dynamic protocol parameters by parsing repository assets, compiler configurations, build toolchains, and file structures. Synthesize this metadata and inject the parsed parameters directly into JINX.md, MACHINE.md, and MEMORY.md.
 
 ---
 
 ## Phase 1: Context Isolation and Discovery
 
-Do not make structural assumptions. Scan files and configuration records across the workspace. Use specific file-viewing tools to inspect configurations instead of relying on generic folder queries.
+Inspect configurations instead of relying on broad folder queries.
 
 ### 1. Workspace Manifest and Dependency Scans
-Locate and parse configuration and manifest files (such as `package.json`, `tsconfig.json`, `gemini-api.config`, `cargo.toml`, `go.mod`, `pom.xml`, `build.gradle`, or `requirements.txt`):
-- **Core Engineering Stack**: Identify programming languages (TypeScript, JavaScript, Go, Rust, Python, Kotlin, C#) and active frameworks (React, Express, NestJS, Next.js, Android Compose, Django, Spring).
-- **Automation and Command Toolchains**: Parse package scripts, execution tasks, and makefiles to extract the exact commands required for **Typecheck / Compilation**, **Static Code Linting**, and **Test Execution**.
-- **System Configurations**: Read configuration rules (such as ESLint configs, Prettier layouts, compiler configurations, Vite servers, or Webpack setups).
+Locate and parse manifest files, dependency declarations, and configuration matrices in the workspace root:
+- **Core Engineering Stack**: Dynamically identify programming languages, build managers, compilers, and active frameworks native to this workspace.
+- **Automation Commands**: Parse package configurations, workspace manifests, makefiles, or execution scripts to extract exact commands for **Compilation**, **Linting**, and **Testing**.
+- **System Configurations**: Inspect formatter settings, compiler boundaries, workspace settings, and local dev execution parameters.
 
 ### 2. Codebase Pattern Mapping
-Analyze active source structures across directories (such as `/src`, `/app`, `/lib`, or `/components`):
-- **Ecosystem Modules Model**: Verify if the codebase runs on ES Modules (import/export syntax) or CommonJS (require rules).
-- **File Hierarchy and Naming Standards**: Deduce structural guidelines (such as kebab-case, PascalCase, or snake_case conventions) across directories, classes, testing suites, and configurations.
-- **Error Propagation Routing**: Map how exception handlers behave (such as Express middleware interceptors, global filters, try/catch blocks, or Option/Result types).
-- **Downstream Dependency Mapping**: Parse core entrypoints and calculate cross-dependencies to blueprint an initial structural map.
+Analyze the primary directories, modules, and file groupings:
+- **Ecosystem Model**: Determine the packaging format, module resolution protocols, or architectural bindings.
+- **Naming Standards**: Deduce casing and naming patterns (variables, folders, modules, procedures, test files) used in the workspace.
+- **Error Propagation**: Map standard runtime exception patterns, monads, or local recovery flows.
+- **Dependency Paths**: Map entry points, identify core system boundaries, and trace direct modular coupling.
+
+### 3. Editor Tool Diagnostic Trials
+Run minimal, safe test behaviors to analyze execution tooling limits:
+- **Search Latency & Grep Options**: Run a safe, scoped search to check path resolution, folder exclusions, and match formatting, calibrating SCOUT to avoid overhead.
+- **Edit Execution & Indent Mechanics**: Run a dry-run edit to verify substring matching, line ranges, or patch mechanical behaviors, profiling spacing and line-termination conventions.
+- **Redundant Validation Checks**: Test if mutations trigger excessive linter or compiler runs, configuring parameters to minimize latency.
+- **Model Attention Baseline**: Evaluate response delay on rich layouts, establishing strict boundaries.
+
+Discoveries must be compiled and injected into `MEMORY.md` under respective sections.
 
 ---
 
 ## Phase 2: Dynamic Protocol Synthesis
 
-Translate the extracted configuration data into tailored content definitions. If the project directory is a clean greenfield project lacking files, define the respective segments as `—` (New Greenfield Project) rather than leaving brackets or empty sections.
+Translate extracted config data into tailored properties. If the repository is a clean greenfield project lacking files, define targets as `—` (New Greenfield Project) rather than leaving template brackets.
 
-Synthesize three core data structures:
+Synthesize three core blocks:
 
-### Block A (Repository Profile and Settings)
-- **Metadata Index**: System name, logical purpose, stack definitions, entrypoint path, and project maturity rating (`early` if empty).
-- **Styling and Structural Conventions**: Clear rules for camelCase, kebab-case, PascalCase, and architecture bounds.
-- **System Command Variables**: Dedicated command strings to execute compilation checks, type auditing, linter assertions, and full-suite testing.
+### Block A (Project Settings and Manifest)
+- **Metadata Index**: System identifier name, core purpose, tech stack, entrypoint, and maturity.
+- **Conventions**: Naming rules (kebab-case, camelCase, PascalCase) and folder architecture bounds.
+- **Commands**: Explicit terminal execution strings for typechecks, linter checks, and test runner executions.
 
-### Block B (Module Boundaries and Invariants)
-- **Visual Dependency Graph**: A structured ASCII model illustrating interactions between code modules.
-- **Subsystem Invariants**: Concrete structural boundaries and rules to prevent layer breaches (such as prohibiting backend service calls in view templates).
+### Block B (Module Boundaries and Structures)
+- **Ascii Dependency Map**: Structured ASCII tree outlining module interactions and import directions.
+- **System Invariants**: Layer boundary rules (e.g., separating database entity imports from template-view loaders).
 
 ### Block C (Safety Profiles and Guardrails)
-- **System Safety Patterns**: Protocols built to avoid failure parameters native to the engineering stack (such as server hydration faults, database connection leaks, unhandled async faults, or thread pool exhaustion).
-- **Common Failure Modes**: Groupings of typical runtime blocks (such as missing env variables, path mapping failures, or port bind mismatches).
+- **Safety Patterns**: Protocols to avoid stack-native failures (e.g., hydration mismatches, DB leaks, unhandled rejections).
+- **Failure Patterns**: Common stack compilation blocks or environment exceptions (e.g., secret load failures, host bindings).
 
 ---
 
 ## Phase 3: Surgical Target Injections
 
-Inject the synthesized payload properties directly into JINX, MACHINE, and MEMORY files:
+Inject payloads directly into the agent runtime files:
 
-### 1. File Update: MEMORY.md
-- Overwrite the profiles, conventions, active environment variables, execution commands, and the visual dependency maps.
-- Ensure security and validation segments are fully defined.
+### 1. Update MEMORY.md
+- Overwrite profiles, environments, conventions, commands, and dependency graphs in respective sections.
 
-### 2. File Update: JINX.md
-- Target the precise injection markers:
+### 2. Update JINX.md
+- Target injection markers:
   ```
   <!-- PROTOTYPE:append JINX_PROJECT_INTELLIGENCE -->
   ...
   <!-- /PROTOTYPE:append -->
   ```
-- Replace the block (markers included) with **Block B (Module Boundaries and Invariants)**, supplying the real Dependency Graph and Architectural Invariants table.
+- Replace the block (including markers) with **Block B (Module Boundaries and Structures)**.
 
-### 3. File Update: MACHINE.md
-- Target the precise injection markers:
+### 3. Update MACHINE.md
+- Target injection markers:
   ```
   <!-- PROTOTYPE:append MACHINE_PROJECT_VALIDATION -->
   ...
   <!-- /PROTOTYPE:append -->
   ```
-- Replace the block (markers included) with **Block C (Safety Profiles and Guardrails)**, injecting the real Validation Commands, Safety Patterns, and Common Failure Modes.
+- Replace the block (including markers) with **Block C (Safety Profiles and Guardrails)**.
 
 ---
 
-## Phase 4: Self-Audit and System Purification
+## Phase 4: Active Refinement and Self-Mutation
 
-1.  **State Audit**: Re-read MEMORY.md, JINX.md, and MACHINE.md in full.
-2.  **Completeness Audit**: Confirm that absolutely zero unresolved parameters (such as `<compile/typecheck>` or `<lint>`) remain in active system templates. All segments must contain concrete data or `—` (for greenfield states).
-3.  **Active Purge**: Execute a complete deletion of this `PROTOTYPE.md` file using the `delete_file` tool to leave the repository pristine.
-4.  **Ready Signal**: Output a concise, highly structured 4-line notification detailing system status:
-    ```text
-    Project: <Detected Name> | Stack: <Framework list> | State: <Early/Active>
-    Validation: <Compile, Lint, Test commands configured>
-    Memory Index: Dependencies: <Count> | Invariants: <Count> | Safety Patterns: <Count>
-    Agent Protocol Status: JINX v2.1.0 ✓ | MACHINE v2.1.0 ✓ | MEMORY v2.1.0 ✓ | RULES v2.1.0 ✓
-    ```
+Before deleting setup assets, perform a self-directed optimization over the active `.agent/*` configuration frameworks:
+
+### 1. RULES.md Prompt Pruning
+- **Redundancy Pruning**: Match parsed editor capabilities. Strip verbose tool parameter explanations or coordinates handled natively by the IDE structure.
+- **Attention Focus Compression**: Condense constitutional rules in `RULES.md` into highly declarative, token-efficient imperative statements to avoid cognitive drift.
+
+### 2. Guarded Self-Mutation Mechanics
+When JINX, MACHINE, and SCOUT optimize or adapt their instructions over time, the system must assert compliance with these absolute boundaries:
+- **Core Loop Preservation**: You are strictly forbidden from disabling, softening, or omitting any of the 20 Absolute Prohibitions or the distinct roles of Planning (JINX), Execution (MACHINE), and Analysis (SCOUT).
+- **Structure and Version Validation**: Self-mutated files must maintain syntactical layout, proper markdown rendering, and the core version footer `*Version: v2.2.0*`.
+- **Factual Ledger Reconciliation**: Any optimization or tailored protocol update must log the driving rationale underneath the user-preferences matrix in `MEMORY.md`.
+
+### 3. Purification and Readiness Run
+1. **Self-Audit**: Re-read MEMORY.md, JINX.md, MACHINE.md, and SCOUT.md.
+2. **Completeness Verification**: Confirm zero unpopulated templates (such as `<compile/typecheck>`) remain. Early stack values must read `—`.
+3. **Execution Cleansing**: Delete this `PROTOTYPE.md` file using the `delete_file` tool.
+4. **Signal Ready state**: Output a concise, 4-line confirmation block:
+   ```text
+   Project: <Name> | Stack: <Frameworks> | State: <Maturity>
+   Validation: <Compile, Lint, Test commands mapped>
+   Memory Index: Dependencies: <Count> | Invariants: <Count> | Safety Patterns: <Count>
+   Agent Protocol Status: JINX v2.2.0 ✓ | MACHINE v2.2.0 ✓ | MEMORY v2.2.0 ✓ | RULES v2.2.0 [Self-Pruned] ✓ | SCOUT v2.2.0 ✓
+   ```
 
 ---
 *One-time bootstrap instruction sheet. Injects project parameters into active agent configuration.*
-*Version: v2.1.0*
+*Version: v2.2.0*

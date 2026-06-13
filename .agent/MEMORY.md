@@ -135,7 +135,7 @@ Functional and modular import interactions calculated during bootstrap:
 
 <!-- SECTION:versioning -->
 ### Architectural Engine Ledger
-- **Active Protocol Version**: v2.1.0
+- **Active Protocol Version**: v2.2.0
 - **Boot Validation Rule**: Cross-reference footers on system sessions bootstrap. Mark discrepancies in historical migration records beneath.
 <!-- /SECTION:versioning -->
 
@@ -156,4 +156,4 @@ Functional and modular import interactions calculated during bootstrap:
 *Updated by: <JINX | MACHINE>*
 
 ---
-*Version: v2.1.0*
+*Version: v2.2.0*
