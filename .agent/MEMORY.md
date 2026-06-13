@@ -3,7 +3,6 @@
 > Persistent codebase brain and structured historical state. Owned and integrated under a unified format.
 > Constitutional rules priority check: Directives inside RULES.md take absolute precedence over MEMORY.md. Always parse RULES.md first upon session start.
 > Transaction mechanics: Follow the strict state protocol: Read entire ledger -> revise all sections -> write entire file output. Partial string updates or segment omissions are prohibited.
-> Staleness limits: When file lines exceed 400 active records OR session count reaches 3 epochs, trigger context-tiering and compression to archives.
 
 ---
 
@@ -11,12 +10,6 @@
 
 <!-- SECTION:constraints -->
 ### Known Constraints
-
-**Hard Engine Parameters (Infrastructural and Sandboxed Constraints — Non-Negotiable):**
-- System Port Access: Port 3000 serves as the exclusive externally routed port. All dev servers and micro-routers must bind strictly to port 3000.
-- Hot Module Replacement (HMR): Disabled (`DISABLE_HMR=true`) on the development plane. Do not attempt HMR reconfiguration.
-- Direct-Load Credentials: direct module load execution of secrets is strictly prohibited. Use lazy runtime initialization blocks.
-- Client Secrets Leakage: Storing secret variables or keys on browser clients is forbidden. All third-party integrations must be proxied via specialized backend route paths (`/api/*`).
 
 **Architectural Parameters (Project Specific Constraints — Refined during development):**
 - —
@@ -135,7 +128,7 @@ Functional and modular import interactions calculated during bootstrap:
 
 <!-- SECTION:versioning -->
 ### Architectural Engine Ledger
-- **Active Protocol Version**: v2.2.0
+- **Active Protocol Version**: -
 - **Boot Validation Rule**: Cross-reference footers on system sessions bootstrap. Mark discrepancies in historical migration records beneath.
 <!-- /SECTION:versioning -->
 
@@ -154,6 +147,3 @@ Functional and modular import interactions calculated during bootstrap:
 ---
 *Last synchronized:*
 *Updated by: <JINX | MACHINE>*
-
----
-*Version: v2.2.0*

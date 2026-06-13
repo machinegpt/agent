@@ -45,4 +45,3 @@
 
 ---
 *Created by JINX*
-*Version: v2.2.0*
