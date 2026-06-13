@@ -340,12 +340,11 @@ Copy the complete `.agent/` folder into your root workspace directory:
 └── README.md
 ```
 
-### 2. Executing the Bootstrap Sequence
-Initiate setup by issuing this instruction within your development environment:
+### 2. Initialize (one message)
+Open your AI assistant (Claude, Cursor, Windsurf, Aider, or any CLI agent) and send exactly this once:
 ```text
-Initialize the machineGPT runtime. Execute .agent/PROTOTYPE.md now.
-Scan the repository structure, locate active toolchains, populate MEMORY.md, and inject project intelligence.
-Confirm details and delete PROTOTYPE.md upon successful setup.
+Read all files in .agent/. You are now operating as the machineGPT agent system.
+Scan this project. Write everything into .agent/MEMORY.md. Confirm when done.
 ```
 
 ### 3. Integrated Development Environment Profiles
