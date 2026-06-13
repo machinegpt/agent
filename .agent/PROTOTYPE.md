@@ -2,7 +2,7 @@
 
 > Active initialization script. Runs exclusively when MEMORY.md is blank, uninitialized, or undergoes structural regeneration.
 > Operating roles: Executes as JINX (analysis, compilation, dependency mapping) and MACHINE (search, execution auditing).
-> This is a ONE-TIME bootstrap routine. Upon integration of project parameters in MEMORY.md, SILCO.md, RULES.md JINX.md, and MACHINE.md, this file is deleted.
+> This is a ONE-TIME bootstrap routine. Upon integration of project parameters in MEMORY.md, SILCO.md, RULES.md, JINX.md, and MACHINE.md, this file is deleted.
 
 ---
 

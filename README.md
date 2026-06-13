@@ -21,7 +21,7 @@
    - [RULES.md: The Constitutional Authority and Constraint Classifier Matrix](#1-rulesmd-the-constitutional-authority-and-constraint-classifier-matrix)
    - [MEMORY.md: The Sovereign Persistent State, Known Constraints, and Failure Databases](#2-memorymd-the-sovereign-persistent-state-known-constraints-and-failure-databases)
    - [JINX.md: The Architect Reframing Engine, Tri-Approach Design, and Blast Radius Calculations](#3-jinxmd-the-architect-reframing-engine-tri-approach-design-and-blast-radius-calculations)
-   - [MACHINE.md: The Step Execution Loop, Pre-Mutation Checks, and the Breaker Test Mandate](#4-machinemd-the-5-step-execution-loop-pre-mutation-checks-and-the-breaker-test-mandate)
+   - [MACHINE.md: The Step Execution Loop, Pre-Mutation Checks, and the Breaker Test Mandate](#4-machinemd-the-step-execution-loop-pre-mutation-checks-and-the-breaker-test-mandate)
    - [PLAN.md and ACTIVE ACTION_*.md: Active Ephemeral Roadmaps, Transaction Sequence Node Maps](#5-planmd-and-active-action_md-active-ephemeral-roadmaps-transaction-sequence-node-maps)
    - [SILCO.md: The Intelligence Gathering and Codebase Exploration Engine](#6-silcomd-the-intelligence-gathering-and-codebase-exploration-engine)
    - [PROTOTYPE.md: The One-Time Discovery and Protocol Bootstrap Compilation](#7-prototypemd-the-one-time-discovery-and-protocol-bootstrap-compilation)
@@ -74,7 +74,7 @@ To enforce safety, machineGPT segregates operational privileges into coordinated
                                              ▼
  ┌────────────────────────────────────────────────────────────────────────────────────────┐
  │                                       RULES.md                                         │
- │   - Constitutes supreme authority.        - Enforces Absolute Prohibitions.         │
+ │   - Constitutes supreme authority.        - Enforces Absolute Prohibitions.            │
  │   - Dictates strict Gate Checks.          - Validates input patterns via Matrix.       │
  └───────────────────────────────────────────┬────────────────────────────────────────────┘
                                              │
