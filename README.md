@@ -62,7 +62,9 @@ When code compilation fails or static validation blocks deployment, a stateless 
 
 ---
 
-## The Multi-Role Check-and-Balance Cognitive PipelineTo enforce safety, machineGPT segregates operational privileges into coordinated, specialized role layers. This systemic division of concerns guarantees that planning operations do not directly touch production files, execution operations are preceded by exhaustive reconnaissance, and modifications are verified against active memory sync before validation:
+## The Multi-Role Check-and-Balance Cognitive Pipeline
+
+To enforce safety, machineGPT segregates operational privileges into coordinated, specialized role layers. This systemic division of concerns guarantees that planning operations do not directly touch production files, execution operations are preceded by exhaustive reconnaissance, and modifications are verified against active memory sync before validation:
 
 ```text
                                ┌──────────────────────────┐
@@ -101,25 +103,6 @@ When code compilation fails or static validation blocks deployment, a stateless 
  │                                  MACHINE — THE EXECUTOR                                │
  │   - Linear 5-Step Execution Loop.         - Enforces safety validations.               │
  │   - Author of Breaker Tests.              - Operates the Recovery Engine.              │
- │   - Records Debt logs & patterns.         - Cleans up spent ACTION files.              │
- └───────────────────────────────────────────┬────────────────────────────────────────────┘
-                                             │
-                       (Continuous updates of central memory ledger)
-                                             │
-                                             ▼
- ┌────────────────────────────────────────────────────────────────────────────────────────┐
- │                                       MEMORY.md                                        │
- │   - Stores constraints & tools.           - Manages the dependency graph.              │
- │   - Holds the Failure Trigger Library.    - Hot/Warm/Cold Tiering & Compressions.      │
- └────────────────────────────────────────────────────────────────────────────────────────┘
-```��──┐
- │                                       MEMORY.md                                        │
- │   - Stores constraints & tools.           - Manages the dependency graph.              │
- │   - Holds the Failure Trigger Library.    - Hot/Warm/Cold Tiering & Compressions.      │
- └────────────────────────────────────────────────────────────────────────────────────────┘
-                         │
- │   - Linear 5-Step Execution Loop.         - Enforces static type checking.             │
- │   - Author of Breaker Tests.              - Operates the 5-Tier Recovery Engine.       │
  │   - Records Debt logs & patterns.         - Cleans up spent ACTION files.              │
  └───────────────────────────────────────────┬────────────────────────────────────────────┘
                                              │

@@ -94,7 +94,7 @@ Prior to deleting temporary files (`PROTOTYPE.md`), the agent is authorized to s
 - **System Priority**: `RULES.md` > `ACTION_*.md` > `PLAN.md` > `MEMORY.md` > `SCOUT.md` > `USER_DIRECTIVE`.
 - If a user instruction conflicts with a prohibition in `RULES.md`, refuse, cite the rule, and propose a compliant alternative.
 - If code designs conflict with patterns in `MEMORY.md`, the documented memory invariants take precedence.
-- If active `ACTION_*.md` files declare overlapping targets, halt, quarantine the steps, and trigger a JINX refow.
+- If active `ACTION_*.md` files declare overlapping targets, halt, quarantine the steps, and trigger a JINX reflow.
 
 ---
 
