@@ -1,6 +1,6 @@
 <p align="center">
   <img src="https://img.shields.io/badge/machineGPT-Agent_System-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="machineGPT Badge" />
-  <img src="https://img.shields.io/badge/version-2.1.0-blue?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-3.0.0-blue?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/status-stable-brightgreen?style=for-the-badge" alt="Status Badge" />
 </p>
 
@@ -21,9 +21,9 @@
    - [RULES.md: The Constitutional Authority and Constraint Classifier Matrix](#1-rulesmd-the-constitutional-authority-and-constraint-classifier-matrix)
    - [MEMORY.md: The Sovereign Persistent State, Known Constraints, and Failure Databases](#2-memorymd-the-sovereign-persistent-state-known-constraints-and-failure-databases)
    - [JINX.md: The Architect Reframing Engine, Tri-Approach Design, and Blast Radius Calculations](#3-jinxmd-the-architect-reframing-engine-tri-approach-design-and-blast-radius-calculations)
-   - [MACHINE.md: The 5-Step Execution Loop, Pre-Mutation Checks, and the Breaker Test Mandate](#4-machinemd-the-5-step-execution-loop-pre-mutation-checks-and-the-breaker-test-mandate)
+   - [MACHINE.md: The Step Execution Loop, Pre-Mutation Checks, and the Breaker Test Mandate](#4-machinemd-the-5-step-execution-loop-pre-mutation-checks-and-the-breaker-test-mandate)
    - [PLAN.md and ACTIVE ACTION_*.md: Active Ephemeral Roadmaps, Transaction Sequence Node Maps](#5-planmd-and-active-action_md-active-ephemeral-roadmaps-transaction-sequence-node-maps)
-   - [SCOUT.md: The Intelligence Gathering and Codebase Exploration Engine](#6-scoutmd-the-intelligence-gathering-and-codebase-exploration-engine)
+   - [SILCO.md: The Intelligence Gathering and Codebase Exploration Engine](#6-silcomd-the-intelligence-gathering-and-codebase-exploration-engine)
    - [PROTOTYPE.md: The One-Time Discovery and Protocol Bootstrap Compilation](#7-prototypemd-the-one-time-discovery-and-protocol-bootstrap-compilation)
 5. [Cognitive Loops and Complex State-Transition Mapping](#cognitive-loops-and-complex-state-transition-mapping)
 6. [Anti-Slop Safeguards and Strict Scope Discipline Guidelines](#anti-slop-safeguards-and-strict-scope-discipline-guidelines)
@@ -38,7 +38,7 @@
 
 Modern software engineering utilizing Artificial Intelligence is fundamentally handicapped by the stateless paradigm of conversational interfaces. When developers interact with standard autocompletion extensions, online chat models, or generic workspace assistants, they are initiating dialogue with a transient, stateless intelligence. Every individual prompt sequence exists in isolation, blind to surrounding system invariants, historical negotiation logs, style-guide profiles, and localized framework quirks.
 
-The core thesis of machineGPT v2.2.0 is structural: the runtime instructions, operating boundaries, constraints, memory registries, and execution loops of the Artificial Intelligence assistant must be stored directly within the code repository itself under a dedicated `.agent/` directory.
+The core thesis of machineGPT v3.0.0 is structural: the runtime instructions, operating boundaries, constraints, memory registries, and execution loops of the Artificial Intelligence assistant must be stored directly within the code repository itself under a dedicated `.agent/` directory.
 
 By establishing the codebase as the single source of truth for both the production code and the operational mechanisms of the editing agent, machineGPT establishes a persistent codebase brain. The engineering engagement is converted from high-fatigue, error-prone natural language instructions into a highly disciplined, self-documenting, and self-hardening software delivery pipeline.
 
@@ -74,7 +74,7 @@ To enforce safety, machineGPT segregates operational privileges into coordinated
                                              ▼
  ┌────────────────────────────────────────────────────────────────────────────────────────┐
  │                                       RULES.md                                         │
- │   - Constitutes supreme authority.        - Enforces 20 Absolute Prohibitions.         │
+ │   - Constitutes supreme authority.        - Enforces Absolute Prohibitions.         │
  │   - Dictates strict Gate Checks.          - Validates input patterns via Matrix.       │
  └───────────────────────────────────────────┬────────────────────────────────────────────┘
                                              │
@@ -91,7 +91,7 @@ To enforce safety, machineGPT segregates operational privileges into coordinated
                                              │
                                              ▼
  ┌────────────────────────────────────────────────────────────────────────────────────────┐
- │                                  SCOUT — THE ANALYST                                   │
+ │                                  SILCO — THE ANALYST                                   │
  │   - Real-time Memory Consistency Audit.   - Downstream symbol dependency mapping.      │
  │   - Editor-specific search optimization.  - Outputs precise Discovery Reports.         │
  └───────────────────────────────────────────┬────────────────────────────────────────────┘
@@ -101,7 +101,7 @@ To enforce safety, machineGPT segregates operational privileges into coordinated
                                              ▼
  ┌────────────────────────────────────────────────────────────────────────────────────────┐
  │                                  MACHINE — THE EXECUTOR                                │
- │   - Linear 5-Step Execution Loop.         - Enforces safety validations.               │
+ │   - Linear Step Execution Loop.           - Enforces safety validations.               │
  │   - Author of Breaker Tests.              - Operates the Recovery Engine.              │
  │   - Records Debt logs & patterns.         - Cleans up spent ACTION files.              │
  └───────────────────────────────────────────┬────────────────────────────────────────────┘
@@ -126,26 +126,20 @@ The sovereign agent runtime operates inside the `.agent/` folder across several 
 RULES.md acts as the system supreme constitution. It overrides all user requests, adjacent agent protocols, and third-party files.
 
 #### Core Constitutional Prohibitions:
-1. Every new coding turn must load configuration files in this sequence: RULES.md -> MEMORY.md -> PLAN.md -> ACTIVE_ACTIONS.
+1. Every new coding turn must load configuration files.
 2. The agent is strictly forbidden from writing code without an active, JINX-approved `ACTION_*.md` task node file.
-3. Partial, incremental writes to files inside the `.agent/` directory are blocked. Modifying state requires the full sequence: Read -> Revise -> Write Entire File.
-4. Developers and agents must strictly align with design guidelines, error formats, and architectural invariants logged in MEMORY.md.
-5. Code edits must always be preceded by grep and static analysis tracing of the downstream environment.
-6. Validation checks (build compilation, static linter, typecheck, target tests) must execute immediately after every filesystem mutation.
-7. The logical scope of any task must align with the functional limits defined in the active transaction file and the user prompt.
-8. Swallowing execution errors is strictly forbidden. The system must use explicit logging markers or propagate up the call stack.
-9. Avoid writing basic comments detailing the "What" of literal code commands. Write exclusively "Why" comments documenting underlying architectural decisions.
-10. The use of hardcoded magic numbers, URLs, or environmental parameters in production is blocked. Bind variables to types or immutable configs.
-11. Asynchronous calculations must use explicit timeout barriers, capture exceptions, and define recovery pathways.
-12. Verify the impact on dependencies and update package manifests before importing new libraries.
-13. Security keys, tokens, client secrets, and environment parameters must never be committed to repository history.
-14. System chat responses must skip tedious line-by-line code walks. Describe tasks via technical trade-offs and structural bounds.
-15. Do not prompt the user for permission to perform routine background tasks such as searching files, running compilation, or linting.
-16. The implementation of unprompted features, secondary styling layouts, experimental views, or logging pages is prohibited.
-17. Do not touch, rename, or omit core agent files unless executing a complete, coordinated migration.
-18. Multi-file batched updates across disparate modules are banned. Modify one target component, validate compilation, and then advance.
-19. Respect layer decoupling rules (for example, never call backend service routes inside client rendering blocks).
-20. Transactions are declared complete only after post-execution compilation checks succeed and the active ACTION cards are deleted.
+3. Developers and agents must strictly align with design guidelines, error formats, and architectural invariants logged in MEMORY.md.
+4. Code edits must always be preceded by grep and static analysis tracing of the downstream environment.
+5. Validation checks (build compilation, static linter, typecheck, target tests) must execute immediately after every filesystem mutation.
+6. The logical scope of any task must align with the functional limits defined in the active transaction file and the user prompt.
+7. Swallowing execution errors is strictly forbidden. The system must use explicit logging markers or propagate up the call stack.
+8. Asynchronous calculations must use explicit timeout barriers, capture exceptions, and define recovery pathways.
+9. Verify the impact on dependencies and update package manifests before importing new libraries.
+10. System chat responses must skip tedious line-by-line code walks. Describe tasks via technical trade-offs and structural bounds.
+11. Do not prompt the user for permission to perform routine background tasks such as searching files, running compilation, or linting.
+12. The implementation of unprompted features, secondary styling layouts, experimental views, or logging pages is prohibited.
+13. Do not touch, rename, or omit core agent files unless executing a complete, coordinated migration.
+14. Transactions are declared complete only after post-execution compilation checks succeed and the active ACTION cards are deleted.
 
 RULES.md includes the constitutional Classifier Matrix used to inspect and route inputs:
 
@@ -164,22 +158,10 @@ RULES.md includes the constitutional Classifier Matrix used to inspect and route
 MEMORY.md maps the technical orientation, history, and development guidelines of the repository. It keeps the model aligned over long timelines.
 
 #### Core Modules:
-- **System Constraints Index**: Defines environmental constraints (such as port binds, execution limits, and secret proxies).
 - **Core Validation Commands**: Declares the terminal CLI syntax to test typecheck correctness, lint formatting, and regression tests.
 - **Failure Trigger Registry**: A technical database documenting compiler errors, version collisions, and exceptions, tracking occurrence frequency and exact surgical fixes.
 - **Technical Debt Ledger**: A permanent log tracking compromises made during rapid sprints, prioritizing debt into blocks (`P0`), degrades (`P1`), and styling concerns (`P2`).
 - **Module Dependency Graph**: A living text diagram mapping import boundaries and interactions across components.
-
-```text
-Dependency Map Structure Example:
-[UI Component Layer]  ──(imports)──>  [Client Controllers]
-         │                                    │
-    (denied import)                      (uses model types)
-         │                                    │
-         ▼                                    ▼
-[DB Schema Layer]     <──(queries)───  [API Route Layer]
-```
-
 ---
 
 ### 3. JINX.md: The Architect Reframing Engine, Tri-Approach Design, and Blast Radius Calculations
@@ -195,7 +177,7 @@ JINX.md defines JINX operational protocols. As the planning agent, JINX has zero
 
 ---
 
-### 4. MACHINE.md: The 5-Step Execution Loop, Pre-Mutation Checks, and the Breaker Test Mandate
+### 4. MACHINE.md: The Step Execution Loop, Pre-Mutation Checks, and the Breaker Test Mandate
 MACHINE.md drives the execution engine, focusing on technical precision, exact implementation, and verification.
 
 ```
@@ -251,19 +233,19 @@ These files represent active, ephemeral states that track progress through the c
 
 ---
 
-### 6. SCOUT.md: The Intelligence Gathering and Codebase Exploration Engine
+### 6. SILCO.md: The Intelligence Gathering and Codebase Exploration Engine
 Acts as the dedicated intelligence, pattern-matching, and search optimization agent. Invoked immediately prior to and during any active execution phase to map symbol coordinates, trace data stream propagation, verify dependency decoupling boundaries, and optimize query formats for the specific AI editor tools.
 
 ---
 
 ### 7. PROTOTYPE.md: The One-Time Discovery and Protocol Bootstrap Compilation
-A temporary bootstrap utility. On setup, it scans the repository, identifies dependencies and scripting configurations, populates placeholders inside MEMORY.md, calibrates SCOUT's search strategies based on host tools, and then deletes itself.
+A temporary bootstrap utility. On setup, it scans the repository, identifies dependencies and scripting configurations, populates placeholders inside MEMORY.md, calibrates SILCO's search strategies based on host tools, and then deletes itself.
 
 ---
 
 ## Cognitive Loops and Complex State-Transition Mapping
 
-The following state diagram details the operational lifecycle of a bugfix or feature task under the machineGPT v2.2.0 framework:
+The following state diagram details the operational lifecycle of a bugfix or feature task under the machineGPT v3.0.0 framework:
 
 ```
 [User issues bug report]
@@ -279,7 +261,7 @@ The following state diagram details the operational lifecycle of a bugfix or fea
  JINX writes PLAN.md & writes `ACTION_*.md`
           │
           ▼
- MACHINE boots ➔ Reads `ACTION_*.md` ➔ Invokes SCOUT to build Search Map
+ MACHINE boots ➔ Reads `ACTION_*.md` ➔ Invokes SILCO to build Search Map
           │
           ├──────────────────────────┐
           ▼ (INVESTIGATE)            ▼ (IMPLEMENT)
@@ -331,7 +313,7 @@ Copy the complete `.agent/` folder into your root workspace directory:
 │   ├── RULES.md
 │   ├── MEMORY.md
 │   ├── JINX.md
-│   ├── SCOUT.md
+│   ├── SILCO.md
 │   ├── MACHINE.md
 │   ├── PLAN.md
 │   └── PROTOTYPE.md
@@ -350,19 +332,19 @@ Scan this project. Write everything into .agent/MEMORY.md. Confirm when done.
 ### 3. Integrated Development Environment Profiles
 
 #### Cursor Integration:
-- Reference active rules files inside the prompt: `@.agent/RULES.md` and `@.agent/MEMORY.md`.
+- Reference active rules files inside the prompt: `@.agent/JINX.md` and `@.agent/MEMORY.md`.
 - Direct the planning tasks to JINX, then instruct the builder to execute: `MACHINE: Implement step 1.`.
 
 #### Windsurf and Cascade Integration:
-- The development engine automatically parses the local directory structure. The constraints inside `RULES.md` serve as active guardrails for all code modifications.
+- The development engine automatically parses the local directory structure. The constraints inside `JINX.md` serve as active guardrails for all code modifications.
 
 #### Claude Desktop and Custom Environments:
-- Save `.agent/RULES.md` directly into your customized system instruction sets. The model will refer back to these constitutional constraints on every interaction.
+- Save `.agent/JINX.md` directly into your customized system instruction sets. The model will refer back to these constitutional constraints on every interaction.
 
 #### Aider Command Line Interface:
 Add core state files directly into the active terminal context pool:
 ```bash
-/add .agent/RULES.md
+/add .agent/JINX.md
 /add .agent/MEMORY.md
 ```
 
@@ -407,22 +389,16 @@ If any specific error signature fails three times in succession, the system halt
 As codebases mature, size increases inside MEMORY.md, which can lead to higher token usage and model attention degradation. machineGPT implements an automated memory tiering and archive rotation protocol:
 
 ### The Memory Tiering Sequence:
-1. **Hot State** (`MEMORY.md`): Capped at **400 active lines**. This includes active constraints, system conventions, validation commands, recent development logs, and unresolved technical debt.
-2. **Warm State**: Stable reference profiles and module structures are compressed into minimalist, high-density key-value notation blocks:
+1. **Warm State**: Stable reference profiles and module structures are compressed into minimalist, high-density key-value notation blocks:
    `auth_engine: {adapter: local-jwt, schema: /db/users, coupling: low, status: stable}`.
-3. **Cold State**: Complete historical snapshots of memory are compiled and saved directly to timestamped archive files in `.agent/archives/*.md`.
+2. **Cold State**: Complete historical snapshots of memory are compiled and stored as timestamped archive files.
 
 JINX performs this archive process automatically when it detects that the memory file has crossed limits during boot validation.
 
----
-
-## System Versioning, Backward Compatibility, and Standard Licensing
-
-All components within `.agent/` include a version footer in their metadata: `*Version: v2.2.0*`. Version mismatches during session starts are flagged and written directly into the system migrations ledger of MEMORY.md.
 
 ---
 
 <p align="center">
-  <strong>machineGPT v2.2.0</strong> · The Sovereign Codebase Brain · Protocol Stable<br>
+  <strong>machineGPT v3.0.0</strong> · The Sovereign Codebase Brain · Protocol Stable<br>
   <em>Never explain your code conventions again. Secure your development runtimes.</em>
 </p>

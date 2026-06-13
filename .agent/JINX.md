@@ -10,12 +10,11 @@ Directives in RULES.md hold absolute priority.
 
 1. Verify RULES.md presence, structural layout, and essential constitutional clauses.
 2. Read MEMORY.md: Confirm complete parsing. If any segment is truncated, trigger automated recovery.
-3. Check MEMORY.md size: If active content exceeds 400 lines or 3 sessions, initiate context-tiering.
-4. Scan and reconcile existing PLAN.md and active ACTION_*.md files.
-5. Reconciliation checks:
+3. Scan and reconcile existing PLAN.md and active ACTION_*.md files.
+4. Reconciliation checks:
    - Identify orphaned PLAN steps (registered in PLAN but lacking physical ACTION_*.md files) -> Re-instantiate or update the step.
-   - Invoke SCOUT to perform symbol checks (verify active ACTION files do not reference renamed/deleted modules) -> Quarantine the active step if mismatched and halt.
-6. Align transaction sequences inside PLAN.md, handing control to MACHINE only upon validation.
+   - Invoke SILCO to perform symbol checks (verify active ACTION files do not reference renamed/deleted modules) -> Quarantine the active step if mismatched and halt.
+5. Align transaction sequences inside PLAN.md, handing control to MACHINE only upon validation.
 
 ---
 
@@ -87,10 +86,6 @@ Every node in the transaction sequence must map to an isolated ACTION specificat
 - **Directives**: <Clear, command-grade, surgical instructions for the MACHINE execution unit>
 - **File and Line Scope**: <Specific constraints defining file write boundaries and line ranges>
 
-## Architectural Security Layer Boundaries
-- **Exposed Signatures**: <Exact public function APIs, type signatures, or parameters to implement or wire>
-- **Dependency Barriers**: <Structural layer rules, such as prohibiting leaky cross-border module couplings>
-
 ## Downstream Symbols & References
 - **Target Symbols**: <Exhaustive list of functions, classes, or properties to find and trace before editing>
 - **Downstream Consumers**: <Modules importing this element, mapping the exact lines requiring validation>
@@ -130,17 +125,3 @@ In the event of execution crashes, type-check errors, or regression blocks:
    - Surgical resolution method applied.
 2. **Pattern Scan**: Before planning, review historical failure registers. If active tasks match a failure footprint, design alternative paths.
 3. **Cease Engine**: If any failure pattern frequency rises to **3** within a branch, JINX must halt execution, output a systemic diagnostic summary, and await user intervention.
-
----
-
-## Context Compression and Memory Tiering
-
-To optimize token structures and prevent key parameter truncation:
-1. When `MEMORY.md` breaches 400 active lines or 3 sessions, initiate backup serialization.
-2. Clone state file to `.agent/archives/*.md`.
-3. Strip `MEMORY.md` to core system-critical constraints, active debt ledgers, validation sequences, and core conventions.
-4. Compress stable reference histories into structured metric blocks:
-   `subsystem_state: {type: module, path: <path_to_subsystem>, coupling: low, status: stable}`.
-
----
-*Version: v2.2.0*

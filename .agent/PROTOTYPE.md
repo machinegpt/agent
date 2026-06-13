@@ -2,13 +2,13 @@
 
 > Active initialization script. Runs exclusively when MEMORY.md is blank, uninitialized, or undergoes structural regeneration.
 > Operating roles: Executes as JINX (analysis, compilation, dependency mapping) and MACHINE (search, execution auditing).
-> This is a ONE-TIME bootstrap routine. Upon integration of project parameters in MEMORY.md, JINX.md, and MACHINE.md, this file is deleted.
+> This is a ONE-TIME bootstrap routine. Upon integration of project parameters in MEMORY.md, SILCO.md, RULES.md JINX.md, and MACHINE.md, this file is deleted.
 
 ---
 
 ## Technical Objective
 
-Establish project-specific context and dynamic protocol parameters by parsing repository assets, compiler configurations, build toolchains, and file structures. Synthesize this metadata and inject the parsed parameters directly into JINX.md, MACHINE.md, and MEMORY.md.
+Establish project-specific context and dynamic protocol parameters by parsing repository assets, compiler configurations, build toolchains, and file structures. Synthesize this metadata and inject the parsed parameters directly into `JINX.md`, `MACHINE.md`, `SILCO.md`, `RULES.md` and `MEMORY.md`.
 
 ---
 
@@ -31,12 +31,12 @@ Analyze the primary directories, modules, and file groupings:
 
 ### 3. Editor Tool Diagnostic Trials
 Run minimal, safe test behaviors to analyze execution tooling limits:
-- **Search Latency & Grep Options**: Run a safe, scoped search to check path resolution, folder exclusions, and match formatting, calibrating SCOUT to avoid overhead.
+- **Search Latency & Grep Options**: Run a safe, scoped search to check path resolution, folder exclusions, and match formatting, calibrating SILCO to avoid overhead.
 - **Edit Execution & Indent Mechanics**: Run a dry-run edit to verify substring matching, line ranges, or patch mechanical behaviors, profiling spacing and line-termination conventions.
 - **Redundant Validation Checks**: Test if mutations trigger excessive linter or compiler runs, configuring parameters to minimize latency.
 - **Model Attention Baseline**: Evaluate response delay on rich layouts, establishing strict boundaries.
 
-Discoveries must be compiled and injected into `MEMORY.md` under respective sections.
+Discoveries must be compiled and injected into JINX.md, MACHINE.md, SILCO.md, RULES.md, and MEMORY.md, each under its respective section.
 
 ---
 
@@ -54,10 +54,6 @@ Synthesize three core blocks:
 ### Block B (Module Boundaries and Structures)
 - **Ascii Dependency Map**: Structured ASCII tree outlining module interactions and import directions.
 - **System Invariants**: Layer boundary rules (e.g., separating database entity imports from template-view loaders).
-
-### Block C (Safety Profiles and Guardrails)
-- **Safety Patterns**: Protocols to avoid stack-native failures (e.g., hydration mismatches, DB leaks, unhandled rejections).
-- **Failure Patterns**: Common stack compilation blocks or environment exceptions (e.g., secret load failures, host bindings).
 
 ---
 
@@ -84,7 +80,7 @@ Inject payloads directly into the agent runtime files:
   ...
   <!-- /PROTOTYPE:append -->
   ```
-- Replace the block (including markers) with **Block C (Safety Profiles and Guardrails)**.
+- etc. for the remaining files in `.agent/*`
 
 ---
 
@@ -97,23 +93,11 @@ Before deleting setup assets, perform a self-directed optimization over the acti
 - **Attention Focus Compression**: Condense constitutional rules in `RULES.md` into highly declarative, token-efficient imperative statements to avoid cognitive drift.
 
 ### 2. Guarded Self-Mutation Mechanics
-When JINX, MACHINE, and SCOUT optimize or adapt their instructions over time, the system must assert compliance with these absolute boundaries:
-- **Core Loop Preservation**: You are strictly forbidden from disabling, softening, or omitting any of the 20 Absolute Prohibitions or the distinct roles of Planning (JINX), Execution (MACHINE), and Analysis (SCOUT).
-- **Structure and Version Validation**: Self-mutated files must maintain syntactical layout, proper markdown rendering, and the core version footer `*Version: v2.2.0*`.
-- **Factual Ledger Reconciliation**: Any optimization or tailored protocol update must log the driving rationale underneath the user-preferences matrix in `MEMORY.md`.
+When JINX, MACHINE, and SILCO optimize or adapt their instructions over time, the system must assert compliance with these absolute boundaries:
+- **Core Loop Preservation**: You are strictly forbidden from disabling, softening, or omitting any of the defined Absolute Prohibitions or the distinct roles of Planning (JINX), Execution (MACHINE), and Analysis (SILCO).
+- **Factual Ledger Reconciliation**: Any optimization or tailored protocol update must log the driving rationale in `MEMORY.md`. Changes to `SILCO.md`, `RULES.md`, `JINX.md`, and `MACHINE.md` should be recorded only when those components are affected or require modification.
 
 ### 3. Purification and Readiness Run
-1. **Self-Audit**: Re-read MEMORY.md, JINX.md, MACHINE.md, and SCOUT.md.
-2. **Completeness Verification**: Confirm zero unpopulated templates (such as `<compile/typecheck>`) remain. Early stack values must read `—`.
-3. **Execution Cleansing**: Delete this `PROTOTYPE.md` file using the `delete_file` tool.
-4. **Signal Ready state**: Output a concise, 4-line confirmation block:
-   ```text
-   Project: <Name> | Stack: <Frameworks> | State: <Maturity>
-   Validation: <Compile, Lint, Test commands mapped>
-   Memory Index: Dependencies: <Count> | Invariants: <Count> | Safety Patterns: <Count>
-   Agent Protocol Status: JINX v2.2.0 ✓ | MACHINE v2.2.0 ✓ | MEMORY v2.2.0 ✓ | RULES v2.2.0 [Self-Pruned] ✓ | SCOUT v2.2.0 ✓
-   ```
-
----
-*One-time bootstrap instruction sheet. Injects project parameters into active agent configuration.*
-*Version: v2.2.0*
+1. **Self-Audit**: Re-read `MEMORY.md`, `JINX.md`, `MACHINE.md`, `RULES.md`, and `SILCO.md`.
+2. **Completeness Verification**: Confirm zero unpopulated templates remain.
+3. **Execution Cleansing**: Delete this `PROTOTYPE.md` file.
