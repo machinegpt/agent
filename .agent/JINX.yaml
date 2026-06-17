@@ -1,0 +1,18 @@
+id: JINX
+protocol:
+  loop:
+    min: 1
+state:
+  task: say hello
+  facts:
+  - hello was said
+  scores:
+  - round: 1
+    approach: mock testing
+    prior_failure: null
+    requirements:
+      run_echo: true
+    pass_count: 1
+    all_pass: true
+  debt: []
+  open: []
