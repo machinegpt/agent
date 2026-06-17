@@ -1,4 +1,4 @@
-# RULES — System Constitution and Behavioral Boundaries
+# RULES
 
 > Structural priority: Overrides all other instruction sets. Read first in every computational loop.
 > Enforces transactional safety, strict boundary isolation, and codebase hygiene.
@@ -58,17 +58,20 @@ System behavior is routed based on structural input patterns:
 ---
 
 ## Host Probing & Self-Mutation Optimization
+
 This field is automatically generated when `PROTOTYPE.md` is initialized, based on available tool capabilities.
 
 -
 
 ### 1. Diagnostic Testing Limits
+
 The system is authorized to run minimal, safe test routines (sandbox writes/reads, brief grep lookups, dry-run edits, linter speed audits) to document:
 - **Search Engine Traits**: How the tool platform parses grep patterns, handles excluded folders, and formats output.
 - **Edit Mechanics**: Whether the tool replaces line ranges, performs substring block matching, or applies unified diffs.
 - **Token Sensitivity**: Host context limits, noting if repetitive guidelines produce attention fragmentation.
 
 ### 2. Self-Pruning & Token Concentration Guidelines
+
 Agent is authorized to self-prune redundant rules or verbosity across `.agent/*.md` to prevent prompt bloat and keep the agent focused. **All self-mutations must conform to these constraints**:
 - **Prohibition 1: Preserving Invariant Architecture**: Mutative updates are strictly forbidden from disabling, softening, or omitting any of the Absolute Prohibitions or the core roles of JINX, MACHINE, or SILCO.
 - **Prohibition 2: Documenting Adaptations**: Every self-directed optimization or host-calibration must be logged inside `MEMORY.md` under the developer preference index, detailing what was optimized and why.

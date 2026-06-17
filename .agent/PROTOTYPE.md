@@ -1,4 +1,4 @@
-# PROTOTYPE — Bootstrap Protocol
+# PROTOTYPE
 
 > Active initialization script. Runs exclusively when MEMORY.md is blank, uninitialized, or undergoes structural regeneration.
 > Operating roles: Executes as JINX (analysis, compilation, dependency mapping) and MACHINE (search, execution auditing).
@@ -23,6 +23,7 @@ Locate and parse manifest files, dependency declarations, and configuration matr
 - **System Configurations**: Inspect formatter settings, compiler boundaries, workspace settings, and local dev execution parameters.
 
 ### 2. Codebase Pattern Mapping
+
 Analyze the primary directories, modules, and file groupings:
 - **Ecosystem Model**: Determine the packaging format, module resolution protocols, or architectural bindings.
 - **Naming Standards**: Deduce casing and naming patterns (variables, folders, modules, procedures, test files) used in the workspace.
@@ -30,6 +31,7 @@ Analyze the primary directories, modules, and file groupings:
 - **Dependency Paths**: Map entry points, identify core system boundaries, and trace direct modular coupling.
 
 ### 3. Editor Tool Diagnostic Trials
+
 Run minimal, safe test behaviors to analyze execution tooling limits:
 - **Search Latency & Grep Options**: Run a safe, scoped search to check path resolution, folder exclusions, and match formatting, calibrating SILCO to avoid overhead.
 - **Edit Execution & Indent Mechanics**: Run a dry-run edit to verify substring matching, line ranges, or patch mechanical behaviors, profiling spacing and line-termination conventions.
@@ -47,11 +49,13 @@ Translate extracted config data into tailored properties. If the repository is a
 Synthesize three core blocks:
 
 ### Block A (Project Settings and Manifest)
+
 - **Metadata Index**: System identifier name, core purpose, tech stack, entrypoint, and maturity.
 - **Conventions**: Naming rules (kebab-case, camelCase, PascalCase) and folder architecture bounds.
 - **Commands**: Explicit terminal execution strings for typechecks, linter checks, and test runner executions.
 
 ### Block B (Module Boundaries and Structures)
+
 - **Ascii Dependency Map**: Structured ASCII tree outlining module interactions and import directions.
 - **System Invariants**: Layer boundary rules (e.g., separating database entity imports from template-view loaders).
 
@@ -62,9 +66,11 @@ Synthesize three core blocks:
 Inject payloads directly into the agent runtime files:
 
 ### 1. Update MEMORY.md
+
 - Overwrite profiles, environments, conventions, commands, and dependency graphs in respective sections.
 
 ### 2. Update JINX.md
+
 - Target injection markers:
   ```
   <!-- PROTOTYPE:append JINX_PROJECT_INTELLIGENCE -->
@@ -74,6 +80,7 @@ Inject payloads directly into the agent runtime files:
 - Replace the block (including markers) with **Block B (Module Boundaries and Structures)**.
 
 ### 3. Update MACHINE.md
+
 - Target injection markers:
   ```
   <!-- PROTOTYPE:append MACHINE_PROJECT_VALIDATION -->
@@ -89,15 +96,18 @@ Inject payloads directly into the agent runtime files:
 Before deleting setup assets, perform a self-directed optimization over the active `.agent/*` configuration frameworks:
 
 ### 1. RULES.md Prompt Pruning
+
 - **Redundancy Pruning**: Match parsed editor capabilities. Strip verbose tool parameter explanations or coordinates handled natively by the IDE structure.
 - **Attention Focus Compression**: Condense constitutional rules in `RULES.md` into highly declarative, token-efficient imperative statements to avoid cognitive drift.
 
 ### 2. Guarded Self-Mutation Mechanics
+
 When JINX, MACHINE, and SILCO optimize or adapt their instructions over time, the system must assert compliance with these absolute boundaries:
 - **Core Loop Preservation**: You are strictly forbidden from disabling, softening, or omitting any of the defined Absolute Prohibitions or the distinct roles of Planning (JINX), Execution (MACHINE), and Analysis (SILCO).
 - **Factual Ledger Reconciliation**: Any optimization or tailored protocol update must log the driving rationale in `MEMORY.md`. Changes to `SILCO.md`, `RULES.md`, `JINX.md`, and `MACHINE.md` should be recorded only when those components are affected or require modification.
 
 ### 3. Purification and Readiness Run
+
 1. **Self-Audit**: Re-read `MEMORY.md`, `JINX.md`, `MACHINE.md`, `RULES.md`, and `SILCO.md`.
 2. **Completeness Verification**: Confirm zero unpopulated templates remain.
 3. **Execution Cleansing**: Delete this `PROTOTYPE.md` file.
