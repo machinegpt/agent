@@ -1,4 +1,4 @@
-# MEMORY — Persistent Architectural Ledger and System State
+# MEMORY
 
 > Persistent codebase brain and structured historical state. Owned and integrated under a unified format.
 > Constitutional rules priority check: Directives inside RULES.md take absolute precedence over MEMORY.md. Always parse RULES.md first upon session start.
@@ -128,22 +128,30 @@ Functional and modular import interactions calculated during bootstrap:
 
 <!-- SECTION:versioning -->
 ### Architectural Engine Ledger
+
 - **Active Protocol Version**: -
 - **Boot Validation Rule**: Cross-reference footers on system sessions bootstrap. Mark discrepancies in historical migration records beneath.
 <!-- /SECTION:versioning -->
 
 <!-- SECTION:migration-history -->
 ### Framework Migration History
+
 | Record Timestamp | Previous Version | Target Version | Applied Reflows & Optimizations |
 | :--- | :--- | :--- | :--- |
 <!-- /SECTION:migration-history -->
 
 <!-- SECTION:directory-index -->
 ### Active Subdirectory Index
+
 | Path Directory | Purpose / Domain Assignment | Last Touch Timestamp |
 | :--- | :--- | :--- |
 <!-- /SECTION:directory-index -->
 
----
-*Last synchronized:*
-*Updated by: <JINX | MACHINE>*
+# Shared Ledger
+
+The one file JINX and MACHINE both read and write.
+
+Holds whatever the task needs right now: active plan and success conditions, decisions and why, durable facts/constraints found along the way, open issues. No fixed sections — shape it to the task.
+
+Each write: read the whole file, reconcile, write the whole file back — never a partial patch.
+Each round: fold in what's new, drop what's resolved or stale. Keep it lean — only what the next round still needs.
