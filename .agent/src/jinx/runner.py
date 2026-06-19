@@ -637,6 +637,11 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
                 write_llm_request(history, rnd, tool_depth, min_rounds, task)
                 return
 
+        else:
+            logger.error("Unexpected waiting_for state metadata encountered: '%s'. Cleaning up IPC state and exiting.", waiting_for)
+            clean_up_ipc_files()
+            sys.exit(1)
+
 
 def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file") -> None:
     """Orchestrates the JINX execution loop across rounds either via JSON-RPC stream or File-based IPC.

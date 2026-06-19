@@ -557,11 +557,21 @@ The orchestration host manages:
 3. Executing JINX declarative directives for file read, write, and system command execution.
 4. Feeding results back into the JINX cognitive loop via the File-IPC mechanism.
 
-To enforce complete routing control, a declarative manifest `CLAUDE.md` is placed in the project root, instructing the Claude Code host to unconditionally redirect all incoming user transactions (including administrative queries and basic greetings) to the JINX runtime core.
+By default, `CLAUDE.md` is configured to respect user control and consent. Claude Code will not hijack normal conversations, greetings, or administrative queries. It will ONLY invoke the JINX specialized agent loop when you explicitly request it (e.g., using "run JINX", "start jinx", or a task prefix like "JINX: ..."). This ensures that you, the developer, retain complete control over when JINX is active.
 
-### Declarative Execution Authorization (Non-Interactive Sandbox Mode)
+### Security and Interactive Execution Authorization
 
-By default, the Claude Code CLI security model requires interactive operator confirmation for each file modification and Python command execution. To ensure an autonomous, non-blocking cognitive loop for JINX, the host's global security profile must be configured.
+By default, the Claude Code CLI security model requires interactive operator confirmation for each file modification and shell command execution. 
+
+> [!TIP]
+> **Recommended Secure Setup**: We strongly recommend keeping interactive prompts enabled. This ensures you explicitly review and approve every change JINX proposes before it is executed on your system.
+
+#### OPTIONAL: Non-Interactive Sandbox Mode (For isolated or trust-verified environments)
+
+If you prefer a fully automated, non-blocking cognitive loop (e.g., in a secure, isolated development container, sandboxed virtual machine, or CI/CD runner), you can opt to configure Claude's global settings to auto-approve file edits and specific shell patterns.
+
+> [!CAUTION]
+> **CRITICAL SECURITY WARNING**: Enabling `"defaultMode": "acceptEdits"` and auto-approving shell commands disables Claude Code's interactive confirmation prompts. This allows JINX (and any other agent running in this workspace) to read, write, and execute arbitrary commands on your host system without asking for confirmation. Do NOT configure these settings on your main host or in untrusted project environments.
 
 The global settings configuration file is located at the universal path mapped to the active user profile's home directory:
 * **Windows OS**: `%USERPROFILE%\.claude\settings.json` (resolves to `C:\Users\<Active_User_Account>\.claude\settings.json` dynamically)
@@ -597,7 +607,7 @@ Insert the following declarative permissions block into the JSON configuration f
 }
 ```
 
-#### Functional Purpose of Authorization Parameters:
+#### Functional Purpose of Authorization Parameters (for Non-Interactive Mode):
 | Parameter | Value Type | Architectural Description & Functional Purpose |
 | :--- | :--- | :--- |
 | `"defaultMode": "acceptEdits"` | `string` | Configures the host's file sandbox to auto-approve modifications. Allows JINX to perform non-blocking reads and writes of IPC files (`jinx_request.json`, `jinx_response.json`) and target software assets. |
@@ -609,11 +619,11 @@ Insert the following declarative permissions block into the JSON configuration f
    ```bash
    claude
    ```
-2. Dispatch your software task or conversational prompt directly into the session stream in natural language:
-   * *“Add division to calc.py and verify with unit tests”*
-   * *“Hello! Describe the current project status”*
+2. To start a task with JINX, prefix your request or ask Claude explicitly to run JINX:
+   * *“JINX: Add division to calc.py and verify with unit tests”*
+   * *“Please run JINX to implement division”*
 
-Following the declarative rule in `CLAUDE.md`, the host will bootstrap the JINX orchestrator via `python .agent/jinx.py "[request]"` and transparently coordinate the transactional rounds of the cognitive cycle until the task is fully verified end-to-end.
+Following the developer's explicit instruction, the host will bootstrap the JINX orchestrator via `python .agent/jinx.py "[request]"` and transparently coordinate the transactional rounds of the cognitive cycle until the task is fully verified end-to-end.
 
 
 
