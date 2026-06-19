@@ -61,8 +61,8 @@ def __getattr__(name: str) -> Any:
 class ScoreEntry(BaseModel):
     """Evaluation metrics and requirements score entry for a single strategy round."""
 
-    round: int
-    approach: str
+    round: int = 0
+    approach: str = "unspecified"
     prior_failure: Optional[str] = None
     requirements: Dict[str, bool] = Field(default_factory=dict)
     pass_count: int = 0

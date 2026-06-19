@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.1.3--enterprise-blue?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.1.4--enterprise-blue?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-red?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-brightgreen?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -310,13 +310,15 @@ state:
 The JINX runtime is comprised of the following Python components located in `.agent/` (with core package files under `.agent/src/jinx/`):
 
 * **`jinx.py`** (Entrypoint Bootstrapper, located in `.agent/`):
-  Serves as the execution entrypoint. It configures python path environments and delegates parameter passing to the command line parser.
+  Serves as the execution entrypoint. It configures python path environments and delegates parameter passing to the command line parser. Includes an automatic dependency bootstrapper that checks for and automatically installs version-bounded dependencies (`pydantic>=2.0.0`, `pyyaml>=6.0`) into the running environment if missing.
 * **`cli.py`** (Argument Parser):
   Parses inputs using Python's `argparse` library. Collects positional argument tasks and the optional `--min` loop iteration override before passing them to the orchestrator.
 * **`runner.py`** (Orchestrator):
   Implements the state machine. Contains the main loop logic, processes standard streams to exchange payloads with the host editor, parses structured model output matching `<state>...</state>` tags, and evaluates the criteria for exiting and deadlock detection.
 * **`state.py`** (Serialization Layer):
-  Handles the file operations for `JINX.yaml`. Utilizes Pydantic schemas (`ScoreEntry` and `StateBlock`) to validate inputs and merges state transitions.
+  Handles the file operations for the manifest state file `JINX.yaml`. It features:
+  * **Dynamic Path Resolution**: Implements a robust multi-tier lookup (via environment variable `JINX_PATH`, development path checks, or recursive upwards directory traversal from the current working directory) to guarantee JINX runs seamlessly both in local repositories and global pip-installed workspaces.
+  * **Hardened Models**: Utilizes Pydantic schemas (`ScoreEntry` and `StateBlock`) built with fault-tolerant defaults (e.g. `round=0`, `approach="unspecified"`) to prevent parsing exceptions or state drops even if the LLM omits non-essential metrics from its JSON output block.
 * **`tools.py`** (JSON-RPC Helper):
   Defines the available tool schemas (`bash_exec`, `file_read`, `file_write`) exported in LLM generation payloads and formats standardized stdout emissions.
 

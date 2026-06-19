@@ -22,11 +22,11 @@ def bootstrap_dependencies():
         print("[JINX BOOTSTRAP] Missing dependencies. Installing pydantic and pyyaml...", file=sys.stderr)
         import subprocess
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "pydantic", "pyyaml"], stdout=subprocess.DEVNULL)
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "pydantic>=2.0.0", "pyyaml>=6.0"], stdout=subprocess.DEVNULL)
             print("[JINX BOOTSTRAP] Dependencies installed successfully.", file=sys.stderr)
         except Exception as e:
             print(f"[JINX BOOTSTRAP ERROR] Automatic dependency installation failed: {e}", file=sys.stderr)
-            print("Please manually run: pip install pydantic pyyaml", file=sys.stderr)
+            print("Please manually run: pip install pydantic>=2.0.0 pyyaml>=6.0", file=sys.stderr)
             sys.exit(1)
 
 # Check and install dependencies before importing JINX package modules
