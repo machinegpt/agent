@@ -86,8 +86,7 @@ def write_jinx(data: Dict[str, Any]) -> None:
                 f,
                 allow_unicode=True,
                 default_flow_style=False,
-                sort_keys=False,
-                encoding="utf-8"
+                sort_keys=False
             )
     except OSError as e:
         logger.error("Failed to write JINX state serialization to %s: %s", JINX_PATH, e)
