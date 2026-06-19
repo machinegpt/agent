@@ -263,8 +263,12 @@ def run(task: str, min_override: Optional[int]) -> None:
     if not isinstance(jinx.get("state"), dict):
         jinx["state"] = {}
     jinx["state"]["task"] = task
-    jinx["state"]["facts"] = jinx["state"].get("facts", [])
+    jinx["state"]["facts"] = []
     jinx["state"]["scores"] = []
+    jinx["state"]["debt"] = []
+    jinx["state"]["open"] = []
+    jinx["state"]["exit_ready"] = False
+    jinx["state"]["deadlock"] = False
     write_jinx(jinx)
 
     # Resolve minimum rounds from override, JINX.yaml configuration, or fall back to 10

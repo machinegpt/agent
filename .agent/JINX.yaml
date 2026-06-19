@@ -1,9 +1,9 @@
 id: JINX
 protocol:
   loop:
-    min: 10
+    min: 1
 state:
-  task: "Awaiting assignment..."
+  task: Brand new task
   facts: []
   scores: []
   debt: []
