@@ -121,9 +121,8 @@ def check_exit(scores: List[Dict[str, Any]], min_rounds: int, rnd: int) -> bool:
     if rnd < min_rounds or len(scores) < 3:
         return False
 
-    # Find the top historical score entry to verify if "all_pass" was ever achieved
-    top = max(scores, key=lambda s: s.get("pass_count", 0), default={})
-    if not top.get("all_pass"):
+    # Verify if "all_pass" was ever achieved in any historical round
+    if not any(s.get("all_pass") for s in scores):
         return False
 
     # Performance comparison between the recent three rounds and the prior history
