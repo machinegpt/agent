@@ -1,404 +1,467 @@
-<p align="center">
-  <img src="https://img.shields.io/badge/machineGPT-Agent_System-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="machineGPT Badge" />
-  <img src="https://img.shields.io/badge/version-1.0.0-blue?style=for-the-badge" alt="Version Badge" />
-  <img src="https://img.shields.io/badge/status-stable-brightgreen?style=for-the-badge" alt="Status Badge" />
-</p>
-
-<h1 align="center">Agent — Sovereign Agent Framework</h1>
+[English](README.md) | [Русский](README_RU.md) | [中文](README_ZH.md)
 
 <p align="center">
-  <strong>A stateful, protocol-driven multi-role cognitive architecture designed for elite software engineering.</strong><br>
-  <em>Embed the sovereign runtime directly into your repository. Eliminate context decay, abstract leakage, and artificial slop once and for all.</em>
+  <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
+  <img src="https://img.shields.io/badge/version-1.1.5--enterprise-blue?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-red?style=for-the-badge" alt="Architecture Badge" />
+  <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-brightgreen?style=for-the-badge" alt="Integration Badge" />
 </p>
 
----
-
-## Table of Contents
-1. [The Philosophy and Core Manifesto of Stateful Repositories](#the-philosophy-and-core-manifesto-of-stateful-repositories)
-2. [Stateless AI Failure Modes and Pathologies: The Architectural Why](#stateless-ai-failure-modes-and-pathologies-the-architectural-why)
-3. [The Multi-Role Check-and-Balance Cognitive Pipeline](#the-multi-role-check-and-balance-cognitive-pipeline)
-4. [Exhaustive File Directory Specifications and Inner Schemas](#exhaustive-file-directory-specifications-and-inner-schemas)
-   - [RULES.md: The Constitutional Authority and Constraint Classifier Matrix](#1-rulesmd-the-constitutional-authority-and-constraint-classifier-matrix)
-   - [MEMORY.md: The Sovereign Persistent State, Known Constraints, and Failure Databases](#2-memorymd-the-sovereign-persistent-state-known-constraints-and-failure-databases)
-   - [JINX.md: The Architect Reframing Engine, Tri-Approach Design, and Blast Radius Calculations](#3-jinxmd-the-architect-reframing-engine-tri-approach-design-and-blast-radius-calculations)
-   - [MACHINE.md: The Step Execution Loop, Pre-Mutation Checks, and the Breaker Test Mandate](#4-machinemd-the-step-execution-loop-pre-mutation-checks-and-the-breaker-test-mandate)
-   - [PLAN.md and ACTIVE ACTION_*.md: Active Ephemeral Roadmaps, Transaction Sequence Node Maps](#5-planmd-and-active-action_md-active-ephemeral-roadmaps-transaction-sequence-node-maps)
-   - [SILCO.md: The Intelligence Gathering and Codebase Exploration Engine](#6-silcomd-the-intelligence-gathering-and-codebase-exploration-engine)
-   - [PROTOTYPE.md: The One-Time Discovery and Protocol Bootstrap Compilation](#7-prototypemd-the-one-time-discovery-and-protocol-bootstrap-compilation)
-5. [Cognitive Loops and Complex State-Transition Mapping](#cognitive-loops-and-complex-state-transition-mapping)
-6. [Anti-Slop Safeguards and Strict Scope Discipline Guidelines](#anti-slop-safeguards-and-strict-scope-discipline-guidelines)
-7. [Comprehensive Setup Protocols, IDE Settings, Client Integration, Environment Mapping](#comprehensive-setup-protocols-ide-settings-client-integration-environment-mapping)
-8. [Failure Recovery Framework: The Five-Tier Systematic Recovery Protocols](#failure-recovery-framework-the-five-tier-systematic-recovery-protocols)
-9. [Context Compression Mechanics, Memory Tiering, and Automatic Archive Rotations](#context-compression-mechanics-memory-tiering-and-automatic-archive-rotations)
-10. [System Versioning, Backward Compatibility, and Standard Licensing](#system-versioning-backward-compatibility-and-standard-licensing)
-
----
-
-## The Philosophy and Core Manifesto of Stateful Repositories
-
-Modern software engineering utilizing Artificial Intelligence is fundamentally handicapped by the stateless paradigm of conversational interfaces. When developers interact with standard autocompletion extensions, online chat models, or generic workspace assistants, they are initiating dialogue with a transient, stateless intelligence. Every individual prompt sequence exists in isolation, blind to surrounding system invariants, historical negotiation logs, style-guide profiles, and localized framework quirks.
-
-The core thesis of machineGPT v1.0.0 is structural: the runtime instructions, operating boundaries, constraints, memory registries, and execution loops of the Artificial Intelligence assistant must be stored directly within the code repository itself under a dedicated `.agent/` directory.
-
-By establishing the codebase as the single source of truth for both the production code and the operational mechanisms of the editing agent, machineGPT establishes a persistent codebase brain. The engineering engagement is converted from high-fatigue, error-prone natural language instructions into a highly disciplined, self-documenting, and self-hardening software delivery pipeline.
-
----
-
-## Stateless AI Failure Modes and Pathologies: The Architectural Why
-
-Traditional Large Language Model coding systems degrade software architectures over time because of several major structural flaws:
-
-### 1. Cumulative Cognitive Amnesia
-As development chats progress across days or sessions, critical context drifts outside the model attention window. The assistant loses track of database schemas, custom interface structures, naming conventions, and constraints. Developers must continuously paste context, re-explain constraints, and correct identical classes of syntax errors, resulting in high cognitive overhead.
-
-### 2. Gradual Architectural Drift
-Stateless systems calculate plausibility on a localized token level. They lack systemic orientation, leading to code that duplicates existing helper functions, bypasses established adapter boundaries, introduces circular module imports, or violates clean database separations.
-
-### 3. Cumulative Technical Debt and Technical Larping (AI Slop)
-Standard AI assistants tend to maximize visual output to demonstrate competence, often generating unsolicited features, writing mock tests, or embedding fake terminal states. This results in cosmetic noise, unrequested dependencies, and maintenance burden.
-
-### 4. Recursive Regression Loops and Blind Patching
-When code compilation fails or static validation blocks deployment, a stateless assistant defaults to superficial patches. It repeatedly applies the same syntactic modifications because it cannot remember the failure vectors identified during previous turns.
-
----
-
-## The Multi-Role Check-and-Balance Cognitive Pipeline
-
-To enforce safety, machineGPT segregates operational privileges into coordinated, specialized role layers. This systemic division of concerns guarantees that planning operations do not directly touch production files, execution operations are preceded by exhaustive reconnaissance, and modifications are verified against active memory sync before validation:
-
-```text
-                               ┌──────────────────────────┐
-                               │       USER REQUEST       │
-                               └─────────────┬────────────┘
-                                             │
-                                             ▼
- ┌────────────────────────────────────────────────────────────────────────────────────────┐
- │                                       RULES.md                                         │
- │   - Constitutes supreme authority.        - Enforces Absolute Prohibitions.            │
- │   - Dictates strict Gate Checks.          - Validates input patterns via Matrix.       │
- └───────────────────────────────────────────┬────────────────────────────────────────────┘
-                                             │
-                           (Protocol Cleared ➔ Handoff to JINX)
-                                             │
-                                             ▼
- ┌────────────────────────────────────────────────────────────────────────────────────────┐
- │                                  JINX — THE ARCHITECT                                  │
- │   - Zero raw code permissions.            - Thinks in terms of system boundaries.      │
- │   - Reframes tasks into Approaches A/B/C. - Serializes sprint roadmaps in PLAN.md.     │
- └───────────────────────────────────────────┬────────────────────────────────────────────┘
-                                             │
-                            (Step Activated ➔ Invokes Analyst Scan)
-                                             │
-                                             ▼
- ┌────────────────────────────────────────────────────────────────────────────────────────┐
- │                                  SILCO — THE ANALYST                                   │
- │   - Real-time Memory Consistency Audit.   - Downstream symbol dependency mapping.      │
- │   - Editor-specific search optimization.  - Outputs precise Discovery Reports.         │
- └───────────────────────────────────────────┬────────────────────────────────────────────┘
-                                             │
-                            (Discovery Mapped ➔ Handoff to MACHINE)
-                                             │
-                                             ▼
- ┌────────────────────────────────────────────────────────────────────────────────────────┐
- │                                  MACHINE — THE EXECUTOR                                │
- │   - Linear Step Execution Loop.           - Enforces safety validations.               │
- │   - Author of Breaker Tests.              - Operates the Recovery Engine.              │
- │   - Records Debt logs & patterns.         - Cleans up spent ACTION files.              │
- └───────────────────────────────────────────┬────────────────────────────────────────────┘
-                                             │
-                       (Continuous updates of central memory ledger)
-                                             │
-                                             ▼
- ┌────────────────────────────────────────────────────────────────────────────────────────┐
- │                                       MEMORY.md                                        │
- │   - Stores constraints & tools.           - Manages the dependency graph.              │
- │   - Holds the Failure Trigger Library.    - Hot/Warm/Cold Tiering & Compressions.      │
- └────────────────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Exhaustive File Directory Specifications and Inner Schemas
-
-The sovereign agent runtime operates inside the `.agent/` folder across several dedicated state and policy files.
-
-### 1. RULES.md: The Constitutional Authority and Constraint Classifier Matrix
-RULES.md acts as the system supreme constitution. It overrides all user requests, adjacent agent protocols, and third-party files.
-
-#### Core Constitutional Prohibitions:
-1. Every new coding turn must load configuration files.
-2. The agent is strictly forbidden from writing code without an active, JINX-approved `ACTION_*.md` task node file.
-3. Developers and agents must strictly align with design guidelines, error formats, and architectural invariants logged in MEMORY.md.
-4. Code edits must always be preceded by grep and static analysis tracing of the downstream environment.
-5. Validation checks (build compilation, static linter, typecheck, target tests) must execute immediately after every filesystem mutation.
-6. The logical scope of any task must align with the functional limits defined in the active transaction file and the user prompt.
-7. Swallowing execution errors is strictly forbidden. The system must use explicit logging markers or propagate up the call stack.
-8. Asynchronous calculations must use explicit timeout barriers, capture exceptions, and define recovery pathways.
-9. Verify the impact on dependencies and update package manifests before importing new libraries.
-10. System chat responses must skip tedious line-by-line code walks. Describe tasks via technical trade-offs and structural bounds.
-11. Do not prompt the user for permission to perform routine background tasks such as searching files, running compilation, or linting.
-12. The implementation of unprompted features, secondary styling layouts, experimental views, or logging pages is prohibited.
-13. Do not touch, rename, or omit core agent files unless executing a complete, coordinated migration.
-14. Transactions are declared complete only after post-execution compilation checks succeed and the active ACTION cards are deleted.
-
-RULES.md includes the constitutional Classifier Matrix used to inspect and route inputs:
-
-| Input Classification Pattern | Action Type Response | Handoff Target Path |
-| :--- | :--- | :--- |
-| Core Ambiguity or Conflict | Suspend processing, output core assumptions, and request clarification. | Interface Layer |
-| New Technical Objective | Run the Reframing Engine, map blast radius, create PLAN plus ACTIONs. | JINX.md to PLAN.md |
-| Active Transaction Command | Perform investigation, construct custom breaker test, run surgical edits. | MACHINE.md to Codebase |
-| Simple System Inquiry | Skip roadmaps. Locate symbol references and explain architectural design. | Output Stream |
-| Comprehensive Design Query | Route to JINX. Weigh alternatives, map trade-offs, draft brief. | Architectural Brief |
-| Emergency halt | Suspend execution immediately, serialize current progress, and save files. | State Registry |
-
----
-
-### 2. MEMORY.md: The Sovereign Persistent State, Known Constraints, and Failure Databases
-MEMORY.md maps the technical orientation, history, and development guidelines of the repository. It keeps the model aligned over long timelines.
-
-#### Core Modules:
-- **Core Validation Commands**: Declares the terminal CLI syntax to test typecheck correctness, lint formatting, and regression tests.
-- **Failure Trigger Registry**: A technical database documenting compiler errors, version collisions, and exceptions, tracking occurrence frequency and exact surgical fixes.
-- **Technical Debt Ledger**: A permanent log tracking compromises made during rapid sprints, prioritizing debt into blocks (`P0`), degrades (`P1`), and styling concerns (`P2`).
-- **Module Dependency Graph**: A living text diagram mapping import boundaries and interactions across components.
----
-
-### 3. JINX.md: The Architect Reframing Engine, Tri-Approach Design, and Blast Radius Calculations
-JINX.md defines JINX operational protocols. As the planning agent, JINX has zero access permissions to write or modify files within the `/src` directory.
-
-#### Operational Responsibilities:
-- **The Reframing Engine**: Translates user demands into exactly three distinct pathways:
-  1. *Approach A (Minimal Intervention)*: Achieves the objective with minimal code churn, prioritizing immediate system stability and low-overhead pathing.
-  2. *Approach B (Scalable Integration)*: Architected for long-term decoupled scaling, utilizing clear design abstractions, patterns of robust composition, and formal interfaces.
-  3. *Approach C (Alternative Router)*: An unconventional or divergent design approach (such as changing data structures, selecting streaming over batching, or caching rather than standard querying).
-- **Blast Radius Quantification**: Calculates structural impact, outlining modified lines, broken components, and dependencies requiring verification.
-- **Sprint Contract Serialization**: Builds the step-by-step logic map within PLAN.md and generates the active step card within ACTION_*.md files.
-
----
-
-### 4. MACHINE.md: The Step Execution Loop, Pre-Mutation Checks, and the Breaker Test Mandate
-MACHINE.md drives the execution engine, focusing on technical precision, exact implementation, and verification.
-
-```
-                    ┌─────────────────────────┐
-                    │ INVESTIGATE             │
-                    │ - Trace target symbols  │
-                    │ - Trace data stream     │
-                    └────────────┬────────────┘
-                                 │
-                                 ▼
-                    ┌─────────────────────────┐
-                    │ IMPLEMENT               │
-                    │ - Write surgical edits  │
-                    │ - Handle null pointers  │
-                    └────────────┬────────────┘
-                                 │
-                                 ▼
-                    ┌─────────────────────────┐
-                    │ VALIDATE                │
-                    │ - Compile, lint, test   │
-                    │ - Write a BREAKER test  │
-                    └────────────┬────────────┘
-                                 │
-                                 ▼
-                    ┌─────────────────────────┐
-                    │ RECORD                  │
-                    │ - Log active debt       │
-                    │ - Log failure triggers  │
-                    └────────────┬────────────┘
-                                 │
-                                 ▼
-                    ┌─────────────────────────┐
-                    │ CLEANUP                 │
-                    │ - Delete ACTION card    │
-                    │ - Update central PLAN   │
-                    └─────────────────────────┘
-```
-
-#### Core Operational Phases:
-1. **INVESTIGATE**: Search the workspace, locate symbols, trace components, and map pipelines before mutating code. Define Expected State, Actual State, and Divergence Point.
-2. **IMPLEMENT**: Author clean, typified, and decoupled logic. Ensure robust error handling and avoid broad, unvalidated edits.
-3. **VALIDATE**: Run project lint and build routines. Authors are *required* to write a custom Breaker Test containing edge-case inputs designed to challenge the new code boundaries. If the implementation handles these breaker inputs safely, validation is successful.
-4. **RECORD**: Update the roadmap, log new technical debt, and feed newly discovered failure vectors back to MEMORY.md.
-5. **CLEANUP**: Remove completed ACTION_*.md files and clean up temporary build assets.
-
----
-
-### 5. PLAN.md and ACTIVE ACTION_*.md: Active Ephemeral Roadmaps, Transaction Sequence Node Maps
-These files represent active, ephemeral states that track progress through the current sprint.
-
-- **PLAN.md**: Includes a measurable binary Definition of Done, the chosen architectural strategy, sequence node maps, and rollback commands for disaster recovery.
-- **ACTION_*.md**: Spec files built for consumption by MACHINE, outlining implementation directives, target symbols, exposed signatures, dependency barriers, and binary success assertions.
-
----
-
-### 6. SILCO.md: The Intelligence Gathering and Codebase Exploration Engine
-Acts as the dedicated intelligence, pattern-matching, and search optimization agent. Invoked immediately prior to and during any active execution phase to map symbol coordinates, trace data stream propagation, verify dependency decoupling boundaries, and optimize query formats for the specific AI editor tools.
-
----
-
-### 7. PROTOTYPE.md: The One-Time Discovery and Protocol Bootstrap Compilation
-A temporary bootstrap utility. On setup, it scans the repository, identifies dependencies and scripting configurations, populates placeholders inside MEMORY.md, calibrates SILCO's search strategies based on host tools, and then deletes itself.
-
----
-
-## Cognitive Loops and Complex State-Transition Mapping
-
-The following state diagram details the operational lifecycle of a bugfix or feature task under the machineGPT v1.0.0 framework:
-
-```
-[User issues bug report]
-          │
-          ▼
- RULES.md parsed ➔ Gate Checks pass ➔ Routed to JINX (Reframer Engine)
-          │
-          ├─► Approach A: Fix locally (evaluated)
-          ├─► Approach B: Decouple routing rules (selected)
-          └─► Approach C: Alternative bypass (evaluated)
-          │
-          ▼
- JINX writes PLAN.md & writes `ACTION_*.md`
-          │
-          ▼
- MACHINE boots ➔ Reads `ACTION_*.md` ➔ Invokes SILCO to build Search Map
-          │
-          ├──────────────────────────┐
-          ▼ (INVESTIGATE)            ▼ (IMPLEMENT)
- Inspects Discovery Report  Writes surgical fixes to routes
-          │                          │
-          ├──────────────────────────┘
-          ▼
- MACHINE (VALIDATE) ➔ Build/Lint runs
-          │
-          ├───► Compile OK? ──► YES ──► Write Breaker Test (edge-case parameters)
-          │                                  │
-          │                                  ├──► Breaker fails? ──► YES (Good) ──► Apply final guard rules
-          │                                  └──► Breaker passes? ─► NO ──► Re-write breaker assertions
-          │
-          └───► Compile FAIL? ─► Run Failure Recovery Framework ➔ Identify error class ➔ Document Pattern
-          │
-          ▼
- MACHINE (RECORD) ➔ Register technical debt P2 ➔ Update Memory with Route Conventions
-          │
-          ▼
- MACHINE (CLEANUP) ➔ Delete `ACTION_*.md` ➔ Update PLAN.md step 1 [Done]
-          │
-          ▼
- [Task successfully resolved. Complete Git status committed.]
-```
-
----
-
-## Anti-Slop Safeguards and Strict Scope Discipline Guidelines
-
-To preserve system aesthetics, machineGPT implements strict rules against superficial "AI Slop."
-
-Standard AI autocomplete extensions and models often generate unnecessary UI elements (such as fake server dashboards, decorative headers, system metrics trackers, or complex logs). These elements add visual clutter and increase maintenance burden.
-
-### Codebase Cleanliness Standards:
-1. **No Superficial Dashboards**: Implement only the core UI elements requested. Do not wrap simple layouts in mock status views or command logs.
-2. **Strict Scope Discipline**: High-quality UI comes from clean typography, balanced negative space, clear contrast, and deliberate alignment—not unprompted layout features.
-3. **Real Data Integrity**: If the user requests external integrations (for example, database storage, email notifications, or authentication profiles), build real, functioning integration pipelines. Do not use random static placeholders.
-
----
-
-## Comprehensive Setup Protocols, IDE Settings, Client Integration, Environment Mapping
-
-### 1. Repository Installation
-Copy the complete `.agent/` folder into your root workspace directory:
-```bash
-.
-├── .agent/
-│   ├── RULES.md
-│   ├── MEMORY.md
-│   ├── JINX.md
-│   ├── SILCO.md
-│   ├── MACHINE.md
-│   ├── PLAN.md
-│   └── PROTOTYPE.md
-├── src/
-├── package.json
-└── README.md
-```
-
-### 2. Initialize (one message)
-Open your AI assistant (Claude, Cursor, Windsurf, Aider, or any CLI agent) and send exactly this once:
-```text
-Read all files in .agent/. You are now operating as the machineGPT agent system.
-Scan this project. Write everything into .agent/MEMORY.md. Confirm when done.
-```
-
-### 3. Integrated Development Environment Profiles
-
-#### Cursor Integration:
-- Reference active rules files inside the prompt: `@.agent/JINX.md` and `@.agent/MEMORY.md`.
-- Direct the planning tasks to JINX, then instruct the builder to execute: `MACHINE: Implement step 1.`.
-
-#### Windsurf and Cascade Integration:
-- The development engine automatically parses the local directory structure. The constraints inside `JINX.md` serve as active guardrails for all code modifications.
-
-#### Claude Desktop and Custom Environments:
-- Save `.agent/JINX.md` directly into your customized system instruction sets. The model will refer back to these constitutional constraints on every interaction.
-
-#### Aider Command Line Interface:
-Add core state files directly into the active terminal context pool:
-```bash
-/add .agent/JINX.md
-/add .agent/MEMORY.md
-```
-
-### 4. AI-Editor Capability Probing, Self-Pruning, and Polymorphic Prompt Adaptation
-
-To maximize transactional efficiency, reduce context-window bloat, and eliminate unnecessary token costs, the architecture includes an active self-improvement and optimization pipeline:
-
-*   **Self-Testing Diagnostic Suite**: Upon setup or re-initialization, the agent runs a series of non-destructive probing tests in the workspace (such as executing dry-run matches, performing mock symbol searches, and evaluating tool response times).
-*   **Prompt Self-Pruning**: Before deleting the temporary setup assets (`PROTOTYPE.md`), the system executes a specialized, self-directed refinement filter. It identifies redundancies in `RULES.md` and deletes rules that are handled natively by the discovered editor shell (e.g., Cursor, Windsurf, Aider, or AI Studio). This ensures the constitution remains sharp, condensed, and highly focused.
-*   **Polymorphic Mutation**: For early-stage greenfield development where the final system scope is still undefined, JINX and MACHINE maintain a polymorphic, baseline frame of prompt instructions. As successful features and definitive styles are committed, the agents mutatively rewrite themselves—hardcoding successfully proven conventions and removing generic fallback mechanisms.
-
----
-
-## Failure Recovery Framework: The Five-Tier Systematic Recovery Protocols
-
-When compilation checks fail, or testing suites trigger errors during development, MACHINE bypasses quick-patching and classifies the problem into one of five categories:
-
-```
-                            TESTING / BUILD FAILURE
-                                       │
-                                       ▼
-                         Identify Failure Classification
-                                       │
- ┌──────────────────────┬──────────────┴───────┬──────────────────────┬──────────────────────┐
- │                      │                      │                      │                      │
- ▼                      ▼                      ▼                      ▼                      ▼
-Transient Error       Logic Error        Dependency Error      Ambiguity Error       Scope Out Error
-- Flaky network,      - Typo, logic bug,     - Missing packages,   - Conflicting steps,  - Action requires
-  or lock file block    regression.            import path error.    vague variables.      edits outside
-- Re-run once         - Diagnose trace,      - Scan project locks  - HALT. Do not write  Atoms.
-  after clearing.       register failure       and manifests.        code. Prompt user   - Revert changes
-                        pattern, fix.                                for details.        & ask JINX to
-                                                                                         replan.
-```
-
-If any specific error signature fails three times in succession, the system halts execution, logs a diagnostic report, and prompts the developer for guidance.
-
----
-
-## Context Compression Mechanics, Memory Tiering, and Automatic Archive Rotations
-
-As codebases mature, size increases inside MEMORY.md, which can lead to higher token usage and model attention degradation. machineGPT implements an automated memory tiering and archive rotation protocol:
-
-### The Memory Tiering Sequence:
-1. **Warm State**: Stable reference profiles and module structures are compressed into minimalist, high-density key-value notation blocks:
-   `auth_engine: {adapter: local-jwt, schema: /db/users, coupling: low, status: stable}`.
-2. **Cold State**: Complete historical snapshots of memory are compiled and stored as timestamped archive files.
-
-JINX performs this archive process automatically when it detects that the memory file has crossed limits during boot validation.
-
-
----
+<h1 align="center">JINX — Enterprise Sovereign Agent Runtime Specification</h1>
 
 <p align="center">
-  <strong>machineGPT v1.0.0</strong> · The Sovereign Codebase Brain · Protocol Stable<br>
-  <em>Never explain your code conventions again. Secure your development runtimes.</em>
+  <strong>Technical specification for JINX, an isolated, stateful, protocol-driven cognitive loop designed to operate as a child process inside software engineering host environments.</strong>
 </p>
+
+---
+
+## 1. Core Architecture & Inter-Process Communication (IPC)
+
+JINX is an agent runtime designed to run inside a host environment (such as an IDE, command-line editor, or corporate orchestrator). The JINX runtime operates without independent network access or direct external service integrations; all external model invocation, file manipulation, and console execution requests are delegated to the host editor via standard input (`stdin`) and standard output (`stdout`) using structured JSON-RPC communication payloads.
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
+graph LR
+    classDef sub fill:#161b22,stroke:#30363d,stroke-dasharray: 3 3,color:#c9d1d9;
+    classDef state fill:#1f242c,stroke:#388bfd,color:#58a6ff;
+    classDef yaml fill:#373320,stroke:#d4a72c,color:#f0e6c0;
+
+    subgraph JINX["JINX Agent Runtime (Subprocess)"]
+        direction TB
+        SM["State Machine & Protocol<br/>(runner.py)"]:::state
+        DB[("Local State<br/>(JINX.yaml)")]:::yaml
+        SM <-->|"Read / Write State"| DB
+    end
+    style JINX fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph HOST["Host IDE / CLI Editor (Parent Process)"]
+        direction TB
+        EXE["Tool Execution Engine<br/>(bash_exec / file ops)"]:::sub
+        LLM["External LLM Gateway<br/>(API keys & Inference)"]:::sub
+    end
+    style HOST fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    SM ==>|"stdout (JSON-RPC Payloads)<br/>jinx_command: llm_generate | bash_exec | file_read | file_write"| HOST
+    HOST ==>|"stdin (Response Payloads)<br/>{content: ...} | {output: ...}"| SM
+```
+
+### JSON-RPC Communication Specification
+
+When JINX performs an action, it emits a structured JSON object to `stdout` ended with a newline character. The host environment reads this object from the process stream, executes the requested action, and returns the response as a JSON string to JINX's `stdin` ended with a newline.
+
+#### 1. LLM Generation Request (`llm_generate`)
+JINX delegates LLM inference to the host.
+* **Payload emitted to `stdout`**:
+```json
+{
+  "jinx_command": "llm_generate",
+  "params": {
+    "system": "System instructions defining the cognitive boundaries.",
+    "messages": [{"role": "user", "content": "Round-specific context."}],
+    "tools": [
+      {
+        "name": "bash_exec",
+        "description": "Execute a bash or shell script in the environment.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "script": {"type": "string", "description": "The script to execute"}
+          },
+          "required": ["script"]
+        }
+      },
+      {
+        "name": "file_read",
+        "description": "Read the contents of a file.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "path": {"type": "string", "description": "Path to the file"}
+          },
+          "required": ["path"]
+        }
+      },
+      {
+        "name": "file_write",
+        "description": "Write or overwrite a file with new content.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "path": {"type": "string", "description": "Path to the file"},
+            "content": {"type": "string", "description": "The full content to write"}
+          },
+          "required": ["path", "content"]
+        }
+      }
+    ]
+  }
+}
+```
+* **Expected input response on `stdin`**:
+```json
+{
+  "content": [
+    {"type": "text", "text": "Analyzing codebase structure."},
+    {"type": "tool_use", "id": "call_123", "name": "bash_exec", "input": {"script": "pytest tests/test_core.py"}}
+  ]
+}
+```
+
+#### 2. Shell Command Execution (`bash_exec`)
+JINX requests the host to run a shell command.
+* **Payload emitted to `stdout`**:
+```json
+{
+  "jinx_command": "bash_exec",
+  "tool_use_id": "call_123",
+  "params": {
+    "script": "pytest tests/test_core.py"
+  }
+}
+```
+* **Expected input response on `stdin`**:
+```json
+{
+  "output": "=== 1 passed in 0.05s ==="
+}
+```
+
+#### 3. File Operations (`file_read` & `file_write`)
+JINX delegates file reads and writes to the host.
+* **Payload emitted to `stdout` (read)**:
+```json
+{
+  "jinx_command": "file_read",
+  "tool_use_id": "call_124",
+  "params": {
+    "path": "src/core.py"
+  }
+}
+```
+* **Expected input response on `stdin` (read)**:
+```json
+{
+  "content": "def run():\n    pass"
+}
+```
+
+* **Payload emitted to `stdout` (write)**:
+```json
+{
+  "jinx_command": "file_write",
+  "tool_use_id": "call_125",
+  "params": {
+    "path": "src/core.py",
+    "content": "def run():\n    return True"
+  }
+}
+```
+* **Expected input response on `stdin` (write)**:
+```json
+{
+  "output": "Success"
+}
+```
+
+---
+
+## 2. Cognitive Loop Execution Protocol
+
+The JINX runtime is governed by an iterative loop executed in discrete phases. Standard state properties are preserved across iterations via `JINX.yaml`.
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
+graph LR
+    classDef sub fill:#161b22,stroke:#30363d,stroke-dasharray: 3 3,color:#c9d1d9;
+    classDef fail fill:#442326,stroke:#f85149,color:#ff7b72;
+    classDef pass fill:#1f3b23,stroke:#56d364,color:#85e89d;
+
+    subgraph P1["Phase I: Scope Intake"]
+        A["1. Context & Boundary Parsing"]:::sub --> B["2. Write Scope to state.facts"]:::sub
+    end
+    style P1 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph P2["Phase II: Hypothesis Generation"]
+        C["3. Register Failure History"]:::sub --> D["4. Evaluate Divergent Strategies"]:::sub
+    end
+    style P2 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph P3["Phase III: Breaker Testing"]
+        E["5. Run Boundary Verification"]:::sub --> F["6. Populate requirements Schema"]:::sub
+    end
+    style P3 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph P4["Phase IV: Evaluation & Exit"]
+        G{"7. Check Loop Convergence"}:::sub
+        G -->|All Pass| H["Success Exit"]:::pass
+        G -->|Failed Approaches >= 3| I["Deadlock Trigger"]:::fail
+        G -->|Rounds >= 40| J["Hard Cap Trigger"]:::fail
+    end
+    style P4 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    B --> C
+    D --> E
+    F --> G
+```
+
+### Execution Phases
+
+1. **Phase I: Scope Definition & Intake**
+   Before starting file mutations, JINX parses the workspace environment and sets the boundaries of the target task. The validated context is written directly to the `state.facts` list in the configuration manifest `JINX.yaml`.
+
+2. **Phase II: Hypothesis Generation & Divergence**
+   If a previous round fails, JINX registers the failure reasons under `state.scores`. In subsequent rounds, JINX evaluates alternative strategies. Repeating identical approaches without modification is blocked by protocol rules.
+
+3. **Phase III: Boundary Verification (Breaker Testing)**
+   For each strategy, a boundary-testing step ("Breaker Test") must be run. The implementation must be verified against edge cases, exceptional inputs, or performance bounds. The scoring criteria are structured in a binary schema (true/false) under `state.scores[].requirements`.
+
+4. **Phase IV: Multi-Criteria Convergence & Exit**
+   After each round, JINX updates the metrics and checks for exit or deadlock conditions:
+   * **Exit Condition**: Checked when `round` is greater than or equal to the minimum rounds constraint (`loop.min`) and `exit_ready` is marked as true. Exit occurs if the latest implementation satisfies all core requirements, and no higher score is achieved over the last 3 consecutive rounds.
+   * **Deadlock Condition**: Initiated if the round count is greater than or equal to `loop.min` and the same requirements fail on 3 separate approaches. Or if the state is explicitly marked as `deadlock` by the runtime.
+   * **Hard Cap**: The execution loop is strictly capped at 40 rounds (`HARD_CAP`), forcing a shutdown to prevent token over-consumption.
+
+### Cognitive Loop Control Flow
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "actorBkg": "#21262d", "actorBorder": "#8b949e", "actorTextColor": "#e6edf3", "actorLineColor": "#8b949e", "signalColor": "#8b949e", "signalTextColor": "#e6edf3", "noteBkgColor": "#373320", "noteBorderColor": "#d4a72c", "noteTextColor": "#f0e6c0", "labelBoxBkgColor": "#21262d", "labelBoxBorderColor": "#8b949e", "labelTextColor": "#e6edf3", "loopTextColor": "#e6edf3", "activationBkgColor": "#30363d", "activationBorderColor": "#8b949e"}}}%%
+flowchart TD
+    A([jinx-cli / jinx.py]) --> B[cli.py: parse args]
+    B --> C[runner.py: run]
+    C --> D[state.py: read_jinx]
+    D -->|env / dev path / CWD traversal| E[(JINX.yaml)]
+    C --> F{while rnd < HARD_CAP}
+    F -->|reset history| G[Build user msg from state_dump]
+    G --> H[request_llm_from_editor via JSON-RPC]
+    H --> I{tool_use blocks?}
+    I -->|yes| J[get_tool_result_from_editor]
+    J --> K{tool_depth >= TOOL_DEPTH_CAP?}
+    K -->|yes| L[Recovery call, tools=empty, break]
+    K -->|no| H
+    I -->|no| M[parse_state_block - last match]
+    L --> M
+    M --> N[merge_state via Pydantic validate]
+    N --> O[write_jinx to JINX.yaml]
+    O --> E
+    N --> P{exit_ready and check_exit?}
+    P -->|yes| Q([Clean exit 0])
+    N --> S{deadlock or check_deadlock?}
+    S -->|yes| T([Exit 0 deadlock])
+    F -->|exhausted| U([sys.exit 2])
+```
+
+### Cognitive Process Sequence Flow
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "actorBkg": "#21262d", "actorBorder": "#8b949e", "actorTextColor": "#e6edf3", "actorLineColor": "#8b949e", "signalColor": "#8b949e", "signalTextColor": "#e6edf3", "noteBkgColor": "#373320", "noteBorderColor": "#d4a72c", "noteTextColor": "#f0e6c0", "labelBoxBkgColor": "#21262d", "labelBoxBorderColor": "#8b949e", "labelTextColor": "#e6edf3", "loopTextColor": "#e6edf3", "activationBkgColor": "#30363d", "activationBorderColor": "#8b949e"}}}%%
+sequenceDiagram
+    participant CLI as cli.py (main)
+    participant Runner as runner.py (run)
+    participant State as state.py
+    participant Host as Host Editor (stdin/stdout)
+
+    CLI->>Runner: run(task, min_override)
+    Runner->>State: read_jinx()
+    State-->>Runner: jinx dict
+    Runner->>State: write_jinx(jinx) [init state]
+
+    loop "Outer: rnd < HARD_CAP (40)"
+        Runner->>State: read_jinx()
+        State-->>Runner: current state
+
+        loop "Inner: tool_depth < TOOL_DEPTH_CAP (20)"
+            Runner->>Host: stdout JSON-RPC (llm_generate)
+            Host-->>Runner: stdin content_blocks
+            alt If tool_use detected
+                loop For each tool_use
+                    Runner->>Host: stdout JSON-RPC (tool call)
+                    Host-->>Runner: stdin tool result
+                end
+                alt If tool_depth >= TOOL_DEPTH_CAP (20)
+                    Note over Runner: Depth Cap Fired (Safety Recovery)
+                    Runner->>Host: stdout JSON-RPC (llm_generate with tools=[])
+                    Host-->>Runner: stdin content_blocks + state block
+                    Note over Runner: Break Inner Loop
+                end
+            else No tool_use
+                Note over Runner: Break Inner Loop
+            end
+        end
+
+        Runner->>Runner: parse_state_block (last match)
+        Runner->>State: merge_state + write_jinx
+        alt exit_ready + check_exit
+            Runner->>CLI: return (success)
+        else deadlock detected or deadlock state
+            Runner->>CLI: return (deadlock)
+        else HARD_CAP exhausted
+            Runner->>CLI: sys.exit(2)
+        end
+    end
+```
+
+---
+
+## 3. State Manifest Specification (`JINX.yaml`)
+
+All cognitive progress, failure logs, tasks, and loop settings are serialized to `JINX.yaml`, located in the isolated `.agent` workspace folder. This structure keeps state metadata out of the project repository root.
+
+```yaml
+id: JINX
+protocol:
+  loop:
+    min: 10
+
+state:
+  task: "PyJWT RS256 token signing implementation"
+  facts:
+    - "Workspace root verified"
+    - "Configuration schema loaded"
+  scores:
+    - round: 1
+      approach: "PyJWT RS256 token signing implementation"
+      prior_failure: null
+      requirements:
+        compile: true
+        unit_tests: false
+      pass_count: 1
+      all_pass: false
+  debt: []
+  open: []
+  exit_ready: false
+  deadlock: false
+```
+
+---
+
+## 4. Codebase Component Inventory
+
+The JINX runtime is comprised of the following Python components located in `.agent/` (with core package files under `.agent/src/jinx/`):
+
+* **`jinx.py`** (Entrypoint Bootstrapper, located in `.agent/`):
+  Serves as the execution entrypoint. It configures python path environments and delegates parameter passing to the command line parser. Includes an automatic dependency bootstrapper that checks for and automatically installs version-bounded dependencies (`pydantic>=2.0.0`, `pyyaml>=6.0`) into the running environment if missing.
+* **`cli.py`** (Argument Parser):
+  Parses inputs using Python's `argparse` library. Collects positional argument tasks and the optional `--min` loop iteration override before passing them to the orchestrator.
+* **`runner.py`** (Orchestrator):
+  Implements the state machine. Contains the main loop logic, processes standard streams to exchange payloads with the host editor, parses structured model output matching `<state>...</state>` tags, and evaluates the criteria for exiting and deadlock detection.
+* **`state.py`** (Serialization Layer):
+  Handles the file operations for the manifest state file `JINX.yaml`. It features:
+  * **Dynamic Path Resolution**: Implements a robust multi-tier lookup (via environment variable `JINX_PATH`, development path checks, or recursive upwards directory traversal from the current working directory) to guarantee JINX runs seamlessly both in local repositories and global pip-installed workspaces.
+  * **Hardened Models**: Utilizes Pydantic schemas (`ScoreEntry` and `StateBlock`) built with fault-tolerant defaults (e.g. `round=0`, `approach="unspecified"`) to prevent parsing exceptions or state drops even if the LLM omits non-essential metrics from its JSON output block.
+* **`tools.py`** (JSON-RPC Helper):
+  Defines the available tool schemas (`bash_exec`, `file_read`, `file_write`) exported in LLM generation payloads and formats standardized stdout emissions.
+
+---
+
+## 5. Host Integration & Subprocess Implementation Guide
+
+To integrate JINX, the host editor or corporate orchestrator must spawn the JINX execution command as a child process.
+
+### Spawning Specification
+* **Command**: `python .agent/jinx.py "[TASK_DESCRIPTION]"`
+* **Process Configuration**: Set `stdout` and `stdin` to `subprocess.PIPE`. Enable text mode (`text=True`) and ensure autoflushing is active.
+* **Loop Mechanics**: Parse each line of `stdout` as a JSON object, route the command according to the `jinx_command` property, run the underlying system logic, and write the output back to `stdin` as a single-line JSON string.
+
+### Host Integration Python Example
+
+The following script implements the host-side IPC execution protocol:
+
+```python
+import subprocess
+import json
+
+def execute_jinx(task_description: str):
+    # Spawn JINX as a child process
+    process = subprocess.Popen(
+        ["python", ".agent/jinx.py", task_description],
+        stdout=subprocess.PIPE,
+        stdin=subprocess.PIPE,
+        text=True
+    )
+
+    try:
+        # Stream output line-by-line from the JINX child process
+        for line in process.stdout:
+            payload = json.loads(line.strip())
+            command = payload.get("jinx_command")
+            tool_use_id = payload.get("tool_use_id")
+            params = payload.get("params", {})
+
+            if command == "llm_generate":
+                # Execute corporate LLM generation logic
+                # ...
+                ai_output = [
+                    {"type": "text", "text": "Generated text step."},
+                    {"type": "tool_use", "id": "call_01", "name": "bash_exec", "input": {"script": "pytest"}}
+                ]
+                # Return response JSON back to JINX stdin
+                process.stdin.write(json.dumps({"content": ai_output}) + "\n")
+                process.stdin.flush()
+
+            elif command == "bash_exec":
+                # Run the command on the host environment
+                script = params.get("script")
+                # ...
+                execution_result = "Test suite passed"
+                # Return execution response JSON back to JINX stdin
+                process.stdin.write(json.dumps({"output": execution_result}) + "\n")
+                process.stdin.flush()
+
+            elif command == "file_read":
+                # Read local workspace file
+                filepath = params.get("path")
+                # ...
+                file_content = "File content mock"
+                process.stdin.write(json.dumps({"content": file_content}) + "\n")
+                process.stdin.flush()
+
+            elif command == "file_write":
+                # Write to local workspace file
+                filepath = params.get("path")
+                content = params.get("content")
+                # ...
+                process.stdin.write(json.dumps({"output": "Success"}) + "\n")
+                process.stdin.flush()
+
+    except Exception as e:
+        process.kill()
+        raise e
+
+    process.wait()
+    return process.returncode
+
+if __name__ == "__main__":
+    exit_code = execute_jinx("Implement corporate schema update")
+    print(f"JINX process terminated with code: {exit_code}")
+```
+
+---
+
+## 6. Post-Integration Developer Workflow
+
+Once JINX is successfully launched and the IPC connection is managed by the host editor, the developer's interaction with the firmware operates on an audit-and-intervention model.
+
+### Real-Time Diagnostics
+During the execution of JINX, the developer does not need to actively manage standard streams. These are processed entirely by the background IDE wrapper. Instead, the developer monitors progress through the following channels:
+1. **State Manifest Auditing**:
+   Open `.agent/JINX.yaml` in the editor. This file is updated automatically at the completion of every round. The `state` section acts as a live dashboard:
+   * **`facts`**: Tracks all extracted domain properties currently assumed by the agent.
+   * **`scores`**: Records the metrics and outcomes of each approach round-by-round, displaying which requirements have passed and what failed.
+   * **`debt`**: Lists any trade-offs or shortcuts documented by the agent.
+2. **Standard Output Logs**:
+   The host wrapper captures JINX's stderr or redirects LLM thought blocks (`{"type": "text"}`) into a native UI tab. This allows real-time viewing of the agent's current cognitive focus.
+
+### Handling Pause and Deadlock Interventions
+JINX is designed to automatically halt execution when specific protocol limits are hit, requesting human oversight before proceeding.
+* **Deadlock Triggering**:
+  If the same requirement fails on 3 distinct strategies, the state changes to `deadlock: true`, and the child process exits with an error status or pauses.
+* **Manual Correction Workflow**:
+  1. The developer inspects `.agent/JINX.yaml` to identify the failing requirement and approach history.
+  2. The developer resolves the blocking issue in the code manually or adjusts the environmental constraints (e.g., correcting database seeds or test environment setups).
+  3. The developer can manually modify the `state` properties in `JINX.yaml` to update the facts, debt, or open tasks.
+  4. The developer restarts the JINX execution from the CLI via the host command. JINX reads the existing `JINX.yaml` manifest, identifies the historical rounds, and continues the cognitive loop using the updated context.
+
+### Session Verification and Commit
+Once the cognitive loop satisfies all exiting criteria, JINX exits cleanly with code `0`.
+1. **Review Diff**: The developer inspects the file modifications generated in the repository workspace.
+2. **Clear/Archive State**: The developer can safely commit the modified source files. The state metadata inside `.agent/JINX.yaml` remains saved in the isolated workspace directory, ready to serve as context for the next requested task.

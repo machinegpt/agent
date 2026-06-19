@@ -1,0 +1,40 @@
+# ==============================================================================
+# JINX Project Git Ignore Configurations
+# ==============================================================================
+
+# --- Python Cache & Bytecode ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- Virtual Environments ---
+.venv/
+venv/
+env/
+ENV/
+*.bak/
+
+# --- Build & Distribution (setuptools) ---
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Environment Configuration & Secrets ---
+.env
+.env.local
+.env.*.local
+
+# --- IDE & Editor Artifacts ---
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# --- OS System Files ---
+.DS_Store
+Thumbs.db

@@ -1,0 +1,12 @@
+id: JINX
+protocol:
+  loop:
+    min: 1
+state:
+  task: Brand new task
+  facts: []
+  scores: []
+  debt: []
+  open: []
+  exit_ready: false
+  deadlock: false
