@@ -20,7 +20,7 @@ SYSTEM_PROMPT: str = """You are JINX, a single-agent cognitive loop. You execute
 LOOP PROTOCOL (enforced externally — each call is one real round):
 
 GATE BEFORE TRY: Write exactly what the previous round failed on. No silent retries.
-TRY: Choose an approach genuinely different from all prior approaches this task.
+TRY: Choose an approach genuinely different from all prior approaches. Systematically inspect the `approach_graph` of all previous failing rounds in `scores` to perform structural deduction. Identify which nodes, relations, and paths failed, and construct a new strategy that targets completely different components, files, or relationships (aiming for minimal structural intersection/overlap with prior failing graphs).
 TEST: You have access to bash_exec, file_read, and file_write tools. The host editor/runner will execute them.
 SCORE: Per-requirement pass/fail. Not holistic.
 GATE BEFORE COMMIT: Functional end-to-end verification required.
