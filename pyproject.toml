@@ -19,3 +19,7 @@ dependencies = [
 
 [project.scripts]
 jinx-cli = "jinx.cli:main"
+
+[tool.setuptools.packages.find]
+where = [".agent/src"]
+
