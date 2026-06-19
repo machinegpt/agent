@@ -172,15 +172,23 @@ def _are_approaches_similar(entry1: Any, entry2: Any) -> bool:
     if nodes1 or nodes2:
         node_sim = len(nodes1.intersection(nodes2)) / len(nodes1.union(nodes2))
     else:
-        node_sim = 1.0
+        node_sim = None
 
     # Calculate Edge Jaccard
     if edges1 or edges2:
         edge_sim = len(edges1.intersection(edges2)) / len(edges1.union(edges2))
     else:
-        edge_sim = 1.0
+        edge_sim = None
 
-    combined_sim = 0.5 * node_sim + 0.5 * edge_sim
+    if node_sim is not None and edge_sim is not None:
+        combined_sim = 0.5 * node_sim + 0.5 * edge_sim
+    elif node_sim is not None:
+        combined_sim = node_sim
+    elif edge_sim is not None:
+        combined_sim = edge_sim
+    else:
+        combined_sim = 0.0
+
     return combined_sim >= 0.7
 
 

@@ -21,15 +21,15 @@ JINX is an agent runtime designed to run inside a host environment (such as an I
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
-graph LR
+flowchart LR
     classDef sub fill:#161b22,stroke:#30363d,stroke-dasharray: 3 3,color:#c9d1d9;
-    classDef state fill:#1f242c,stroke:#388bfd,color:#58a6ff;
-    classDef yaml fill:#373320,stroke:#d4a72c,color:#f0e6c0;
+    classDef state fill:#21262d,stroke:#30363d,stroke-width:2px,color:#e6edf3;
+    classDef yaml fill:#161b22,stroke:#30363d,stroke-width:2px,color:#c9d1d9;
 
     subgraph JINX["JINX Agent Runtime (Subprocess)"]
         direction TB
         SM["State Machine & Protocol<br/>(runner.py)"]:::state
-        DB[("Local State<br/>(JINX.yaml)")]:::yaml
+        DB[("Local State<br/>(.agent/JINX.yaml)")]:::yaml
         SM <-->|"Read / Write State"| DB
     end
     style JINX fill:#0d1117,stroke:#30363d,color:#e6edf3
@@ -171,7 +171,7 @@ The JINX runtime is governed by an iterative loop executed in discrete phases. S
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
-graph LR
+flowchart LR
     classDef sub fill:#161b22,stroke:#30363d,stroke-dasharray: 3 3,color:#c9d1d9;
     classDef fail fill:#442326,stroke:#f85149,color:#ff7b72;
     classDef pass fill:#1f3b23,stroke:#56d364,color:#85e89d;
@@ -224,13 +224,13 @@ graph LR
 ### Cognitive Loop Control Flow
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "primaryColor": "#1e293b", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#3b82f6", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#0f172a"}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
 flowchart TD
-    classDef start fill:#1e1b4b,stroke:#6366f1,stroke-width:2px,color:#f8fafc;
-    classDef process fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#f8fafc;
-    classDef decision fill:#1e293b,stroke:#f59e0b,stroke-width:2px,color:#f8fafc;
-    classDef success fill:#064e3b,stroke:#10b981,stroke-width:2px,color:#f8fafc;
-    classDef danger fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#f8fafc;
+    classDef start fill:#161b22,stroke:#8b949e,stroke-width:2px,color:#e6edf3;
+    classDef process fill:#21262d,stroke:#30363d,stroke-width:2px,color:#c9d1d9;
+    classDef decision fill:#161b22,stroke:#30363d,stroke-width:2px,color:#c9d1d9;
+    classDef success fill:#1f3b23,stroke:#56d364,stroke-width:2px,color:#85e89d;
+    classDef danger fill:#442326,stroke:#f85149,stroke-width:2px,color:#ff7b72;
 
     A["LLM Response Text"]:::start --> B["parse_state_block()"]:::process
     B --> C{"Find ```yaml/json/yml<br/>code blocks (reversed)"}:::decision
@@ -261,7 +261,7 @@ flowchart TD
 ### Cognitive Process Sequence Flow
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "actorBkg": "#21262d", "actorBorder": "#8b949e", "actorTextColor": "#e6edf3", "actorLineColor": "#8b949e", "signalColor": "#8b949e", "signalTextColor": "#e6edf3", "noteBkgColor": "#373320", "noteBorderColor": "#d4a72c", "noteTextColor": "#f0e6c0", "labelBoxBkgColor": "#21262d", "labelBoxBorderColor": "#8b949e", "labelTextColor": "#e6edf3", "loopTextColor": "#e6edf3", "activationBkgColor": "#30363d", "activationBorderColor": "#8b949e"}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "actorBkg": "#21262d", "actorBorder": "#30363d", "actorTextColor": "#c9d1d9", "actorLineColor": "#30363d", "signalColor": "#8b949e", "signalTextColor": "#c9d1d9", "noteBkgColor": "#161b22", "noteBorderColor": "#30363d", "noteTextColor": "#c9d1d9", "labelBoxBkgColor": "#21262d", "labelBoxBorderColor": "#30363d", "labelTextColor": "#c9d1d9", "loopTextColor": "#c9d1d9", "activationBkgColor": "#21262d", "activationBorderColor": "#30363d"}}}%%
 sequenceDiagram
     participant CLI as cli.py (main)
     participant Runner as runner.py (run)
@@ -481,20 +481,25 @@ Once the cognitive loop satisfies all exiting criteria, JINX exits cleanly with 
 To guarantee 100% compliance, schema conformance, and structural stability of JINX, we feature a professional, unified super test suite located at `scripts/jinx_test.py`. This system integrates static environments and unit regression testing with a fully automated, self-healing dynamic AI Synthesis Engine.
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
-graph TD
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
+flowchart TD
+    classDef sub fill:#161b22,stroke:#30363d,stroke-dasharray: 3 3,color:#c9d1d9;
+    classDef standard fill:#21262d,stroke:#30363d,stroke-width:2px,color:#c9d1d9;
+
     subgraph Engine["AISynthesisEngine (jinx_test.py)"]
-        AST["1. Offline AST Parser<br/>(Scans .agent/src/jinx/)"]
-        DIFF["2. API Drift Detector"]
-        GEN["3. Dynamic Test Synthesizer"]
+        AST["1. Offline AST Parser<br/>(Scans .agent/src/jinx/)"]:::standard
+        DIFF["2. API Drift Detector"]:::standard
+        GEN["3. Dynamic Test Synthesizer"]:::standard
         AST --> DIFF --> GEN
     end
+    style Engine fill:#0d1117,stroke:#30363d,color:#e6edf3
 
     subgraph Plugins["tests/enterprise_plugins/"]
-        V_CLI["verify_cli.py"]
-        V_TOOLS["verify_tools.py"]
-        V_OTHER["verify_runner.py / verify_state.py / verify_prompts.py"]
+        V_CLI["verify_cli.py"]:::sub
+        V_TOOLS["verify_tools.py"]:::sub
+        V_OTHER["verify_runner.py / verify_state.py / verify_prompts.py"]:::sub
     end
+    style Plugins fill:#0d1117,stroke:#30363d,color:#e6edf3
 
     GEN -->|"Auto-Sync / Code-Preservation"| Plugins
 ```
