@@ -341,21 +341,320 @@ def request_llm_from_editor(
         return []
 
 
-def run(task: str, min_override: Optional[int]) -> None:
-    """Orchestrates the cognitive execution loop for the given task.
+from pathlib import Path
 
-    This function reads the local JINX manifest, initializes the active state,
-    and runs successive rounds of task analysis, execution, and metric evaluation
-    up to a hard cap of rounds.
+# Paths for stateless File-IPC protocol
+AGENT_DIR: Path = Path(__file__).resolve().parent.parent.parent
+REQUEST_PATH: Path = AGENT_DIR / "jinx_request.json"
+RESPONSE_PATH: Path = AGENT_DIR / "jinx_response.json"
+RUN_STATE_PATH: Path = AGENT_DIR / "jinx_run_state.json"
+
+
+def clean_up_ipc_files() -> None:
+    """Removes temporary IPC communication files to reset/clean the session state."""
+    REQUEST_PATH.unlink(missing_ok=True)
+    RESPONSE_PATH.unlink(missing_ok=True)
+    RUN_STATE_PATH.unlink(missing_ok=True)
+
+
+def write_llm_request(
+    history: List[Dict[str, Any]],
+    rnd: int,
+    tool_depth: int,
+    min_rounds: int,
+    task: str
+) -> None:
+    """Writes the current prompt/history state and requests LLM generation."""
+    request_payload = {
+        "type": "llm_generate",
+        "system": SYSTEM_PROMPT,
+        "messages": history,
+        "tools": tool_schema()
+    }
+    try:
+        with open(REQUEST_PATH, "w", encoding="utf-8") as f:
+            json.dump(request_payload, f, indent=2)
+    except OSError as e:
+        logger.error("Failed to write llm_generate request to %s: %s", REQUEST_PATH, e)
+        return
+
+    run_state = {
+        "rnd": rnd,
+        "tool_depth": tool_depth,
+        "history": history,
+        "waiting_for": "llm_generate",
+        "min_rounds": min_rounds,
+        "task": task
+    }
+    try:
+        with open(RUN_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(run_state, f, indent=2)
+    except OSError as e:
+        logger.error("Failed to write run state metadata to %s: %s", RUN_STATE_PATH, e)
+        return
+
+    print(f"[JINX_WAITING] Requesting LLM completion for Round {rnd}...", flush=True)
+
+
+def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
+    """Orchestrates JINX loop using a stateless File-based IPC protocol."""
+    is_resuming = RUN_STATE_PATH.exists() and not task
+
+    if not is_resuming:
+        # Initialize a brand-new task session
+        jinx = read_jinx()
+        if not isinstance(jinx.get("state"), dict):
+            jinx["state"] = {}
+
+        if not task:
+            logger.error("Cannot start new JINX session without a task description.")
+            sys.exit(1)
+
+        jinx["state"]["task"] = task
+        jinx["state"]["facts"] = []
+        jinx["state"]["scores"] = []
+        jinx["state"]["debt"] = []
+        jinx["state"]["open"] = []
+        jinx["state"]["exit_ready"] = False
+        jinx["state"]["deadlock"] = False
+        write_jinx(jinx)
+
+        min_rounds = 10
+        if min_override is not None:
+            min_rounds = min_override
+        else:
+            protocol_config = jinx.get("protocol")
+            if isinstance(protocol_config, dict):
+                loop_config = protocol_config.get("loop")
+                if isinstance(loop_config, dict):
+                    configured_min = loop_config.get("min")
+                    if isinstance(configured_min, int):
+                        min_rounds = configured_min
+
+        clean_up_ipc_files()
+
+        rnd = 1
+        state_dump = yaml.dump(
+            jinx["state"],
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=False
+        )
+        user_msg = f"ROUND {rnd} of {min_rounds}+\nTASK: {task}\nCURRENT STATE:\n{state_dump}"
+        history = [{"role": "user", "content": user_msg}]
+
+        write_llm_request(history, rnd, 0, min_rounds, task)
+        return
+
+    else:
+        # Resume a previously serialized execution round
+        try:
+            with open(RUN_STATE_PATH, "r", encoding="utf-8") as f:
+                run_state = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error("Failed to load JINX run state metadata: %s. Re-initializing...", e)
+            clean_up_ipc_files()
+            sys.exit(1)
+
+        rnd = run_state["rnd"]
+        tool_depth = run_state["tool_depth"]
+        history = run_state["history"]
+        waiting_for = run_state["waiting_for"]
+        min_rounds = run_state["min_rounds"]
+        task = run_state["task"]
+
+        if not RESPONSE_PATH.exists():
+            logger.error("Awaiting editor response. Please make sure %s is populated.", RESPONSE_PATH)
+            sys.exit(1)
+
+        try:
+            with open(RESPONSE_PATH, "r", encoding="utf-8") as f:
+                response_data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error("Failed to read/decode editor response JSON from %s: %s", RESPONSE_PATH, e)
+            sys.exit(1)
+
+        # Consume response
+        RESPONSE_PATH.unlink(missing_ok=True)
+
+        if waiting_for == "llm_generate":
+            raw_content = response_data.get("content") or []
+            if isinstance(raw_content, str):
+                content_blocks = [{"type": "text", "text": raw_content}]
+            elif isinstance(raw_content, list):
+                content_blocks = []
+                for b in raw_content:
+                    if isinstance(b, str):
+                        content_blocks.append({"type": "text", "text": b})
+                    elif isinstance(b, dict):
+                        content_blocks.append(b)
+                    else:
+                        content_blocks.append({"type": "text", "text": str(b)})
+            else:
+                content_blocks = [{"type": "text", "text": str(raw_content)}]
+
+            history.append({"role": "assistant", "content": content_blocks})
+
+            full_text = ""
+            for block in content_blocks:
+                if block.get("type") == "text":
+                    full_text += block.get("text", "")
+
+            tool_calls = []
+            for block in content_blocks:
+                if block.get("type") == "tool_use":
+                    tool_calls.append({
+                        "id": block.get("id"),
+                        "name": block.get("name"),
+                        "params": block.get("input") or {}
+                    })
+
+            if tool_calls:
+                # Post tool executions back to editor
+                request_payload = {
+                    "type": "tool_calls",
+                    "calls": tool_calls
+                }
+                try:
+                    with open(REQUEST_PATH, "w", encoding="utf-8") as f:
+                        json.dump(request_payload, f, indent=2)
+                except OSError as e:
+                    logger.error("Failed to write tool_calls request: %s", e)
+                    sys.exit(1)
+
+                run_state["tool_depth"] = tool_depth + 1
+                run_state["history"] = history
+                run_state["waiting_for"] = "tool_calls"
+                try:
+                    with open(RUN_STATE_PATH, "w", encoding="utf-8") as f:
+                        json.dump(run_state, f, indent=2)
+                except OSError as e:
+                    logger.error("Failed to write run state updates: %s", e)
+                    sys.exit(1)
+
+                print(f"[JINX_WAITING] Requesting tool execution for Round {rnd}...", flush=True)
+                return
+            else:
+                # No tool calls made this round, parse/incorporate the updated Jinx state block
+                update = parse_state_block(full_text)
+                jinx = read_jinx()
+                if update:
+                    jinx = merge_state(jinx, update)
+                    write_jinx(jinx)
+
+                    scores = jinx["state"].get("scores", [])
+
+                    if update.get("exit_ready") and check_exit(scores, min_rounds, rnd):
+                        clean_up_ipc_files()
+                        print("[JINX_COMPLETE] Task resolved successfully!", flush=True)
+                        return
+
+                    if update.get("deadlock") or check_deadlock(scores, min_rounds, rnd):
+                        if not update.get("deadlock"):
+                            jinx["state"]["deadlock"] = True
+                            write_jinx(jinx)
+                        clean_up_ipc_files()
+                        print("[JINX_DEADLOCK] Loop aborted due to strategy deadlock.", flush=True)
+                        return
+
+                # Transition to next round
+                rnd += 1
+                if rnd >= HARD_CAP:
+                    clean_up_ipc_files()
+                    logger.error("Cognitive loop exhausted HARD_CAP.")
+                    sys.exit(2)
+
+                jinx = read_jinx()
+                state_data = jinx.get("state") or {}
+                state_dump = yaml.dump(
+                    state_data,
+                    allow_unicode=True,
+                    default_flow_style=False,
+                    sort_keys=False
+                )
+                warning_prefix = ""
+                if not update:
+                    warning_prefix = (
+                        "WARNING: You did not output the REQUIRED markdown YAML state block (```yaml ... ```) at the end of your last response!\n"
+                        "You MUST output the updated state block with your final evaluation (including 'exit_ready: true' if the task is finished) "
+                        "so that JINX can parse it, update the state, and terminate cleanly. Do not skip this block!\n\n"
+                    )
+                user_msg = f"{warning_prefix}ROUND {rnd} of {min_rounds}+\nTASK: {task}\nCURRENT STATE:\n{state_dump}"
+                history.append({"role": "user", "content": user_msg})
+
+                write_llm_request(history, rnd, 0, min_rounds, task)
+                return
+
+        elif waiting_for == "tool_calls":
+            results = response_data.get("results") or []
+            tool_results = []
+            for res in results:
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": res.get("tool_use_id"),
+                    "content": res.get("content") or ""
+                })
+
+            if tool_depth >= TOOL_DEPTH_CAP:
+                logger.warning("Inner tool depth limit reached. Forcing state recovery.")
+                final_user_msg = (
+                    "CRITICAL: The inner tool-calling depth limit has been reached. "
+                    "Do not call any more tools. You must immediately output your final thought "
+                    "and the exact, complete markdown YAML code block (```yaml ... ```) to persist your progress and avoid state loss."
+                )
+                tool_results.append({
+                    "type": "text",
+                    "text": final_user_msg
+                })
+                history.append({"role": "user", "content": tool_results})
+
+                request_payload = {
+                    "type": "llm_generate",
+                    "system": SYSTEM_PROMPT,
+                    "messages": history,
+                    "tools": []
+                }
+                try:
+                    with open(REQUEST_PATH, "w", encoding="utf-8") as f:
+                        json.dump(request_payload, f, indent=2)
+                except OSError as e:
+                    logger.error("Failed to write final summary request: %s", e)
+                    sys.exit(1)
+
+                run_state["waiting_for"] = "llm_generate"
+                run_state["history"] = history
+                try:
+                    with open(RUN_STATE_PATH, "w", encoding="utf-8") as f:
+                        json.dump(run_state, f, indent=2)
+                except OSError as e:
+                    logger.error("Failed to write run state updates: %s", e)
+                    sys.exit(1)
+
+                print(f"[JINX_WAITING] Requesting final summary completion for Round {rnd}...", flush=True)
+                return
+            else:
+                history.append({"role": "user", "content": tool_results})
+                write_llm_request(history, rnd, tool_depth, min_rounds, task)
+                return
+
+
+def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file") -> None:
+    """Orchestrates the JINX execution loop across rounds either via JSON-RPC stream or File-based IPC.
 
     Args:
-        task (str): The objective or prompt that JINX is assigned to resolve.
-        min_override (Optional[int]): User-specified override for minimum rounds.
+        task (Optional[str]): The objective prompt assigned to the agent.
+        min_override (Optional[int]): User override for the minimum cognitive rounds.
+        ipc_mode (str): The IPC protocol ('file' for stateless step-by-step or 'rpc' for duplex stream).
     """
+    if ipc_mode == "file":
+        run_file_ipc(task, min_override)
+        return
+
+    # Original interactive duplex stream JSON-RPC mode fallback
     jinx = read_jinx()
     if not isinstance(jinx.get("state"), dict):
         jinx["state"] = {}
-    jinx["state"]["task"] = task
+    jinx["state"]["task"] = task or ""
     jinx["state"]["facts"] = []
     jinx["state"]["scores"] = []
     jinx["state"]["debt"] = []
@@ -364,7 +663,6 @@ def run(task: str, min_override: Optional[int]) -> None:
     jinx["state"]["deadlock"] = False
     write_jinx(jinx)
 
-    # Resolve minimum rounds from override, JINX.yaml configuration, or fall back to 10
     min_rounds: int = 10
     if min_override is not None:
         min_rounds = min_override
@@ -378,8 +676,9 @@ def run(task: str, min_override: Optional[int]) -> None:
                     min_rounds = configured_min
 
     rnd: int = 0
+    last_round_missing_state: bool = False
 
-    logger.info("Starting JINX cognitive loop. Task: '%s'. Min rounds: %d", task, min_rounds)
+    logger.info("Starting JINX cognitive loop (JSON-RPC stream). Task: '%s'. Min rounds: %d", task, min_rounds)
 
     while rnd < HARD_CAP:
         rnd += 1
@@ -395,22 +694,26 @@ def run(task: str, min_override: Optional[int]) -> None:
             sort_keys=False
         )
 
-        user_msg = f"ROUND {rnd} of {min_rounds}+\nTASK: {task}\nCURRENT STATE:\n{state_dump}"
+        warning_prefix = ""
+        if last_round_missing_state:
+            warning_prefix = (
+                "WARNING: You did not output the REQUIRED markdown YAML state block (```yaml ... ```) at the end of your last response!\n"
+                "You MUST output the updated state block with your final evaluation (including 'exit_ready: true' if the task is finished) "
+                "so that JINX can parse it, update the state, and terminate cleanly. Do not skip this block!\n\n"
+            )
+        user_msg = f"{warning_prefix}ROUND {rnd} of {min_rounds}+\nTASK: {task}\nCURRENT STATE:\n{state_dump}"
         history.append({"role": "user", "content": user_msg})
 
         full_text: str = ""
         tool_depth: int = 0
         while True:
-            # Send conversation history to the LLM via IPC delegation
             content_blocks = request_llm_from_editor(SYSTEM_PROMPT, history)
             history.append({"role": "assistant", "content": content_blocks})
 
-            # Accumulate text content generated by the assistant
             for block in content_blocks:
                 if block.get("type") == "text":
                     full_text += block.get("text", "")
 
-            # Process any tool invocation requests emitted by the assistant
             tool_results: List[Dict[str, Any]] = []
             for block in content_blocks:
                 if block.get("type") == "tool_use":
@@ -460,8 +763,7 @@ def run(task: str, min_override: Optional[int]) -> None:
             if tool_results:
                 tool_depth += 1
                 if tool_depth >= TOOL_DEPTH_CAP:
-                    logger.warning("Inner tool-calling depth limit (%d) reached. Invoking final summary round to recover state block.", TOOL_DEPTH_CAP)
-                    # Force one last non-tool generation to let the model output its state block safely
+                    logger.warning("Inner tool depth limit reached. Forcing final state block recovery.")
                     final_user_msg = (
                         "CRITICAL: The inner tool-calling depth limit has been reached. "
                         "Do not call any more tools. You must immediately output your final thought "
@@ -480,20 +782,18 @@ def run(task: str, min_override: Optional[int]) -> None:
                     break
 
                 history.append({"role": "user", "content": tool_results})
-                # Re-invoke LLM with the results of the tool executions
                 continue
             else:
                 break
 
-        # Parse updated state returned by the LLM
         update = parse_state_block(full_text)
         if update:
+            last_round_missing_state = False
             jinx = merge_state(jinx, update)
             write_jinx(jinx)
 
             scores = jinx["state"].get("scores", [])
 
-            # Check termination conditions: successful convergence or strategy deadlock
             if update.get("exit_ready") and check_exit(scores, min_rounds, rnd):
                 logger.info("Execution complete. Criteria met in round %d.", rnd)
                 break
@@ -504,6 +804,8 @@ def run(task: str, min_override: Optional[int]) -> None:
                     jinx["state"]["deadlock"] = True
                     write_jinx(jinx)
                 break
+        else:
+            last_round_missing_state = True
     else:
         logger.error("Cognitive loop exhausted HARD_CAP (%d rounds) without resolution.", HARD_CAP)
         sys.exit(2)

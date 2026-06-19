@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.1.6--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.1.7--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-0D9488?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-059669?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -544,3 +544,64 @@ def custom_validation_rules(suite):
   ```bash
   python scripts/jinx_test.py --stress
   ```
+
+---
+
+## 8. 与 Claude Code CLI 的集成（无缝自动化）
+
+JINX 支持与 Anthropic 官方的 **Claude Code CLI** 命令行开发环境进行全自动、无缝且零开销的集成。
+
+通过此集成，Claude Code 会自动担任 JINX 的执行宿主：它接收来自 JINX 的请求，将其传输给强大的 Claude 3.5 Sonnet 模型，将响应写回，在本地执行所需的终端命令和文件操作（如写入代码、运行测试等），并将结果反馈回 JINX 认知循环。
+
+为此，项目根目录下包含了一个极简的 `CLAUDE.md` 文件。该文件指示 Claude Code 将**所有**用户消息重定向到 JINX 循环中。您无需输入特殊的触发前缀（如 `JINX`）或斜杠命令 —— 所有输入都由 JINX 自动处理。
+
+### 配置全自动无感模式（无需确认）
+
+默认情况下，Claude Code 在创建、编辑文件或在终端运行任何 `python` 命令时都会请求用户手动确认。这会降低后台自动化的速度。
+
+为了消除这些弹窗确认，让 JINX 能够完全自主、无声地运行，请配置全局 Claude Code 配置文件。该文件位于当前激活用户的通用主目录路径下：
+* **Windows**: `%USERPROFILE%\.claude\settings.json`（通常展开为 `C:\Users\<您的用户名>\.claude\settings.json`，其中用户名由操作系统自动匹配）
+* **macOS/Linux**: `~/.claude/settings.json`（展开为 `/home/<用户名>/.claude/settings.json`）
+
+#### 如何快速打开/创建并编辑该配置文件：
+* **Windows (PowerShell)**:
+  ```powershell
+  notepad "$env:USERPROFILE\.claude\settings.json"
+  ```
+* **Windows (命令提示符 - CMD)**:
+  ```cmd
+  notepad %USERPROFILE%\.claude\settings.json
+  ```
+* **macOS/Linux (终端)**:
+  ```bash
+  nano ~/.claude/settings.json
+  ```
+
+在该 JSON 配置文件中，添加以下权限配置块（如果文件是全新或空白的，请用花括号 `{}` 包裹）：
+
+```json
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(python *)"
+    ]
+  }
+}
+```
+
+* **`"defaultMode": "acceptEdits"`**: 自动批准所有本地文件的修改（例如创建交换文件 `jinx_response.json`、编写业务代码、生成测试等）。
+* **`"allow": ["Bash(python *)"]`**: 自动批准 JINX 协调器的启动和运行步骤（`python .agent/jinx.py`）。
+
+### 启动与运行
+
+1. 在项目根目录下启动 Claude Code 控制台：
+   ```bash
+   claude
+   ```
+2. 直接在聊天中输入您的任务或普通对话（使用任意语言）：
+   - *“在 calc.py 中添加除法功能并进行测试验证”*
+   - *“你好，最近怎么样？”*
+
+Claude Code 会自动读取 `CLAUDE.md` 的规则，启动后台进程 `python .agent/jinx.py`，无缝管理文件 IPC 状态机，直到任务被完整解决并完成端到端验证！
+

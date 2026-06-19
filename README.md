@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.1.6--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.1.7--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-0D9488?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-059669?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -544,4 +544,65 @@ The test suite can be run from the repository root:
   ```bash
   python scripts/jinx_test.py --stress
   ```
+
+---
+
+## 8. Claude Code CLI Integration (Seamless Automation)
+
+JINX supports fully automated, seamless, and zero-overhead integration with Anthropic's official **Claude Code CLI** development environment.
+
+Through this integration, Claude Code automatically assumes the role of JINX's execution host: it intercepts requests from JINX, routes them to the state-of-the-art Claude 3.5 Sonnet model, writes responses back, executes requested terminal commands and file operations natively, and feeds outputs back into the JINX cognitive loop.
+
+To enable this, a hyper-minimal `CLAUDE.md` file is placed in the project root, instructing Claude Code to route **all** user messages through the JINX loop. You don't need to write custom trigger prefixes like `JINX` or slash commands anymore — every input is handled by JINX automatically.
+
+### Configuring Non-Interactive Auto-Approve Mode
+
+By default, Claude Code requests manual user confirmation before creating or editing files, or running any `python` command in the shell. 
+
+To eliminate these prompt interruptions and allow JINX to run completely autonomously and silently, configure the global Claude Code settings file. It is located at the universal home directory path for the current active user:
+* **Windows**: `%USERPROFILE%\.claude\settings.json` (resolves to `C:\Users\<Your_Username>\.claude\settings.json` dynamically)
+* **macOS/Linux**: `~/.claude/settings.json` (resolves to `/home/<username>/.claude/settings.json`)
+
+#### How to quickly open/create and edit this file:
+* **Windows (PowerShell)**:
+  ```powershell
+  notepad "$env:USERPROFILE\.claude\settings.json"
+  ```
+* **Windows (Command Prompt - CMD)**:
+  ```cmd
+  notepad %USERPROFILE%\.claude\settings.json
+  ```
+* **macOS/Linux (Terminal)**:
+  ```bash
+  nano ~/.claude/settings.json
+  ```
+
+Add the following permissions block to your JSON settings file (wrap in curly braces `{}` if the file is brand new or empty):
+
+```json
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(python *)"
+    ]
+  }
+}
+```
+
+* **`"defaultMode": "acceptEdits"`**: Automatically approves all local file writes and modifications (such as the communication JSON files, `calc.py`, `test_calc.py`, etc.).
+* **`"allow": ["Bash(python *)"]`**: Automatically approves execution and step-transitions of the JINX orchestrator (`python .agent/jinx.py`).
+
+### How to Run
+
+1. Launch the Claude Code CLI inside the project root directory:
+   ```bash
+   claude
+   ```
+2. Write any task description or message directly into the chat in natural language:
+   * *“Add a division function to calc.py and write unit tests for it”*
+   * *“Hello! How are you?”*
+
+Claude Code will automatically detect the `CLAUDE.md` rule, launch `python .agent/jinx.py "[your_message]"`, and transparently manage the File-IPC loop until the task is completely resolved and verified end-to-end!
+
 

@@ -1,7 +1,7 @@
 # ==============================================================================
 # AI-Generated Enterprise Verification Plugin
 # Module: jinx.runner
-# Generated At: 2026-06-19T16:54:06Z
+# Generated At: 2026-06-19T18:32:23Z
 #
 # This file is dynamically managed by the JINX AI Synthesis Engine.
 # Public classes and methods are verified automatically.
@@ -67,6 +67,27 @@ class VerifyRunnerPhase(VerificationPhase):
             suite.print_badge("Function request_llm_from_editor: PRESENT", True)
         else:
             suite.print_badge("Function request_llm_from_editor: MISSING", False)
+            success = False
+
+        # Verify Function clean_up_ipc_files
+        if hasattr(target_module, "clean_up_ipc_files"):
+            suite.print_badge("Function clean_up_ipc_files: PRESENT", True)
+        else:
+            suite.print_badge("Function clean_up_ipc_files: MISSING", False)
+            success = False
+
+        # Verify Function write_llm_request
+        if hasattr(target_module, "write_llm_request"):
+            suite.print_badge("Function write_llm_request: PRESENT", True)
+        else:
+            suite.print_badge("Function write_llm_request: MISSING", False)
+            success = False
+
+        # Verify Function run_file_ipc
+        if hasattr(target_module, "run_file_ipc"):
+            suite.print_badge("Function run_file_ipc: PRESENT", True)
+        else:
+            suite.print_badge("Function run_file_ipc: MISSING", False)
             success = False
 
         # Verify Function run

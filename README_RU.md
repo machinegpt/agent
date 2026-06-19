@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.1.6--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.1.7--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-0D9488?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-059669?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -544,4 +544,65 @@ def custom_validation_rules(suite):
   ```bash
   python scripts/jinx_test.py --stress
   ```
+
+---
+
+## 8. Интеграция с Claude Code CLI (Бесшовная автоматизация)
+
+JINX поддерживает полностью автоматическую, бесшовную и скрытую интеграцию с официальной консольной средой разработки **Claude Code CLI** от Anthropic. 
+
+Благодаря этой интеграции Claude Code автоматически берет на себя роль исполнителя (хоста): получает запросы от JINX, передает их своей мощной модели Claude (Claude 3.5 Sonnet), записывает ответы и локально запускает все инструменты (запись файлов, запуск тестов), возвращая результат обратно в когнитивный цикл JINX.
+
+Для этого в корне проекта размещен ультра-минимальный файл `CLAUDE.md`, который указывает Claude Code перенаправлять **любые** ваши запросы через цикл JINX. Вам больше не нужно вводить специальные команды или префиксы типа `JINX` — все ваши сообщения обрабатываются агентом JINX автоматически.
+
+### Настройка полностью автоматического режима (Без подтверждений)
+
+По умолчанию Claude Code запрашивает ручное подтверждение на создание/редактирование каждого файла и запуск любой команды `python`, что замедляет фоновую автоматизацию. 
+
+Чтобы сделать работу полностью автономной и бесшумной, настройте глобальный файл конфигурации Claude Code. Он расположен по универсальному пути для текущего пользователя:
+* **Windows**: `%USERPROFILE%\.claude\settings.json` (обычно раскрывается в `C:\Users\<Ваше_Имя_Пользователя>\.claude\settings.json`, где имя пользователя подставляется автоматически операционной системой)
+* **macOS/Linux**: `~/.claude/settings.json` (раскрывается в `/home/<имя_пользователя>/.claude/settings.json`)
+
+#### Как быстро открыть и создать/отредактировать этот файл:
+* **В Windows (PowerShell)**:
+  ```powershell
+  notepad "$env:USERPROFILE\.claude\settings.json"
+  ```
+* **В Windows (Командная строка - CMD)**:
+  ```cmd
+  notepad %USERPROFILE%\.claude\settings.json
+  ```
+* **В macOS/Linux (Терминал)**:
+  ```bash
+  nano ~/.claude/settings.json
+  ```
+
+Добавьте в этот файл настроек JSON (если файл пустой, оберните в фигурные скобки `{}`) следующие правила разрешений:
+
+```json
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(python *)"
+    ]
+  }
+}
+```
+
+* **`"defaultMode": "acceptEdits"`**: Автоматически одобряет все изменения локальных файлов (создание файлов обмена `jinx_response.json`, написание рабочего кода `calc.py`, написание тестов `test_calc.py` и т.д.).
+* **`"allow": ["Bash(python *)"]`**: Автоматически одобряет запуск и шаги оркестратора JINX (`python .agent/jinx.py`).
+
+### Как запускать
+
+1. Запустите консольный чат Claude Code в корневой директории проекта:
+   ```bash
+   claude
+   ```
+2. Пишите любой вопрос или задачу напрямую в чат обычным языком:
+   * *«Добавь функцию деления в calc.py и проверь тестами»*
+   * *«Привет, как дела?»*
+
+Claude Code автоматически прочитает инструкции из `CLAUDE.md`, запустит фоновый процесс `python .agent/jinx.py`, передаст ему вашу задачу и проведет ее через все необходимые раунды когнитивного цикла JINX до полного и подтвержденного решения!
+
 
