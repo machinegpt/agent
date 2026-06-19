@@ -170,13 +170,17 @@ def merge_state(jinx: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
 
     s: Dict[str, Any] = jinx.setdefault("state", {})
     for key in ("task", "facts", "scores", "debt", "open"):
-        if key in validated_dict:
+        # Only merge keys that were actually present in the LLM's raw update to prevent overwriting with defaults
+        if key in update:
             s[key] = validated_dict[key]
 
     if "scores" in s and isinstance(s["scores"], list) and len(s["scores"]) > 5:
         for entry in s["scores"][:-5]:
             entry.pop("prior_failure", None)
 
-    s["exit_ready"] = validated_block.exit_ready
-    s["deadlock"] = validated_block.deadlock
+    # Only merge exit_ready and deadlock if they were explicitly present in the raw update
+    if "exit_ready" in update:
+        s["exit_ready"] = validated_block.exit_ready
+    if "deadlock" in update:
+        s["deadlock"] = validated_block.deadlock
     return jinx

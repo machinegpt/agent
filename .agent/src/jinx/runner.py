@@ -62,7 +62,11 @@ def parse_state_block(text: str) -> Optional[Dict[str, Any]]:
                 # yaml.safe_load parses both standard YAML and JSON perfectly
                 data = yaml.safe_load(raw)
                 if isinstance(data, dict):
-                    return data
+                    # A valid JINX state block must contain at least 2 of the expected core state keys
+                    # to prevent matching unrelated configuration files or generic code blocks.
+                    state_keys = {"task", "facts", "scores", "debt", "open", "exit_ready", "deadlock"}
+                    if len(set(data.keys()) & state_keys) >= 2:
+                        return data
             except yaml.YAMLError:
                 continue
 

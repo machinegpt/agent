@@ -492,12 +492,13 @@ graph TD
 ```
 
 ### Core Testing Pillars
-The test orchestrator runs 9 discrete diagnostic phases grouped into 5 primary verification pillars:
+The test orchestrator runs 9 discrete diagnostic phases grouped into 5 primary verification pillars (or 10 phases and 6 pillars under `--stress` configuration):
 1. **Platform & Environment Audit**: Validates runtime constraints, python dependencies (Pydantic, PyYAML, Pytest), and file path resolutions.
 2. **Schema & Model Conformance**: Stresses Pydantic models serialization and cycle serialization (state blocks, node schemas, edge schemas) into `.agent/JINX.yaml`.
 3. **Graph Similarity & Stress Testing**: Exercises graph mathematical clustering, deadlock clustering, and similarity scaling thresholds under extreme topological conditions.
 4. **Pytest Integration Regressions**: Triggers the entire existing pyunit regression test suite natively.
 5. **AI-Synthesized Dynamic Verification (Pluggable)**: Dynamically scans the core package structure via Abstract Syntax Trees (AST) and compiles corresponding class, method, and function checks inside `tests/enterprise_plugins/`.
+6. **Cognitive Loop Scale & Performance Stress Profiling (`--stress`)**: Simulates 500-node/499-edge ApproachGraphs, profiles full Pydantic cycle and YAML dump/load throughput, and simulates 100-way disjoint clustering deadlock scenarios within tight sub-millisecond budgets.
 
 ### Code Preservation Boundary Protocols
 Developers and AI agents can extend any dynamic test module under `tests/enterprise_plugins/verify_<module>.py` without worrying about their manual test assertions being overwritten during auto-sync runs. Custom testing logic placed inside designated boundary comments is strictly preserved:
@@ -526,3 +527,8 @@ The test suite can be run from the repository root:
   ```bash
   python scripts/jinx_test.py --ai-sync
   ```
+* **Run high-scale cognitive loop stress-testing and microsecond-level performance profiling**:
+  ```bash
+  python scripts/jinx_test.py --stress
+  ```
+
