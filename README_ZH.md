@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.0.7--enterprise-blue?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.0.8--enterprise-blue?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-red?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-brightgreen?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -153,10 +153,38 @@ JINX 将文件读取和写入操作委托给宿主。
 JINX 运行时的执行过程受迭代循环支配，并在离散的阶段中进行。标准状态属性在各次迭代之间通过 `JINX.yaml` 进行保留。
 
 ```mermaid
-graph TD
-    A[阶段 I: 范围定义与摄取] --> B[阶段 II: 假设生成与发散]
-    B --> C[阶段 III: 边界验证测试]
-    C --> D[阶段 IV: 收敛评估与退出]
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
+graph LR
+    classDef sub fill:#161b22,stroke:#30363d,stroke-dasharray: 3 3,color:#c9d1d9;
+    classDef fail fill:#442326,stroke:#f85149,color:#ff7b72;
+    classDef pass fill:#1f3b23,stroke:#56d364,color:#85e89d;
+
+    subgraph P1["阶段 I: 范围吸纳与定义"]
+        A["1. 解析上下文与边界"]:::sub --> B["2. 将范围写入 state.facts"]:::sub
+    end
+    style P1 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph P2["阶段 II: 假设生成与发散"]
+        C["3. 注册历史失败原因"]:::sub --> D["4. 评估发散性技术策略"]:::sub
+    end
+    style P2 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph P3["阶段 III: 边界验证与测试"]
+        E["5. 执行破坏性边界测试"]:::sub --> F["6. 填充评分需求指标"]:::sub
+    end
+    style P3 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph P4["阶段 IV: 多准则收敛与退出"]
+        G{"7. 评估循环收敛状态"}:::sub
+        G -->|全部通过| H["成功收敛退出"]:::pass
+        G -->|失败尝试策略 >= 3| I["触发策略死锁"]:::fail
+        G -->|循环轮数 >= 40| J["达到硬性上限"]:::fail
+    end
+    style P4 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    B --> C
+    D --> E
+    F --> G
 ```
 
 ### 执行阶段

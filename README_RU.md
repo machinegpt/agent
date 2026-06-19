@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.0.7--enterprise-blue?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.0.8--enterprise-blue?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-red?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-brightgreen?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -153,10 +153,38 @@ JINX делегирует чтение и запись файлов хосту.
 Работа JINX управляется итерационным циклом, выполняемым по четко разграниченным фазам. Параметры состояния сохраняются между итерациями в файле `JINX.yaml`.
 
 ```mermaid
-graph TD
-    A[Фаза I: Сбор данных и скоупинг] --> B[Фаза II: Генерация гипотез]
-    B --> C[Фаза III: Разрушающее тестирование]
-    C --> D[Фаза IV: Оценка и выход]
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
+graph LR
+    classDef sub fill:#161b22,stroke:#30363d,stroke-dasharray: 3 3,color:#c9d1d9;
+    classDef fail fill:#442326,stroke:#f85149,color:#ff7b72;
+    classDef pass fill:#1f3b23,stroke:#56d364,color:#85e89d;
+
+    subgraph P1["Фаза I: Сбор данных и скоупинг"]
+        A["1. Анализ контекста и границ"]:::sub --> B["2. Запись границ в state.facts"]:::sub
+    end
+    style P1 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph P2["Фаза II: Генерация гипотез"]
+        C["3. Регистрация истории сбоев"]:::sub --> D["4. Оценка альтернативных стратегий"]:::sub
+    end
+    style P2 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph P3["Фаза III: Разрушающее тестирование"]
+        E["5. Запуск граничного тестирования"]:::sub --> F["6. Заполнение схемы требований"]:::sub
+    end
+    style P3 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph P4["Фаза IV: Оценка и выход"]
+        G{"7. Проверка сходимости цикла"}:::sub
+        G -->|Все пройдены| H["Успешный выход"]:::pass
+        G -->|Сбои подходов >= 3| I["Триггер дедлока"]:::fail
+        G -->|Раунды >= 40| J["Лимит раундов"]:::fail
+    end
+    style P4 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    B --> C
+    D --> E
+    F --> G
 ```
 
 ### Фазы выполнения

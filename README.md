@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.0.7--enterprise-blue?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.0.8--enterprise-blue?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-red?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-brightgreen?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -153,10 +153,38 @@ JINX delegates file reads and writes to the host.
 The JINX runtime is governed by an iterative loop executed in discrete phases. Standard state properties are preserved across iterations via `JINX.yaml`.
 
 ```mermaid
-graph TD
-    A[Phase I: Scope Intake] --> B[Phase II: Hypothesis Generation]
-    B --> C[Phase III: Breaker Testing]
-    C --> D[Phase IV: Evaluation & Exit]
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
+graph LR
+    classDef sub fill:#161b22,stroke:#30363d,stroke-dasharray: 3 3,color:#c9d1d9;
+    classDef fail fill:#442326,stroke:#f85149,color:#ff7b72;
+    classDef pass fill:#1f3b23,stroke:#56d364,color:#85e89d;
+
+    subgraph P1["Phase I: Scope Intake"]
+        A["1. Context & Boundary Parsing"]:::sub --> B["2. Write Scope to state.facts"]:::sub
+    end
+    style P1 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph P2["Phase II: Hypothesis Generation"]
+        C["3. Register Failure History"]:::sub --> D["4. Evaluate Divergent Strategies"]:::sub
+    end
+    style P2 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph P3["Phase III: Breaker Testing"]
+        E["5. Run Boundary Verification"]:::sub --> F["6. Populate requirements Schema"]:::sub
+    end
+    style P3 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph P4["Phase IV: Evaluation & Exit"]
+        G{"7. Check Loop Convergence"}:::sub
+        G -->|All Pass| H["Success Exit"]:::pass
+        G -->|Failed Approaches >= 3| I["Deadlock Trigger"]:::fail
+        G -->|Rounds >= 40| J["Hard Cap Trigger"]:::fail
+    end
+    style P4 fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    B --> C
+    D --> E
+    F --> G
 ```
 
 ### Execution Phases
