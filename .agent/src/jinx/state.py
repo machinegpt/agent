@@ -152,7 +152,6 @@ def merge_state(jinx: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
     if "scores" in s and isinstance(s["scores"], list) and len(s["scores"]) > 5:
         for entry in s["scores"][:-5]:
             entry.pop("prior_failure", None)
-            entry["approach"] = "unspecified"
 
     s["exit_ready"] = validated_block.exit_ready
     s["deadlock"] = validated_block.deadlock
