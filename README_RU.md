@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.0.6--enterprise-blue?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.1.6--enterprise-blue?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-red?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-brightgreen?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -343,7 +343,7 @@ state:
 * **`cli.py`** (Обработчик аргументов):
   Производит разбор входящих параметров с использованием библиотеки `argparse`. Собирает позиционный аргумент описания задачи и опциональный флаг переопределения минимального числа раундов `--min` перед вызовом основного оркестратора.
 * **`runner.py`** (Оркестратор):
-  Реализует логику конечного автомата. Содержит центральный цикл выполнения, управляет стандартными потоками для обмена сообщениями с хост-редактором, анализирует вывод модели для извлечения тегов состояния `<state>...</state>` и рассчитывает условия завершения работы или фиксации дедлока.
+  Реализует логику конечного автомата. Содержит центральный цикл выполнения, управляет стандартными потоками для обмена сообщениями с хост-редактором, анализирует вывод модели для извлечения markdown YAML-блоков состояния и рассчитывает условия завершения работы или фиксации дедлока.
 * **`state.py`** (Слой сериализации состояния):
   Выполняет операции файлового ввода-вывода для файла манифеста состояния `JINX.yaml`. Его особенности включают:
   * **Динамическое разрешение путей**: Реализует многоуровневый алгоритм поиска (через переменную окружения `JINX_PATH`, проверку путей разработки или рекурсивный поиск вверх по дереву каталогов от текущей рабочей директории CWD), гарантирующий корректную и бесшовную работу JINX как в локальных репозиториях, так и в глобально установленных через pip окружениях.

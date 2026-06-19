@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.0.6--enterprise-blue?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.1.6--enterprise-blue?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-red?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-brightgreen?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -343,7 +343,7 @@ JINX 运行时由以下位于 `.agent/` 目录中（其中核心包模块位于 
 * **`cli.py`**（参数解析器）：
   使用 Python 的 `argparse` 库解析输入。收集位置任务描述和可选的 `--min` 循环迭代覆盖参数，然后将其传递给核心调度器。
 * **`runner.py`**（调度器）：
-  实现状态机逻辑。包含核心循环、通过标准流处理与宿主编辑器的载荷交换、解析符合 `<state>...</state>` 标签的结构化模型输出，并评估退出和死锁检测指标。
+  实现状态机逻辑。包含核心循环、通过标准流处理与宿主编辑器的载荷交换、解析 markdown YAML 格式的状态块输出，并评估退出和死锁检测指标。
 * **`state.py`**（状态持久化层）：
   处理状态清单文件 `JINX.yaml` 的文件操作。它具有以下特性：
   * **动态路径解析**：实现了健壮的多级查找机制（通过环境变量 `JINX_PATH`、开发路径检查，或者从当前工作目录 CWD 递归向上遍历目录），以确保 JINX 在本地存储库和通过 pip 全局安装的工作区中都能无缝运行。

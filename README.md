@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.0.6--enterprise-blue?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.1.6--enterprise-blue?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-red?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-brightgreen?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -343,7 +343,7 @@ The JINX runtime is comprised of the following Python components located in `.ag
 * **`cli.py`** (Argument Parser):
   Parses inputs using Python's `argparse` library. Collects positional argument tasks and the optional `--min` loop iteration override before passing them to the orchestrator.
 * **`runner.py`** (Orchestrator):
-  Implements the state machine. Contains the main loop logic, processes standard streams to exchange payloads with the host editor, parses structured model output matching `<state>...</state>` tags, and evaluates the criteria for exiting and deadlock detection.
+  Implements the state machine. Contains the main loop logic, processes standard streams to exchange payloads with the host editor, parses structured model output containing markdown YAML state blocks, and evaluates the criteria for exiting and deadlock detection.
 * **`state.py`** (Serialization Layer):
   Handles the file operations for the manifest state file `JINX.yaml`. It features:
   * **Dynamic Path Resolution**: Implements a robust multi-tier lookup (via environment variable `JINX_PATH`, development path checks, or recursive upwards directory traversal from the current working directory) to guarantee JINX runs seamlessly both in local repositories and global pip-installed workspaces.
