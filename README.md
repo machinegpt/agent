@@ -557,7 +557,7 @@ The orchestration host manages:
 3. Executing JINX declarative directives for file read, write, and system command execution.
 4. Feeding results back into the JINX cognitive loop via the File-IPC mechanism.
 
-By default, `CLAUDE.md` is configured to respect user control and consent. Claude Code will not hijack normal conversations, greetings, or administrative queries. It will ONLY invoke the JINX specialized agent loop when you explicitly request it (e.g., using "run JINX", "start jinx", or a task prefix like "JINX: ..."). This ensures that you, the developer, retain complete control over when JINX is active.
+In this repository, `CLAUDE.md` is configured to automatically and unconditionally route all user messages, greetings, and tasks through JINX to ensure the automated orchestration loop works seamlessly. If you prefer to manually invoke JINX, you can edit `CLAUDE.md` to restrict it to explicit requests only.
 
 ### Security and Interactive Execution Authorization
 

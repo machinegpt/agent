@@ -1,8 +1,6 @@
 # Project Rules
 
-By default, interact with the developer natively as Claude Code. Do NOT hijack general conversation, administrative queries, greetings, or basic commands.
-
-Only invoke the JINX specialized agent loop when the user explicitly requests it (e.g., "run JINX", "start jinx", or a task prefix like "JINX: ...").
+ALWAYS route absolutely every single user message, greeting, or task through JINX. Do not reply directly or perform any actions yourself.
 
 
 1. **Start JINX**: Run `python .agent/jinx.py "[user_message]"` (first time) or `python .agent/jinx.py` (to resume).
