@@ -17,6 +17,7 @@
 import logging
 import os
 from pathlib import Path
+import sys
 from typing import Any, Dict, List, Optional
 import yaml
 from pydantic import BaseModel, Field
@@ -105,46 +106,86 @@ class StateBlock(BaseModel):
     deadlock: bool = False
 
 
+class StateManager:
+    """State management service to orchestrate state schema loading, updates, and persistence.
+
+    Ensures safe, transactional, and atomic disk persistence to prevent data loss or file corruption.
+    """
+
+    @classmethod
+    def load_state(cls) -> Dict[str, Any]:
+        """Loads and parses the master JINX.yaml configuration state.
+
+        Returns:
+            Dict[str, Any]: The configuration dict, or an empty dict on missing or invalid file.
+        """
+        jinx_path = _resolve_jinx_path()
+        if not jinx_path.exists():
+            logger.debug("JINX state file not found at %s. Returning empty state.", jinx_path)
+            return {}
+        try:
+            with open(jinx_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+                return data if isinstance(data, dict) else {}
+        except Exception as e:
+            logger.error("Failed to read or parse JINX.yaml at %s: %s", jinx_path, e)
+            return {}
+
+    @classmethod
+    def persist_state(cls, data: Dict[str, Any]) -> None:
+        """Persists the master state to JINX.yaml atomically to guarantee transactional safety.
+
+        Uses a staging temp file and atomic operating system rename.
+        """
+        jinx_path = _resolve_jinx_path()
+        temp_path = jinx_path.with_suffix(jinx_path.suffix + ".tmp")
+        try:
+            # Guarantee parent directory presence
+            jinx_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(temp_path, "w", encoding="utf-8") as f:
+                yaml.dump(
+                    data,
+                    f,
+                    allow_unicode=True,
+                    default_flow_style=False,
+                    sort_keys=False,
+                    width=sys.maxsize
+                )
+
+            # Atomic replace on disk
+            temp_path.replace(jinx_path)
+        except Exception as e:
+            logger.error("JINX state atomic persistence failed on %s: %s", jinx_path, e, exc_info=True)
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise OSError(f"JINX state write failure on {jinx_path.name}: {e}") from e
+
+
+# Backward-compatibility alias
+EnterpriseStateManager = StateManager
+
+
 def read_jinx() -> Dict[str, Any]:
     """Reads and parses the JINX state manifest file (JINX.yaml).
 
-    Returns:
-        Dict[str, Any]: The parsed configuration dictionary, or an empty
-            dictionary if the file does not exist or fails to parse.
+    Delegates to the StateManager to maintain compatibility.
     """
-    jinx_path = _resolve_jinx_path()
-    if not jinx_path.exists():
-        logger.debug("JINX state file not found at %s. Returning empty state.", jinx_path)
-        return {}
-    try:
-        with open(jinx_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-            return data if isinstance(data, dict) else {}
-    except (yaml.YAMLError, OSError) as e:
-        logger.error("Failed to read or parse JINX.yaml at %s: %s", jinx_path, e)
-        return {}
+    return StateManager.load_state()
 
 
 def write_jinx(data: Dict[str, Any]) -> None:
     """Serializes the configuration dictionary to JINX.yaml on disk.
 
-    Args:
-        data (Dict[str, Any]): The state manifest dictionary to serialize.
+    Delegates to the StateManager to maintain compatibility with atomic writes.
     """
-    jinx_path = _resolve_jinx_path()
     try:
-        # Ensure parent directory exists before writing
-        jinx_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(jinx_path, "w", encoding="utf-8") as f:
-            yaml.dump(
-                data,
-                f,
-                allow_unicode=True,
-                default_flow_style=False,
-                sort_keys=False
-            )
-    except OSError as e:
-        logger.error("Failed to write JINX state serialization to %s: %s", jinx_path, e)
+        StateManager.persist_state(data)
+    except Exception as e:
+        logger.error("Legacy write_jinx proxy encountered failure: %s", e)
+
 
 
 def merge_state(jinx: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:

@@ -1,7 +1,7 @@
 # ==============================================================================
 # AI-Generated Enterprise Verification Plugin
 # Module: jinx.state
-# Generated At: 2026-06-19T16:30:01Z
+# Generated At: 2026-06-19T21:22:57Z
 #
 # This file is dynamically managed by the JINX AI Synthesis Engine.
 # Public classes and methods are verified automatically.
@@ -71,6 +71,24 @@ class VerifyStatePhase(VerificationPhase):
             cls_obj = getattr(target_module, "StateBlock")
         else:
             suite.print_badge("Class StateBlock: MISSING", False)
+            success = False
+
+        # Verify Class StateManager
+        if hasattr(target_module, "StateManager"):
+            suite.print_badge("Class StateManager: PRESENT", True)
+            cls_obj = getattr(target_module, "StateManager")
+            if hasattr(cls_obj, "load_state"):
+                suite.print_badge("  - Method StateManager.load_state: PRESENT", True)
+            else:
+                suite.print_badge("  - Method StateManager.load_state: MISSING", False)
+                success = False
+            if hasattr(cls_obj, "persist_state"):
+                suite.print_badge("  - Method StateManager.persist_state: PRESENT", True)
+            else:
+                suite.print_badge("  - Method StateManager.persist_state: MISSING", False)
+                success = False
+        else:
+            suite.print_badge("Class StateManager: MISSING", False)
             success = False
 
         # --- FUNCTION VERIFICATIONS ---

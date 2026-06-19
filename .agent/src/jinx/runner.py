@@ -21,6 +21,7 @@ import sys
 import textwrap
 from typing import Any, Dict, List, Optional, Tuple
 
+from pathlib import Path
 import yaml
 
 from .prompts import SYSTEM_PROMPT, TOOL_DEPTH_CRITICAL_MSG, construct_round_prompt
@@ -33,6 +34,158 @@ logger = logging.getLogger("jinx.runner")
 # Constants defining maximum execution safety boundaries
 HARD_CAP: int = 40
 TOOL_DEPTH_CAP: int = 20
+
+
+# Custom types to enforce flow style (compact inline format) for specific sub-elements in YAML
+class FlowDict(dict):
+    pass
+
+
+class FlowList(list):
+    pass
+
+
+class Dumper(yaml.SafeDumper):
+    """Isolated, thread-safe PyYAML dumper class for JINX serialization.
+
+    Ensures that global PyYAML representers are not polluted, protecting external
+    third-party libraries and modules from unexpected serialization side-effects.
+    """
+    pass
+
+
+# Backward-compatibility aliases
+JinxYamlDumper = Dumper
+JinxEnterpriseYamlDumper = Dumper
+
+
+def flow_dict_representer(dumper: Dumper, data: FlowDict) -> Any:
+    return dumper.represent_mapping('tag:yaml.org,2002:map', data, flow_style=True)
+
+
+def flow_list_representer(dumper: Dumper, data: FlowList) -> Any:
+    return dumper.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=True)
+
+
+def str_presenter(dumper: Dumper, data: str) -> Any:
+    if '\n' in data:
+        # Format multi-line strings cleanly using literal block scalars (|)
+        return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
+    return dumper.represent_scalar('tag:yaml.org,2002:str', data)
+
+
+# Register representers strictly and exclusively to our custom dumper class
+Dumper.add_representer(FlowDict, flow_dict_representer)
+Dumper.add_representer(FlowList, flow_list_representer)
+Dumper.add_representer(str, str_presenter)
+
+
+def to_flow(data: Any) -> Any:
+    """Recursively converts standard dictionaries and lists into FlowDict/FlowList mappings.
+
+    This forces the YAML dumper to represent complex nested data compact in flow style,
+    while leaving top-level textual descriptions in beautiful human-readable block style.
+    """
+    if isinstance(data, dict):
+        return FlowDict({k: to_flow(v) for k, v in data.items()})
+    elif isinstance(data, list):
+        return FlowList([to_flow(v) for v in data])
+    return data
+
+
+
+# Custom Enterprise Exception Hierarchy
+class JinxError(Exception):
+    """Base exception for all domain-specific errors in the JINX Framework."""
+    pass
+
+
+class SerializationError(JinxError):
+    """Raised when serialization or deserialization of IPC/state payloads fails."""
+    pass
+
+
+class IPCError(JinxError):
+    """Raised during IPC file operations or stream communication transactions."""
+    pass
+
+
+class ValidationError(JinxError):
+    """Raised when data schemas fail validation against Pydantic models."""
+    pass
+
+
+class Yaml:
+    """Thread-safe YAML serialization engine for JINX operations.
+
+    Consolidates isolated PyYAML configurations, atomic transactional file writes,
+    and safe parsing logic.
+    """
+
+    @staticmethod
+    def dump_to_string(data: Any, width: int = sys.maxsize) -> str:
+        """Serializes structures to YAML strings using our custom isolated dumper."""
+        try:
+            return yaml.dump(
+                data,
+                Dumper=Dumper,
+                allow_unicode=True,
+                default_flow_style=False,
+                sort_keys=False,
+                width=width
+            )
+        except Exception as e:
+            raise SerializationError(f"Failed to serialize YAML string: {e}") from e
+
+    @staticmethod
+    def safe_atomic_write(path: Path, data: Any, width: int = sys.maxsize) -> None:
+        """Writes data structures to files atomically via temporary staging files."""
+        temp_path = path.with_suffix(path.suffix + ".tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(temp_path, "w", encoding="utf-8") as f:
+                yaml.dump(
+                    data,
+                    f,
+                    Dumper=Dumper,
+                    allow_unicode=True,
+                    default_flow_style=False,
+                    sort_keys=False,
+                    width=width
+                )
+            temp_path.replace(path)
+        except Exception as e:
+            logger.error("JINX atomic write transaction failed on %s: %s", path, e, exc_info=True)
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise IPCError(f"JINX File-IPC write failure on {path.name}: {e}") from e
+
+    @staticmethod
+    def load_from_file(path: Path) -> Any:
+        """Safely loads and parses YAML structures from disk."""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f)
+        except Exception as e:
+            raise SerializationError(f"Failed to load or parse YAML file at {path}: {e}") from e
+
+
+# Backward-compatibility alias
+EnterpriseYamlEngine = Yaml
+
+
+def safe_atomic_write_yaml(path: Path, data: Any, width: int = sys.maxsize) -> None:
+    """Writes a python structure to a YAML file atomically to prevent data corruption.
+
+    Delegates to the EnterpriseYamlEngine to maintain backward compatibility.
+    """
+    try:
+        Yaml.safe_atomic_write(path, data, width)
+    except JinxError as e:
+        raise OSError(str(e)) from e
+
 
 
 def parse_state_block(text: str) -> Optional[Dict[str, Any]]:
@@ -341,13 +494,11 @@ def request_llm_from_editor(
         return []
 
 
-from pathlib import Path
-
 # Paths for stateless File-IPC protocol
 AGENT_DIR: Path = Path(__file__).resolve().parent.parent.parent
-REQUEST_PATH: Path = AGENT_DIR / "jinx_request.json"
-RESPONSE_PATH: Path = AGENT_DIR / "jinx_response.json"
-RUN_STATE_PATH: Path = AGENT_DIR / "jinx_run_state.json"
+REQUEST_PATH: Path = AGENT_DIR / "jinx_request.yaml"
+RESPONSE_PATH: Path = AGENT_DIR / "jinx_response.yaml"
+RUN_STATE_PATH: Path = AGENT_DIR / "jinx_run_state.yaml"
 
 
 def clean_up_ipc_files() -> None:
@@ -369,14 +520,13 @@ def write_llm_request(
         "type": "llm_generate",
         "system": SYSTEM_PROMPT,
         "messages": history,
-        "tools": tool_schema()
+        "tools": to_flow(tool_schema())
     }
     try:
-        with open(REQUEST_PATH, "w", encoding="utf-8") as f:
-            json.dump(request_payload, f, indent=2)
-    except OSError as e:
+        Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
+    except JinxError as e:
         logger.error("Failed to write llm_generate request to %s: %s", REQUEST_PATH, e)
-        raise
+        raise IPCError(f"Failed to write request: {e}") from e
 
     run_state = {
         "rnd": rnd,
@@ -387,11 +537,10 @@ def write_llm_request(
         "task": task
     }
     try:
-        with open(RUN_STATE_PATH, "w", encoding="utf-8") as f:
-            json.dump(run_state, f, indent=2)
-    except OSError as e:
+        Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
+    except JinxError as e:
         logger.error("Failed to write run state metadata to %s: %s", RUN_STATE_PATH, e)
-        raise
+        raise IPCError(f"Failed to write run state: {e}") from e
 
     print(f"[JINX_WAITING] Requesting LLM completion for Round {rnd}...", flush=True)
 
@@ -434,12 +583,7 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
         clean_up_ipc_files()
 
         rnd = 1
-        state_dump = yaml.dump(
-            jinx["state"],
-            allow_unicode=True,
-            default_flow_style=False,
-            sort_keys=False
-        )
+        state_dump = Yaml.dump_to_string(jinx["state"])
         user_msg = construct_round_prompt(rnd=rnd, min_rounds=min_rounds, task=task, state_dump=state_dump)
         history = [{"role": "user", "content": user_msg}]
 
@@ -450,8 +594,8 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
         # Resume a previously serialized execution round
         try:
             with open(RUN_STATE_PATH, "r", encoding="utf-8") as f:
-                run_state = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
+                run_state = yaml.safe_load(f) or {}
+        except (yaml.YAMLError, OSError) as e:
             logger.error("Failed to load JINX run state metadata: %s. Re-initializing...", e)
             clean_up_ipc_files()
             sys.exit(1)
@@ -469,9 +613,9 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
 
         try:
             with open(RESPONSE_PATH, "r", encoding="utf-8") as f:
-                response_data = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            logger.error("Failed to read/decode editor response JSON from %s: %s", RESPONSE_PATH, e)
+                response_data = yaml.safe_load(f) or {}
+        except (yaml.YAMLError, OSError) as e:
+            logger.error("Failed to read/decode editor response YAML from %s: %s", RESPONSE_PATH, e)
             sys.exit(1)
 
         # Consume response
@@ -513,12 +657,11 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
                 # Post tool executions back to editor
                 request_payload = {
                     "type": "tool_calls",
-                    "calls": tool_calls
+                    "calls": to_flow(tool_calls)
                 }
                 try:
-                    with open(REQUEST_PATH, "w", encoding="utf-8") as f:
-                        json.dump(request_payload, f, indent=2)
-                except OSError as e:
+                    Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
+                except JinxError as e:
                     logger.error("Failed to write tool_calls request: %s", e)
                     sys.exit(1)
 
@@ -526,9 +669,8 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
                 run_state["history"] = history
                 run_state["waiting_for"] = "tool_calls"
                 try:
-                    with open(RUN_STATE_PATH, "w", encoding="utf-8") as f:
-                        json.dump(run_state, f, indent=2)
-                except OSError as e:
+                    Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
+                except JinxError as e:
                     logger.error("Failed to write run state updates: %s", e)
                     sys.exit(1)
 
@@ -566,12 +708,7 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
 
                 jinx = read_jinx()
                 state_data = jinx.get("state") or {}
-                state_dump = yaml.dump(
-                    state_data,
-                    allow_unicode=True,
-                    default_flow_style=False,
-                    sort_keys=False
-                )
+                state_dump = Yaml.dump_to_string(state_data)
                 user_msg = construct_round_prompt(
                     rnd=rnd,
                     min_rounds=min_rounds,
@@ -606,21 +743,19 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
                     "type": "llm_generate",
                     "system": SYSTEM_PROMPT,
                     "messages": history,
-                    "tools": []
+                    "tools": to_flow([])
                 }
                 try:
-                    with open(REQUEST_PATH, "w", encoding="utf-8") as f:
-                        json.dump(request_payload, f, indent=2)
-                except OSError as e:
+                    Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
+                except JinxError as e:
                     logger.error("Failed to write final summary request: %s", e)
                     sys.exit(1)
 
                 run_state["waiting_for"] = "llm_generate"
                 run_state["history"] = history
                 try:
-                    with open(RUN_STATE_PATH, "w", encoding="utf-8") as f:
-                        json.dump(run_state, f, indent=2)
-                except OSError as e:
+                    Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
+                except JinxError as e:
                     logger.error("Failed to write run state updates: %s", e)
                     sys.exit(1)
 
@@ -686,12 +821,7 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
         state_data = jinx.get("state")
         if not isinstance(state_data, dict):
             state_data = {}
-        state_dump = yaml.dump(
-            state_data,
-            allow_unicode=True,
-            default_flow_style=False,
-            sort_keys=False
-        )
+        state_dump = Yaml.dump_to_string(state_data)
 
         user_msg = construct_round_prompt(
             rnd=rnd,
