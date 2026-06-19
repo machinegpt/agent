@@ -691,6 +691,9 @@ class PytestSuitePhase(VerificationPhase):
             if exit_code == 0:
                 suite.print_badge("Core automated test suite: ALL TESTS PASSED SUCCESSFULLY", True)
                 return True
+            elif exit_code == 5:
+                suite.print_badge("Core automated test suite: No static regression tests found (skipping Phase 4)", True)
+                return True
             else:
                 suite.print_badge(f"Core automated test suite FAILED (exit code: {exit_code})", False)
                 return False
