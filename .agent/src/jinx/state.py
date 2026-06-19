@@ -26,7 +26,32 @@ logger = logging.getLogger("jinx.state")
 
 # Resolve the base directory where the agent is installed (e.g., .agent/)
 AGENT_DIR: Path = Path(__file__).resolve().parent.parent.parent
-JINX_PATH: Path = AGENT_DIR / "JINX.yaml"
+
+
+def _resolve_jinx_path() -> Path:
+    """Resolves the JINX.yaml path dynamically to support both developmental and pip-installed runs."""
+    # 1. Respect environment variable override if provided
+    env_path = os.environ.get("JINX_PATH")
+    if env_path:
+        return Path(env_path).resolve()
+
+    # 2. Check if the file exists at development-time location (inside .agent/ relative to state.py)
+    dev_jinx_path = AGENT_DIR / "JINX.yaml"
+    if dev_jinx_path.exists() and dev_jinx_path.is_file():
+        return dev_jinx_path
+
+    # 3. Traverse upwards from the current working directory to find .agent/JINX.yaml
+    curr = Path.cwd().resolve()
+    for parent in [curr] + list(curr.parents):
+        candidate = parent / ".agent" / "JINX.yaml"
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+    # 4. Ultimate fallback to the current directory / .agent / JINX.yaml
+    return Path.cwd() / ".agent" / "JINX.yaml"
+
+
+JINX_PATH: Path = _resolve_jinx_path()
 
 
 class ScoreEntry(BaseModel):

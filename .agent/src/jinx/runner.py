@@ -211,12 +211,17 @@ def get_tool_result_from_editor(tool_use_id: str, name: str, params: Dict[str, A
         return f"Error receiving input from editor: {e}"
 
 
-def request_llm_from_editor(system: str, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def request_llm_from_editor(
+    system: str,
+    messages: List[Dict[str, Any]],
+    tools: Optional[List[Dict[str, Any]]] = None
+) -> List[Dict[str, Any]]:
     """Delegates LLM message generation to the host editor via IPC.
 
     Args:
         system (str): The system prompt guidance defining agent behavior.
         messages (List[Dict[str, Any]]): The chronological conversation thread.
+        tools (Optional[List[Dict[str, Any]]]): Optional tool declarations to pass to the LLM.
 
     Returns:
         List[Dict[str, Any]]: The parsed list of block objects returned by the LLM,
@@ -227,7 +232,7 @@ def request_llm_from_editor(system: str, messages: List[Dict[str, Any]]) -> List
         "params": {
             "system": system,
             "messages": messages,
-            "tools": tool_schema()
+            "tools": tools if tools is not None else tool_schema()
         }
     }
     try:
@@ -338,7 +343,19 @@ def run(task: str, min_override: Optional[int]) -> None:
                 history.append({"role": "user", "content": tool_results})
                 tool_depth += 1
                 if tool_depth >= TOOL_DEPTH_CAP:
-                    logger.warning("Inner tool-calling depth limit (%d) reached. Breaking inner loop to prevent infinite hang.", TOOL_DEPTH_CAP)
+                    logger.warning("Inner tool-calling depth limit (%d) reached. Invoking final summary round to recover state block.", TOOL_DEPTH_CAP)
+                    # Force one last non-tool generation to let the model output its state block safely
+                    final_user_msg = (
+                        "CRITICAL: The inner tool-calling depth limit has been reached. "
+                        "Do not call any more tools. You must immediately output your final thought "
+                        "and the exact, complete <state> block to persist your progress and avoid state loss."
+                    )
+                    history.append({"role": "user", "content": final_user_msg})
+                    content_blocks = request_llm_from_editor(SYSTEM_PROMPT, history, tools=[])
+                    history.append({"role": "assistant", "content": content_blocks})
+                    for block in content_blocks:
+                        if block.get("type") == "text":
+                            full_text += block.get("text", "")
                     break
                 # Re-invoke LLM with the results of the tool executions
                 continue
