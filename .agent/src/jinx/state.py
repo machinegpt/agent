@@ -51,7 +51,11 @@ def _resolve_jinx_path() -> Path:
     return Path.cwd() / ".agent" / "JINX.yaml"
 
 
-JINX_PATH: Path = _resolve_jinx_path()
+def __getattr__(name: str) -> Any:
+    """Handles dynamic lookups for module-level attributes like JINX_PATH."""
+    if name == "JINX_PATH":
+        return _resolve_jinx_path()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class ScoreEntry(BaseModel):
@@ -84,15 +88,16 @@ def read_jinx() -> Dict[str, Any]:
         Dict[str, Any]: The parsed configuration dictionary, or an empty
             dictionary if the file does not exist or fails to parse.
     """
-    if not JINX_PATH.exists():
-        logger.debug("JINX state file not found at %s. Returning empty state.", JINX_PATH)
+    jinx_path = _resolve_jinx_path()
+    if not jinx_path.exists():
+        logger.debug("JINX state file not found at %s. Returning empty state.", jinx_path)
         return {}
     try:
-        with open(JINX_PATH, encoding="utf-8") as f:
+        with open(jinx_path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
             return data if isinstance(data, dict) else {}
     except (yaml.YAMLError, OSError) as e:
-        logger.error("Failed to read or parse JINX.yaml at %s: %s", JINX_PATH, e)
+        logger.error("Failed to read or parse JINX.yaml at %s: %s", jinx_path, e)
         return {}
 
 
@@ -102,10 +107,11 @@ def write_jinx(data: Dict[str, Any]) -> None:
     Args:
         data (Dict[str, Any]): The state manifest dictionary to serialize.
     """
+    jinx_path = _resolve_jinx_path()
     try:
         # Ensure parent directory exists before writing
-        JINX_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(JINX_PATH, "w", encoding="utf-8") as f:
+        jinx_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(jinx_path, "w", encoding="utf-8") as f:
             yaml.dump(
                 data,
                 f,
@@ -114,7 +120,7 @@ def write_jinx(data: Dict[str, Any]) -> None:
                 sort_keys=False
             )
     except OSError as e:
-        logger.error("Failed to write JINX state serialization to %s: %s", JINX_PATH, e)
+        logger.error("Failed to write JINX state serialization to %s: %s", jinx_path, e)
 
 
 def merge_state(jinx: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
