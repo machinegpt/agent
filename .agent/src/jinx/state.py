@@ -148,6 +148,12 @@ def merge_state(jinx: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
     for key in ("task", "facts", "scores", "debt", "open"):
         if key in validated_dict:
             s[key] = validated_dict[key]
+
+    if "scores" in s and isinstance(s["scores"], list) and len(s["scores"]) > 5:
+        for entry in s["scores"][:-5]:
+            entry["prior_failure"] = None
+            entry["approach"] = "unspecified"
+
     s["exit_ready"] = validated_block.exit_ready
     s["deadlock"] = validated_block.deadlock
     return jinx

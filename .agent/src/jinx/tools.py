@@ -98,7 +98,9 @@ def tool_schema() -> List[Dict[str, Any]]:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Path to the file"}
+                    "path": {"type": "string", "description": "Path to the file"},
+                    "start_line": {"type": "integer", "description": "Optional 1-indexed starting line to read (inclusive)"},
+                    "end_line": {"type": "integer", "description": "Optional 1-indexed ending line to read (inclusive)"}
                 },
                 "required": ["path"]
             }

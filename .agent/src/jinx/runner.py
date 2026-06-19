@@ -33,40 +33,35 @@ HARD_CAP: int = 40
 TOOL_DEPTH_CAP: int = 20
 STATE_TAG: str = "state"
 
-SYSTEM_PROMPT: str = f"""You are JINX, a single-agent cognitive loop. You execute tasks through disciplined iterative refinement.
+SYSTEM_PROMPT: str = f"""You are JINX, an agent executing tasks via iterative refinement.
+LOOP PROTOCOL:
+- GATE BEFORE TRY: State what the previous round failed on. No silent retries.
+- TRY: Use an approach different from all prior ones.
+- TEST: Use bash_exec, file_read, and file_write tools.
+- SCORE: Evaluate per-requirement pass/fail.
+- GATE BEFORE COMMIT: Perform end-to-end verification.
 
-LOOP PROTOCOL (enforced externally — each call is one real round):
-
-GATE BEFORE TRY: Write exactly what the previous round failed on. No silent retries.
-TRY: Choose an approach genuinely different from all prior approaches this task.
-TEST: You have access to bash_exec, file_read, and file_write tools. The host editor/runner will execute them.
-SCORE: Per-requirement pass/fail. Not holistic.
-GATE BEFORE COMMIT: Functional end-to-end verification required.
-
-STATE PERSISTENCE: Between rounds, your state lives in JINX.yaml on disk. You MUST return an updated state block at the end of your response.
-
-REQUIRED — end every response with this block (valid JSON inside tags, no markdown fences):
+PERSISTENCE: Your state lives in JINX.yaml. End every response with this block (valid JSON, no markdown fences):
 <{STATE_TAG}>
 {{
-  "task": "task as understood",
-  "facts": ["scope facts", "constraints found"],
+  "task": "understood task",
+  "facts": ["facts found"],
   "scores": [
     {{
       "round": 1,
-      "approach": "approach name",
-      "prior_failure": "what failed before this round",
-      "requirements": {{"req_name": true}},
+      "approach": "approach",
+      "prior_failure": "failed attempt detail",
+      "requirements": {{"req": true}},
       "pass_count": 1,
       "all_pass": false
     }}
   ],
-  "debt": ["shortcuts taken"],
-  "open": ["unresolved issues"],
+  "debt": ["debts"],
+  "open": ["issues"],
   "exit_ready": false,
   "deadlock": false
 }}
-</{STATE_TAG}>
-"""
+</{STATE_TAG}>"""
 
 
 def parse_state_block(text: str) -> Optional[Dict[str, Any]]:
@@ -332,6 +327,28 @@ def run(task: str, min_override: Optional[int]) -> None:
 
                     logger.info("Executing tool command '%s' via host editor.", name)
                     result_content = get_tool_result_from_editor(tool_use_id, name, params)
+
+                    if name == "file_read" and not result_content.startswith("Error"):
+                        try:
+                            start_line = params.get("start_line")
+                            end_line = params.get("end_line")
+                            if start_line is not None or end_line is not None:
+                                lines = result_content.splitlines()
+                                if lines:
+                                    s_line = int(start_line) if start_line is not None else 1
+                                    e_line = int(end_line) if end_line is not None else len(lines)
+                                    s_line = max(1, s_line)
+                                    if s_line > len(lines):
+                                        s_line = len(lines)
+                                    e_line = max(s_line, e_line)
+                                    if e_line > len(lines):
+                                        e_line = len(lines)
+                                    sliced_lines = lines[s_line - 1:e_line]
+                                    result_content = "\n".join(sliced_lines)
+                                else:
+                                    result_content = ""
+                        except (ValueError, TypeError) as e:
+                            logger.error("Failed to parse start_line/end_line in file_read: %s", e)
 
                     tool_results.append({
                         "type": "tool_result",
