@@ -184,6 +184,36 @@ def _are_approaches_similar(entry1: Any, entry2: Any) -> bool:
     return combined_sim >= 0.7
 
 
+def _select_representative(cluster: List[Any], entry: Any) -> Any:
+    """Selects the best representative of the cluster to compare against the new entry.
+
+    To handle transitive approach similarity chains cleanly and prevent premature deadlock triggers,
+    if any member of the cluster is similar to the new entry, we select that member as the representative
+    (providing single-linkage behavior). Otherwise, we fall back to the cluster medoid (the most central element).
+    """
+    if not cluster:
+        return None
+
+    # 1. Single-linkage: if any member is similar, let that member be the representative
+    for member in cluster:
+        if _are_approaches_similar(entry, member):
+            return member
+
+    # 2. Centroid fallback: select the medoid of the cluster
+    if len(cluster) <= 2:
+        return cluster[0]
+
+    best_member = cluster[0]
+    best_score = -1
+    for member in cluster:
+        # Count how many other members in the cluster are similar to this member
+        score = sum(1 for other in cluster if other is not member and _are_approaches_similar(member, other))
+        if score > best_score:
+            best_score = score
+            best_member = member
+    return best_member
+
+
 def check_deadlock(scores: List[Any], min_rounds: int, rnd: int) -> bool:
     """Determines if the cognitive loop is stuck in a deadlock of repeated failures.
 
@@ -213,7 +243,8 @@ def check_deadlock(scores: List[Any], min_rounds: int, rnd: int) -> bool:
         for entry in entries:
             matched_cluster = None
             for cluster in clusters:
-                if _are_approaches_similar(entry, cluster[0]):
+                rep = _select_representative(cluster, entry)
+                if _are_approaches_similar(entry, rep):
                     matched_cluster = cluster
                     break
             if matched_cluster is not None:

@@ -42,4 +42,4 @@ Thumbs.db
 # --- Test Caches & Diagnostic Reports ---
 .pytest_cache/
 *.log
-tests/
+tests/jinx_test_report.json
