@@ -1,7 +1,7 @@
 # ==============================================================================
 # AI-Generated Enterprise Verification Plugin
 # Module: jinx.runner
-# Generated At: 2026-06-19T16:30:01Z
+# Generated At: 2026-06-19T16:54:06Z
 #
 # This file is dynamically managed by the JINX AI Synthesis Engine.
 # Public classes and methods are verified automatically.
@@ -129,28 +129,31 @@ class VerifyRunnerPhase(VerificationPhase):
                 # Case 1: Smart editor with "sliced: true"
                 sys.stdin = io.StringIO('{"output": "line 2", "sliced": true}\n')
                 sys.stdout = io.StringIO()
-                res, sliced = target_module.get_tool_result_from_editor("call_1", "file_read", {})
+                res, sliced, is_err = target_module.get_tool_result_from_editor("call_1", "file_read", {})
                 sys.stdout = original_stdout
                 assert res == "line 2"
                 assert sliced is True
+                assert is_err is False
                 suite.print_badge("Custom Assert: get_tool_result_from_editor detects 'sliced': true flag", True)
 
                 # Case 2: Smart editor with "is_sliced: true"
                 sys.stdin = io.StringIO('{"output": "line 3", "is_sliced": true}\n')
                 sys.stdout = io.StringIO()
-                res, sliced = target_module.get_tool_result_from_editor("call_2", "file_read", {})
+                res, sliced, is_err = target_module.get_tool_result_from_editor("call_2", "file_read", {})
                 sys.stdout = original_stdout
                 assert res == "line 3"
                 assert sliced is True
+                assert is_err is False
                 suite.print_badge("Custom Assert: get_tool_result_from_editor detects 'is_sliced': true flag", True)
 
                 # Case 3: Legacy editor with no slicing flags
                 sys.stdin = io.StringIO('{"output": "line 1\\nline 2\\nline 3"}\n')
                 sys.stdout = io.StringIO()
-                res, sliced = target_module.get_tool_result_from_editor("call_3", "file_read", {})
+                res, sliced, is_err = target_module.get_tool_result_from_editor("call_3", "file_read", {})
                 sys.stdout = original_stdout
                 assert res == "line 1\nline 2\nline 3"
                 assert sliced is False
+                assert is_err is False
                 suite.print_badge("Custom Assert: get_tool_result_from_editor handles legacy editor with no slicing flags", True)
             finally:
                 sys.stdin = original_stdin
