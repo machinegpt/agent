@@ -170,9 +170,10 @@ def merge_state(jinx: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
 
     s: Dict[str, Any] = jinx.setdefault("state", {})
     for key in ("task", "facts", "scores", "debt", "open"):
-        # Only merge keys that were actually present in the LLM's raw update to prevent overwriting with defaults
-        if key in update:
-            s[key] = validated_dict.get(key)
+        # Require the key to be present in both update (sent by LLM) and validated_dict (survived exclude_none=True)
+        # to prevent overwriting valid pre-existing state with None or defaults.
+        if key in update and key in validated_dict:
+            s[key] = validated_dict[key]
 
     if "scores" in s and isinstance(s["scores"], list) and len(s["scores"]) > 5:
         for entry in s["scores"][:-5]:

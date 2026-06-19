@@ -75,17 +75,22 @@ if str(SCRIPTS_PATH) not in sys.path:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("jinx.jinx_test")
 
-# ANSI escape sequences for premium terminal aesthetics
+# ANSI 24-bit True Color (RGB) escape sequences for elite machineGPT design aesthetics
 COLOR_RESET = "\033[0m"
 COLOR_BOLD = "\033[1m"
-COLOR_RED = "\033[31m"
-COLOR_GREEN = "\033[32m"
-COLOR_YELLOW = "\033[33m"
-COLOR_BLUE = "\033[34m"
-COLOR_CYAN = "\033[36m"
-COLOR_WHITE_ON_BLUE = "\033[37;44m"
-COLOR_WHITE_ON_GREEN = "\033[37;42m"
-COLOR_WHITE_ON_RED = "\033[37;41m"
+
+# Curated premium foreground colors
+COLOR_RED = "\033[38;2;255;99;132m"      # Soft Vibrant Crimson
+COLOR_GREEN = "\033[38;2;46;204;113m"    # Elegant Mint Green
+COLOR_YELLOW = "\033[38;2;255;193;7m"    # Warm Cyber Gold
+COLOR_BLUE = "\033[38;2;52;152;219m"     # Sleek Tech Blue
+COLOR_CYAN = "\033[38;2;162;120;255m"    # Deep Cosmos Violet (replaces generic cyan)
+COLOR_GRAY = "\033[38;2;140;150;170m"    # Tech Gray
+
+# Curated premium badges (white/pastel text on tailored dark backgrounds)
+COLOR_WHITE_ON_BLUE = "\033[38;2;240;248;255;48;2;90;20;140m"   # Soft silver text on Deep Amethyst Purple background
+COLOR_WHITE_ON_GREEN = "\033[38;2;220;255;230;48;2;12;135;80m"  # Pale mint text on Deep Mint Emerald background
+COLOR_WHITE_ON_RED = "\033[38;2;255;225;225;48;2;198;40;40m"    # Pale pink text on Deep Velvet Red background
 
 
 class VerificationPhase:
