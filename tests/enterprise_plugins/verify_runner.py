@@ -1,7 +1,7 @@
 # ==============================================================================
 # AI-Generated Enterprise Verification Plugin
 # Module: jinx.runner
-# Generated At: 2026-06-19T16:07:04Z
+# Generated At: 2026-06-19T16:20:30Z
 #
 # This file is dynamically managed by the JINX AI Synthesis Engine.
 # Public classes and methods are verified automatically.
@@ -118,6 +118,45 @@ class VerifyRunnerPhase(VerificationPhase):
                 target_module._are_approaches_similar = original_sim
         except Exception as e:
             suite.print_badge(f"Custom Assert: check_deadlock transitive test failed: {e}", False)
+            success = False
+
+        # Verify IPC Contract and Slicing Capabilities
+        try:
+            import io
+            original_stdin = sys.stdin
+            original_stdout = sys.stdout
+            try:
+                # Case 1: Smart editor with "sliced: true"
+                sys.stdin = io.StringIO('{"output": "line 2", "sliced": true}\n')
+                sys.stdout = io.StringIO()
+                res, sliced = target_module.get_tool_result_from_editor("call_1", "file_read", {})
+                sys.stdout = original_stdout
+                assert res == "line 2"
+                assert sliced is True
+                suite.print_badge("Custom Assert: get_tool_result_from_editor detects 'sliced': true flag", True)
+
+                # Case 2: Smart editor with "is_sliced: true"
+                sys.stdin = io.StringIO('{"output": "line 3", "is_sliced": true}\n')
+                sys.stdout = io.StringIO()
+                res, sliced = target_module.get_tool_result_from_editor("call_2", "file_read", {})
+                sys.stdout = original_stdout
+                assert res == "line 3"
+                assert sliced is True
+                suite.print_badge("Custom Assert: get_tool_result_from_editor detects 'is_sliced': true flag", True)
+
+                # Case 3: Legacy editor with no slicing flags
+                sys.stdin = io.StringIO('{"output": "line 1\\nline 2\\nline 3"}\n')
+                sys.stdout = io.StringIO()
+                res, sliced = target_module.get_tool_result_from_editor("call_3", "file_read", {})
+                sys.stdout = original_stdout
+                assert res == "line 1\nline 2\nline 3"
+                assert sliced is False
+                suite.print_badge("Custom Assert: get_tool_result_from_editor handles legacy editor with no slicing flags", True)
+            finally:
+                sys.stdin = original_stdin
+                sys.stdout = original_stdout
+        except Exception as e:
+            suite.print_badge(f"Custom Assert: IPC and slicing verification test failed: {e}", False)
             success = False
         # <CUSTOM_CODE_END>
         # ==============================================================================

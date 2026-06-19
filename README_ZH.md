@@ -1,10 +1,10 @@
 [English](README.md) | [Русский](README_RU.md) | [中文](README_ZH.md)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-5A148C?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.1.6--enterprise-A278FF?style=for-the-badge" alt="Version Badge" />
-  <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-FF6384?style=for-the-badge" alt="Architecture Badge" />
-  <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-2ECC71?style=for-the-badge" alt="Integration Badge" />
+  <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
+  <img src="https://img.shields.io/badge/version-1.1.6--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-0D9488?style=for-the-badge" alt="Architecture Badge" />
+  <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-059669?style=for-the-badge" alt="Integration Badge" />
 </p>
 
 <h1 align="center">JINX — 企业级主权代理运行时技术规范</h1>
@@ -224,30 +224,38 @@ graph LR
 ### 认知循环流程图 / Cognitive Control Flow
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "actorBkg": "#21262d", "actorBorder": "#8b949e", "actorTextColor": "#e6edf3", "actorLineColor": "#8b949e", "signalColor": "#8b949e", "signalTextColor": "#e6edf3", "noteBkgColor": "#373320", "noteBorderColor": "#d4a72c", "noteTextColor": "#f0e6c0", "labelBoxBkgColor": "#21262d", "labelBoxBorderColor": "#8b949e", "labelTextColor": "#e6edf3", "loopTextColor": "#e6edf3", "activationBkgColor": "#30363d", "activationBorderColor": "#8b949e"}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "primaryColor": "#1e293b", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#3b82f6", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#0f172a"}}}%%
 flowchart TD
-    A([jinx-cli / jinx.py]) --> B[cli.py: 解析参数]
-    B --> C[runner.py: 运行 run]
-    C --> D[state.py: 读取 read_jinx]
-    D -->|env 变量 / 开发路径 / 向上遍历 CWD| E[(JINX.yaml)]
-    C --> F{循环: rnd < HARD_CAP?}
-    F -->|重置历史记录| G[基于 state_dump 构建 user 消息]
-    G --> H[通过 JSON-RPC 请求 request_llm_from_editor]
-    H --> I{包含 tool_use 块?}
-    I -->|是| J[执行 get_tool_result_from_editor]
-    J --> K{tool_depth >= TOOL_DEPTH_CAP?}
-    K -->|是| L[恢复调用, tools=empty, break]
-    K -->|否| H
-    I -->|否| M[解析 parse_state_block - 匹配最后一个]
-    L --> M
-    M --> N[通过 Pydantic 验证合并 merge_state]
-    N --> O[通过 write_jinx 写入 JINX.yaml]
-    O --> E
-    N --> P{exit_ready 且满足 check_exit?}
-    P -->|是| Q([正常退出: 状态码 0])
-    N --> S{检测到 deadlock 或满足 check_deadlock?}
-    S -->|是| T([死锁退出: 状态码 0])
-    F -->|超出 HARD_CAP 限额| U([sys.exit 2])
+    classDef start fill:#1e1b4b,stroke:#6366f1,stroke-width:2px,color:#f8fafc;
+    classDef process fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#f8fafc;
+    classDef decision fill:#1e293b,stroke:#f59e0b,stroke-width:2px,color:#f8fafc;
+    classDef success fill:#064e3b,stroke:#10b981,stroke-width:2px,color:#f8fafc;
+    classDef danger fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#f8fafc;
+
+    A["LLM 响应文本"]:::start --> B["parse_state_block()"]:::process
+    B --> C{"寻找 ```yaml/json/yml<br/>代码块（倒序）"}:::decision
+    C -->|"找到代码块"| D{"字典中包含<br/>≥ 2 个状态键？"}:::decision
+    D -->|"是"| E["返回解析后的字典 (update)"]:::process
+    D -->|"否"| C
+    C -->|"无匹配"| F["返回 None<br/>(状态未改变)"]:::danger
+
+    E --> G["merge_state(jinx, update)"]:::process
+    G --> H{"StateBlock.model_validate(update)<br/>验证通过？"}:::decision
+    H -->|"否 (验证错误)"| I["拒绝更新，<br/>返回原有 jinx 字典"]:::danger
+    H -->|"是 (OK)"| J["model_dump(exclude_none=True)<br/>→ validated_dict"]:::process
+    J --> K{"键存在于 update<br/>且存在于 validated_dict 中？"}:::decision
+    K -->|"是"| L["s[key] = validated_dict[key]"]:::process
+    K -->|"否 (null 或缺失)"| M["保留原有的 s[key]"]:::process
+    L --> N["从最旧的 scores 中<br/>修剪 prior_failure"]:::process
+    M --> N
+    N --> O["write_jinx(jinx)"]:::process
+
+    O --> P["check_exit()"]:::process
+    O --> Q["check_deadlock()"]:::process
+    Q --> R["_are_approaches_similar()<br/>Jaccard 点+边相似度 ≥ 0.7"]:::process
+    R --> S{"每个需求包含<br/>≥ 3 个不同的聚类？"}:::decision
+    S -->|"是"| T["死锁发生 → 挂起/终止"]:::danger
+    S -->|"否"| U["继续执行循环"]:::success
 ```
 
 ### 认知过程时序图 / Cognitive Process Sequence Flow
@@ -473,7 +481,7 @@ JINX 旨在特定协议限制被触发时自动停止执行，在继续下一步
 为了保证 JINX 100% 的兼容性、数据模式一致性以及结构稳定性，我们在项目中引入了位于 `scripts/jinx_test.py` 的专业级统一测试套件。该系统将静态环境审计和单元回归测试与完全自动化的、自愈式动态 AI 合成引擎 (`AISynthesisEngine`) 有机结合。
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
 graph TD
     subgraph Engine["AISynthesisEngine (jinx_test.py)"]
         AST["1. 离线 AST 解析器<br/>(扫描 .agent/src/jinx/)"]

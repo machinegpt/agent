@@ -1,10 +1,10 @@
 [English](README.md) | [Русский](README_RU.md) | [中文](README_ZH.md)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-5A148C?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.1.6--enterprise-A278FF?style=for-the-badge" alt="Version Badge" />
-  <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-FF6384?style=for-the-badge" alt="Architecture Badge" />
-  <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-2ECC71?style=for-the-badge" alt="Integration Badge" />
+  <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
+  <img src="https://img.shields.io/badge/version-1.1.6--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-0D9488?style=for-the-badge" alt="Architecture Badge" />
+  <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-059669?style=for-the-badge" alt="Integration Badge" />
 </p>
 
 <h1 align="center">JINX — Enterprise Sovereign Agent Runtime Specification</h1>
@@ -224,30 +224,38 @@ graph LR
 ### Cognitive Loop Control Flow
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "actorBkg": "#21262d", "actorBorder": "#8b949e", "actorTextColor": "#e6edf3", "actorLineColor": "#8b949e", "signalColor": "#8b949e", "signalTextColor": "#e6edf3", "noteBkgColor": "#373320", "noteBorderColor": "#d4a72c", "noteTextColor": "#f0e6c0", "labelBoxBkgColor": "#21262d", "labelBoxBorderColor": "#8b949e", "labelTextColor": "#e6edf3", "loopTextColor": "#e6edf3", "activationBkgColor": "#30363d", "activationBorderColor": "#8b949e"}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "primaryColor": "#1e293b", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#3b82f6", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#0f172a"}}}%%
 flowchart TD
-    A([jinx-cli / jinx.py]) --> B[cli.py: parse args]
-    B --> C[runner.py: run]
-    C --> D[state.py: read_jinx]
-    D -->|env / dev path / CWD traversal| E[(JINX.yaml)]
-    C --> F{while rnd < HARD_CAP}
-    F -->|reset history| G[Build user msg from state_dump]
-    G --> H[request_llm_from_editor via JSON-RPC]
-    H --> I{tool_use blocks?}
-    I -->|yes| J[get_tool_result_from_editor]
-    J --> K{tool_depth >= TOOL_DEPTH_CAP?}
-    K -->|yes| L[Recovery call, tools=empty, break]
-    K -->|no| H
-    I -->|no| M[parse_state_block - last match]
-    L --> M
-    M --> N[merge_state via Pydantic validate]
-    N --> O[write_jinx to JINX.yaml]
-    O --> E
-    N --> P{exit_ready and check_exit?}
-    P -->|yes| Q([Clean exit 0])
-    N --> S{deadlock or check_deadlock?}
-    S -->|yes| T([Exit 0 deadlock])
-    F -->|exhausted| U([sys.exit 2])
+    classDef start fill:#1e1b4b,stroke:#6366f1,stroke-width:2px,color:#f8fafc;
+    classDef process fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#f8fafc;
+    classDef decision fill:#1e293b,stroke:#f59e0b,stroke-width:2px,color:#f8fafc;
+    classDef success fill:#064e3b,stroke:#10b981,stroke-width:2px,color:#f8fafc;
+    classDef danger fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#f8fafc;
+
+    A["LLM Response Text"]:::start --> B["parse_state_block()"]:::process
+    B --> C{"Find ```yaml/json/yml<br/>code blocks (reversed)"}:::decision
+    C -->|"Block found"| D{"≥ 2 state keys<br/>in dict?"}:::decision
+    D -->|"Yes"| E["Return parsed dict (update)"]:::process
+    D -->|"No"| C
+    C -->|"None match"| F["Return None<br/>(state unchanged)"]:::danger
+
+    E --> G["merge_state(jinx, update)"]:::process
+    G --> H{"StateBlock.model_validate(update)<br/>Is Valid?"}:::decision
+    H -->|"No (ValidationError)"| I["Reject update,<br/>return existing jinx"]:::danger
+    H -->|"Yes (OK)"| J["model_dump(exclude_none=True)<br/>→ validated_dict"]:::process
+    J --> K{"key in update<br/>AND key in validated_dict?"}:::decision
+    K -->|"Yes"| L["s[key] = validated_dict[key]"]:::process
+    K -->|"No (null or missing)"| M["Preserve existing s[key]"]:::process
+    L --> N["Prune prior_failure<br/>from oldest scores"]:::process
+    M --> N
+    N --> O["write_jinx(jinx)"]:::process
+
+    O --> P["check_exit()"]:::process
+    O --> Q["check_deadlock()"]:::process
+    Q --> R["_are_approaches_similar()<br/>Jaccard node+edge sim ≥ 0.7"]:::process
+    R --> S{"≥ 3 distinct<br/>clusters per req?"}:::decision
+    S -->|"Yes"| T["Deadlock → halt"]:::danger
+    S -->|"No"| U["Continue loop"]:::success
 ```
 
 ### Cognitive Process Sequence Flow
@@ -473,7 +481,7 @@ Once the cognitive loop satisfies all exiting criteria, JINX exits cleanly with 
 To guarantee 100% compliance, schema conformance, and structural stability of JINX, we feature a professional, unified super test suite located at `scripts/jinx_test.py`. This system integrates static environments and unit regression testing with a fully automated, self-healing dynamic AI Synthesis Engine.
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
 graph TD
     subgraph Engine["AISynthesisEngine (jinx_test.py)"]
         AST["1. Offline AST Parser<br/>(Scans .agent/src/jinx/)"]

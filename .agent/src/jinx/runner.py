@@ -19,7 +19,7 @@ import logging
 import re
 import sys
 import textwrap
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -264,7 +264,7 @@ def check_deadlock(scores: List[Any], min_rounds: int, rnd: int) -> bool:
 
 
 
-def get_tool_result_from_editor(tool_use_id: str, name: str, params: Dict[str, Any]) -> str:
+def get_tool_result_from_editor(tool_use_id: str, name: str, params: Dict[str, Any]) -> Tuple[str, bool]:
     """Dispatches tool invocation via JSON-RPC on stdout and awaits the result from stdin.
 
     Args:
@@ -273,7 +273,9 @@ def get_tool_result_from_editor(tool_use_id: str, name: str, params: Dict[str, A
         params (Dict[str, Any]): The input parameters for tool execution.
 
     Returns:
-        str: The raw string representation of the tool output returned by the host.
+        Tuple[str, bool]: A tuple containing:
+            - The raw string representation of the tool output returned by the host.
+            - A boolean indicating if the host editor already sliced the content (was_sliced).
     """
     payload = {
         "jinx_command": name,
@@ -285,19 +287,20 @@ def get_tool_result_from_editor(tool_use_id: str, name: str, params: Dict[str, A
         print(json.dumps(payload), flush=True)
     except OSError as e:
         logger.error("Failed to transmit JSON-RPC tool invocation payload to stdout: %s", e)
-        return f"Error: Failed to transmit payload to stdout: {e}"
+        return f"Error: Failed to transmit payload to stdout: {e}", False
 
     try:
         line = sys.stdin.readline()
         if not line:
             logger.error("Host stdin was closed unexpectedly during tool invocation.")
-            return "Error: Editor disconnected or closed stdin."
+            return "Error: Editor disconnected or closed stdin.", False
         response = json.loads(line)
         output = response.get("output") or response.get("content") or str(response)
-        return str(output)
+        was_sliced = bool(response.get("sliced") or response.get("is_sliced"))
+        return str(output), was_sliced
     except (json.JSONDecodeError, OSError) as e:
         logger.error("Error receiving or decoding tool result from host stdin: %s", e)
-        return f"Error receiving input from editor: {e}"
+        return f"Error receiving input from editor: {e}", False
 
 
 def request_llm_from_editor(
@@ -420,9 +423,9 @@ def run(task: str, min_override: Optional[int]) -> None:
                     params = block.get("input") or {}
 
                     logger.info("Executing tool command '%s' via host editor.", name)
-                    result_content = get_tool_result_from_editor(tool_use_id, name, params)
+                    result_content, was_sliced = get_tool_result_from_editor(tool_use_id, name, params)
 
-                    if name == "file_read" and not result_content.startswith("Error"):
+                    if name == "file_read" and not result_content.startswith("Error") and not was_sliced:
                         try:
                             start_line = params.get("start_line")
                             end_line = params.get("end_line")

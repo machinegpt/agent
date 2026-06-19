@@ -1,10 +1,10 @@
 [English](README.md) | [Русский](README_RU.md) | [中文](README_ZH.md)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-5A148C?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.1.6--enterprise-A278FF?style=for-the-badge" alt="Version Badge" />
-  <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-FF6384?style=for-the-badge" alt="Architecture Badge" />
-  <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-2ECC71?style=for-the-badge" alt="Integration Badge" />
+  <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
+  <img src="https://img.shields.io/badge/version-1.1.6--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-0D9488?style=for-the-badge" alt="Architecture Badge" />
+  <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-059669?style=for-the-badge" alt="Integration Badge" />
 </p>
 
 <h1 align="center">JINX — Спецификация Среды Выполнения Суверенного Корпоративного Агента</h1>
@@ -224,30 +224,38 @@ graph LR
 ### Блок-схема когнитивного цикла / Cognitive Control Flow
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "actorBkg": "#21262d", "actorBorder": "#8b949e", "actorTextColor": "#e6edf3", "actorLineColor": "#8b949e", "signalColor": "#8b949e", "signalTextColor": "#e6edf3", "noteBkgColor": "#373320", "noteBorderColor": "#d4a72c", "noteTextColor": "#f0e6c0", "labelBoxBkgColor": "#21262d", "labelBoxBorderColor": "#8b949e", "labelTextColor": "#e6edf3", "loopTextColor": "#e6edf3", "activationBkgColor": "#30363d", "activationBorderColor": "#8b949e"}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "primaryColor": "#1e293b", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#3b82f6", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#0f172a"}}}%%
 flowchart TD
-    A([jinx-cli / jinx.py]) --> B[cli.py: разбор аргументов]
-    B --> C[runner.py: запуск цикла run]
-    C --> D[state.py: чтение read_jinx]
-    D -->|env / dev-путь / поиск вверх по CWD| E[(JINX.yaml)]
-    C --> F{rnd < HARD_CAP ?}
-    F -->|сброс истории| G[Формирование user msg на основе state_dump]
-    G --> H[Запрос request_llm_from_editor через JSON-RPC]
-    H --> I{Есть блоки tool_use?}
-    I -->|да| J[Вызов get_tool_result_from_editor]
-    J --> K{tool_depth >= TOOL_DEPTH_CAP?}
-    K -->|да| L[Восстановительный вызов, tools=empty, break]
-    K -->|нет| H
-    I -->|нет| M[Метод parse_state_block - последнее совпадение]
-    L --> M
-    M --> N[Слияние merge_state с Pydantic-валидацией]
-    N --> O[Запись write_jinx в JINX.yaml]
-    O --> E
-    N --> P{exit_ready и check_exit?}
-    P -->|да| Q([Чистый выход: код 0])
-    N --> S{deadlock или check_deadlock?}
-    S -->|да| T([Выход по дедлоку: код 0])
-    F -->|исчерпан лимит раундов| U([sys.exit 2])
+    classDef start fill:#1e1b4b,stroke:#6366f1,stroke-width:2px,color:#f8fafc;
+    classDef process fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#f8fafc;
+    classDef decision fill:#1e293b,stroke:#f59e0b,stroke-width:2px,color:#f8fafc;
+    classDef success fill:#064e3b,stroke:#10b981,stroke-width:2px,color:#f8fafc;
+    classDef danger fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#f8fafc;
+
+    A["Текст ответа LLM"]:::start --> B["parse_state_block()"]:::process
+    B --> C{"Поиск блоков кода ```yaml/json/yml<br/>(в обратном порядке)"}:::decision
+    C -->|"Блок найден"| D{"≥ 2 ключей состояния<br/>в словаре?"}:::decision
+    D -->|"Да"| E["Возврат словаря обновления (update)"]:::process
+    D -->|"Нет"| C
+    C -->|"Совпадений нет"| F["Возврат None<br/>(состояние не изменилось)"]:::danger
+
+    E --> G["merge_state(jinx, update)"]:::process
+    G --> H{"StateBlock.model_validate(update)<br/>Успешно?"}:::decision
+    H -->|"Нет (Ошибка валидации)"| I["Отклонение обновления,<br/>возврат старого jinx"]:::danger
+    H -->|"Да (ОК)"| J["model_dump(exclude_none=True)<br/>→ validated_dict"]:::process
+    J --> K{"Ключ присутствует в update<br/>И в validated_dict?"}:::decision
+    K -->|"Да"| L["s[key] = validated_dict[key]"]:::process
+    K -->|"Нет (null или отсутствует)"| M["Сохранение текущего s[key]"]:::process
+    L --> N["Очистка prior_failure<br/>из старых оценок"]:::process
+    M --> N
+    N --> O["write_jinx(jinx)"]:::process
+
+    O --> P["check_exit()"]:::process
+    O --> Q["check_deadlock()"]:::process
+    Q --> R["_are_approaches_similar()<br/>Сходство Jaccard ≥ 0.7"]:::process
+    R --> S{"≥ 3 уникальных<br/>кластеров на требование?"}:::decision
+    S -->|"Да"| T["Дедлок → остановка"]:::danger
+    S -->|"Нет"| U["Продолжение цикла"]:::success
 ```
 
 ### Диаграмма последовательности выполнения / Sequence Flow Diagram
@@ -473,7 +481,7 @@ if __name__ == "__main__":
 Для обеспечения 100% совместимости, строгого соответствия схемам данных и структурной стабильности JINX, в проекте реализован профессиональный унифицированный тестовый сьют `scripts/jinx_test.py`. Данная система объединяет статический аудит окружения и модульное регрессионное тестирование с полностью автоматизированным, самовосстанавливающимся динамическим движком AI-синтеза (`AISynthesisEngine`).
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
 graph TD
     subgraph Engine["AISynthesisEngine (jinx_test.py)"]
         AST["1. Офлайн AST Парсер<br/>(Сканирует .agent/src/jinx/)"]

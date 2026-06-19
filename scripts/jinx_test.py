@@ -75,22 +75,22 @@ if str(SCRIPTS_PATH) not in sys.path:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("jinx.jinx_test")
 
-# ANSI 24-bit True Color (RGB) escape sequences for elite machineGPT design aesthetics
+# ANSI 24-bit True Color (RGB) escape sequences for executive business design aesthetics
 COLOR_RESET = "\033[0m"
 COLOR_BOLD = "\033[1m"
 
-# Curated premium foreground colors
-COLOR_RED = "\033[38;2;255;99;132m"      # Soft Vibrant Crimson
-COLOR_GREEN = "\033[38;2;46;204;113m"    # Elegant Mint Green
-COLOR_YELLOW = "\033[38;2;255;193;7m"    # Warm Cyber Gold
-COLOR_BLUE = "\033[38;2;52;152;219m"     # Sleek Tech Blue
-COLOR_CYAN = "\033[38;2;162;120;255m"    # Deep Cosmos Violet (replaces generic cyan)
-COLOR_GRAY = "\033[38;2;140;150;170m"    # Tech Gray
+# Curated executive business colors
+COLOR_RED = "\033[38;2;239;68;72m"       # Soft Crimson Executive Red
+COLOR_GREEN = "\033[38;2;16;185;129m"     # Modern Emerald Corporate Green
+COLOR_YELLOW = "\033[38;2;245;158;11m"    # Elegant Amber Executive Gold
+COLOR_BLUE = "\033[38;2;37;99;235m"      # Executive Royal Blue
+COLOR_CYAN = "\033[38;2;6;182;212m"      # Premium Tech Teal/Cyan
 
-# Curated premium badges (white/pastel text on tailored dark backgrounds)
-COLOR_WHITE_ON_BLUE = "\033[38;2;240;248;255;48;2;90;20;140m"   # Soft silver text on Deep Amethyst Purple background
-COLOR_WHITE_ON_GREEN = "\033[38;2;220;255;230;48;2;12;135;80m"  # Pale mint text on Deep Mint Emerald background
-COLOR_WHITE_ON_RED = "\033[38;2;255;225;225;48;2;198;40;40m"    # Pale pink text on Deep Velvet Red background
+# Curated business badges (white text on solid tailored executive background blocks)
+COLOR_WHITE_ON_BLUE = "\033[38;2;255;255;255;48;2;30;41;59m"   # Slate Blue Badge
+COLOR_WHITE_ON_GREEN = "\033[38;2;255;255;255;48;2;6;78;59m"  # Deep Emerald Success Badge
+COLOR_WHITE_ON_RED = "\033[38;2;255;255;255;48;2;153;27;27m"  # Deep Crimson Danger Badge
+
 
 
 class VerificationPhase:
