@@ -179,9 +179,7 @@ def merge_state(jinx: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
         for entry in s["scores"][:-5]:
             entry.pop("prior_failure", None)
 
-    # Only merge exit_ready and deadlock if they were explicitly present in the raw update
-    if "exit_ready" in update:
-        s["exit_ready"] = validated_block.exit_ready
-    if "deadlock" in update:
-        s["deadlock"] = validated_block.deadlock
+    # Always sync exit_ready and deadlock flags to match the latest validated state block
+    s["exit_ready"] = validated_block.exit_ready
+    s["deadlock"] = validated_block.deadlock
     return jinx

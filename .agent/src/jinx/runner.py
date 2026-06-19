@@ -193,33 +193,19 @@ def _are_approaches_similar(entry1: Any, entry2: Any) -> bool:
 
 
 def _select_representative(cluster: List[Any], entry: Any) -> Any:
-    """Selects the best representative of the cluster to compare against the new entry.
+    """Selects the first similar representative of the cluster to compare against the new entry.
 
-    To handle transitive approach similarity chains cleanly and prevent premature deadlock triggers,
-    if any member of the cluster is similar to the new entry, we select that member as the representative
-    (providing single-linkage behavior). Otherwise, we fall back to the cluster medoid (the most central element).
+    Provides single-linkage behavior to handle transitive approach similarity chains cleanly.
+    Returns the similar member if found, or None.
     """
     if not cluster:
         return None
 
-    # 1. Single-linkage: if any member is similar, let that member be the representative
+    # Single-linkage: if any member is similar, let that member be the representative
     for member in cluster:
         if _are_approaches_similar(entry, member):
             return member
-
-    # 2. Centroid fallback: select the medoid of the cluster
-    if len(cluster) <= 2:
-        return cluster[0]
-
-    best_member = cluster[0]
-    best_score = -1
-    for member in cluster:
-        # Count how many other members in the cluster are similar to this member
-        score = sum(1 for other in cluster if other is not member and _are_approaches_similar(member, other))
-        if score > best_score:
-            best_score = score
-            best_member = member
-    return best_member
+    return None
 
 
 def check_deadlock(scores: List[Any], min_rounds: int, rnd: int) -> bool:
@@ -252,7 +238,7 @@ def check_deadlock(scores: List[Any], min_rounds: int, rnd: int) -> bool:
             matched_cluster = None
             for cluster in clusters:
                 rep = _select_representative(cluster, entry)
-                if _are_approaches_similar(entry, rep):
+                if rep is not None:
                     matched_cluster = cluster
                     break
             if matched_cluster is not None:
