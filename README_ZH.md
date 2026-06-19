@@ -465,3 +465,64 @@ JINX 旨在特定协议限制被触发时自动停止执行，在继续下一步
 一旦认知循环满足所有退出条件，JINX 将以退出代码 `0` 干净退出。
 1. **审查 Diff**: 开发人员审查在存储库工作区中生成的文件修改。
 2. **保存/归档状态**: 开发人员可以安全地提交已修改的源文件。`.agent/JINX.yaml` 内的状态元数据仍保留在隔离的工作区目录中，随时准备为下一个请求的任务提供上下文支持。
+
+---
+
+## 7. machineGPT 可插拔验证与 AI 测试合成引擎
+
+为了保证 JINX 100% 的兼容性、数据模式一致性以及结构稳定性，我们在项目中引入了位于 `scripts/jinx_test.py` 的专业级统一测试套件。该系统将静态环境审计和单元回归测试与完全自动化的、自愈式动态 AI 合成引擎 (`AISynthesisEngine`) 有机结合。
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
+graph TD
+    subgraph Engine["AISynthesisEngine (jinx_test.py)"]
+        AST["1. 离线 AST 解析器<br/>(扫描 .agent/src/jinx/)"]
+        DIFF["2. API 漂移检测器"]
+        GEN["3. 动态测试合成器"]
+        AST --> DIFF --> GEN
+    end
+
+    subgraph Plugins["tests/enterprise_plugins/"]
+        V_CLI["verify_cli.py"]
+        V_TOOLS["verify_tools.py"]
+        V_OTHER["verify_runner.py / verify_state.py / verify_prompts.py"]
+    end
+
+    GEN -->|"自动同步 / 代码保留"| Plugins
+```
+
+### 核心测试支柱
+测试编排器执行 9 个独立的诊断阶段，并归入 5 大主要验证支柱：
+1. **平台与环境审计**：验证运行时约束、Python 依赖项（Pydantic、PyYAML、Pytest）以及文件路径解析。
+2. **模式与模型一致性**：对 Pydantic 模型的序列化以及将状态块、节点模式和边模式循环序列化为 `.agent/JINX.yaml` 进行压力测试。
+3. **图相似度与压力测试**：在极限拓扑条件下测试图数学聚类、死锁聚类以及相似度扩展阈值。
+4. **Pytest 回归测试**：原生触发整个现有的 Python 单元回归测试套件。
+5. **AI 合成的动态验证（可插拔）**：通过抽象语法树 (AST) 动态扫描核心包结构，并在 `tests/enterprise_plugins/` 中编译相应的类、方法和函数验证。
+
+### 代码保留边界协议
+开发人员和 AI 代理可以任意扩展 `tests/enterprise_plugins/verify_<module>.py` 下的动态测试模块，而无需担心自定义断言在自动同步运行时被覆盖。放置在指定边界注释中的自定义测试逻辑会被严格保留：
+```python
+# ==============================================================================
+# <CUSTOM_CODE_START>
+# 在下方添加自定义断言和执行测试。它们将被完整保留。
+def custom_validation_rules(suite):
+    # 您的手动自定义测试断言写在这里
+    assert True
+# <CUSTOM_CODE_END>
+# ==============================================================================
+```
+
+### 测试套件 CLI 参数
+可以在存储库根目录下运行测试套件：
+* **运行完整套件**：
+  ```bash
+  python scripts/jinx_test.py
+  ```
+* **列出已发现的核心资产清单以及当前的动态插件覆盖率**：
+  ```bash
+  python scripts/jinx_test.py --ai-list
+  ```
+* **强制进行完整的 AST 编译与同步**：
+  ```bash
+  python scripts/jinx_test.py --ai-sync
+  ```

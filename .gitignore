@@ -38,3 +38,8 @@ dist/
 # --- OS System Files ---
 .DS_Store
 Thumbs.db
+
+# --- Test Caches & Diagnostic Reports ---
+.pytest_cache/
+*.log
+tests/*_report.json

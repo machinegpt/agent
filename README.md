@@ -465,3 +465,64 @@ JINX is designed to automatically halt execution when specific protocol limits a
 Once the cognitive loop satisfies all exiting criteria, JINX exits cleanly with code `0`.
 1. **Review Diff**: The developer inspects the file modifications generated in the repository workspace.
 2. **Clear/Archive State**: The developer can safely commit the modified source files. The state metadata inside `.agent/JINX.yaml` remains saved in the isolated workspace directory, ready to serve as context for the next requested task.
+
+---
+
+## 7. machineGPT Pluggable Verification & AI Synthesis Engine
+
+To guarantee 100% compliance, schema conformance, and structural stability of JINX, we feature a professional, unified super test suite located at `scripts/jinx_test.py`. This system integrates static environments and unit regression testing with a fully automated, self-healing dynamic AI Synthesis Engine.
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
+graph TD
+    subgraph Engine["AISynthesisEngine (jinx_test.py)"]
+        AST["1. Offline AST Parser<br/>(Scans .agent/src/jinx/)"]
+        DIFF["2. API Drift Detector"]
+        GEN["3. Dynamic Test Synthesizer"]
+        AST --> DIFF --> GEN
+    end
+
+    subgraph Plugins["tests/enterprise_plugins/"]
+        V_CLI["verify_cli.py"]
+        V_TOOLS["verify_tools.py"]
+        V_OTHER["verify_runner.py / verify_state.py / verify_prompts.py"]
+    end
+
+    GEN -->|"Auto-Sync / Code-Preservation"| Plugins
+```
+
+### Core Testing Pillars
+The test orchestrator runs 9 discrete diagnostic phases grouped into 5 primary verification pillars:
+1. **Platform & Environment Audit**: Validates runtime constraints, python dependencies (Pydantic, PyYAML, Pytest), and file path resolutions.
+2. **Schema & Model Conformance**: Stresses Pydantic models serialization and cycle serialization (state blocks, node schemas, edge schemas) into `.agent/JINX.yaml`.
+3. **Graph Similarity & Stress Testing**: Exercises graph mathematical clustering, deadlock clustering, and similarity scaling thresholds under extreme topological conditions.
+4. **Pytest Integration Regressions**: Triggers the entire existing pyunit regression test suite natively.
+5. **AI-Synthesized Dynamic Verification (Pluggable)**: Dynamically scans the core package structure via Abstract Syntax Trees (AST) and compiles corresponding class, method, and function checks inside `tests/enterprise_plugins/`.
+
+### Code Preservation Boundary Protocols
+Developers and AI agents can extend any dynamic test module under `tests/enterprise_plugins/verify_<module>.py` without worrying about their manual test assertions being overwritten during auto-sync runs. Custom testing logic placed inside designated boundary comments is strictly preserved:
+```python
+# ==============================================================================
+# <CUSTOM_CODE_START>
+# Add custom assertions and execution tests below. They will be preserved.
+def custom_validation_rules(suite):
+    # Your manual custom testing assertions go here
+    assert True
+# <CUSTOM_CODE_END>
+# ==============================================================================
+```
+
+### Test Suite CLI Arguments
+The test suite can be run from the repository root:
+* **Run entire suite**:
+  ```bash
+  python scripts/jinx_test.py
+  ```
+* **List discovered core inventory and current dynamic plugin coverage**:
+  ```bash
+  python scripts/jinx_test.py --ai-list
+  ```
+* **Force complete AST compilation and synchronization**:
+  ```bash
+  python scripts/jinx_test.py --ai-sync
+  ```
