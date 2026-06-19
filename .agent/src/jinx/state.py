@@ -58,6 +58,28 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+class GraphNode(BaseModel):
+    """A node in the strategy approach graph."""
+
+    id: str
+    type: str
+
+
+class GraphEdge(BaseModel):
+    """A semantic relationship edge in the strategy approach graph."""
+
+    source: str
+    target: str
+    relation: str
+
+
+class ApproachGraph(BaseModel):
+    """Knowledge graph representing the agent's strategy approach."""
+
+    nodes: List[GraphNode] = Field(default_factory=list)
+    edges: List[GraphEdge] = Field(default_factory=list)
+
+
 class ScoreEntry(BaseModel):
     """Evaluation metrics and requirements score entry for a single strategy round."""
 
@@ -67,6 +89,8 @@ class ScoreEntry(BaseModel):
     requirements: Dict[str, bool] = Field(default_factory=dict)
     pass_count: int = 0
     all_pass: bool = False
+    approach_graph: Optional[ApproachGraph] = None
+
 
 
 class StateBlock(BaseModel):

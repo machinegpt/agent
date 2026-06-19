@@ -105,14 +105,89 @@ def check_exit(scores: List[Dict[str, Any]], min_rounds: int, rnd: int) -> bool:
     return last3_best <= prior_best
 
 
-def check_deadlock(scores: List[Dict[str, Any]], min_rounds: int, rnd: int) -> bool:
+def _get_val(obj: Any, key: str, default: Any = None) -> Any:
+    """Helper to get a value from either a dictionary or an object attribute."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    if hasattr(obj, key):
+        return getattr(obj, key)
+    return default
+
+
+def _are_approaches_similar(entry1: Any, entry2: Any) -> bool:
+    """Calculates semantic similarity between two approach graphs or falls back to text-matching.
+
+    Uses combined Jaccard similarity of normalized node IDs (50%) and semantic relationship
+    triples (50%). If the similarity is >= 0.7, the approaches are considered similar.
+    If graph data is missing or completely empty for either entry, gracefully falls back
+    to exact string matching of approach names.
+    """
+    graph1 = _get_val(entry1, "approach_graph")
+    graph2 = _get_val(entry2, "approach_graph")
+
+    def extract_graph_data(g: Any) -> Optional[Dict[str, Any]]:
+        if g is None:
+            return None
+        if hasattr(g, "model_dump"):
+            return g.model_dump()
+        if isinstance(g, dict):
+            return g
+        return None
+
+    g1 = extract_graph_data(graph1)
+    g2 = extract_graph_data(graph2)
+
+    if not g1 or not g2:
+        # Fallback to text matching
+        app1 = _get_val(entry1, "approach", "")
+        app2 = _get_val(entry2, "approach", "")
+        return app1 == app2
+
+    nodes1 = {n.get("id", "").strip().lower() for n in g1.get("nodes", []) if n.get("id")} if isinstance(g1.get("nodes"), list) else set()
+    nodes2 = {n.get("id", "").strip().lower() for n in g2.get("nodes", []) if n.get("id")} if isinstance(g2.get("nodes"), list) else set()
+
+    edges1 = {
+        (e.get("source", "").strip().lower(), e.get("relation", "").strip().lower(), e.get("target", "").strip().lower())
+        for e in g1.get("edges", [])
+        if e.get("source") and e.get("target")
+    } if isinstance(g1.get("edges"), list) else set()
+
+    edges2 = {
+        (e.get("source", "").strip().lower(), e.get("relation", "").strip().lower(), e.get("target", "").strip().lower())
+        for e in g2.get("edges", [])
+        if e.get("source") and e.get("target")
+    } if isinstance(g2.get("edges"), list) else set()
+
+    # If either graph has no entities or edges, fall back to raw text matching
+    if not nodes1 and not edges1 and not nodes2 and not edges2:
+        app1 = _get_val(entry1, "approach", "")
+        app2 = _get_val(entry2, "approach", "")
+        return app1 == app2
+
+    # Calculate Node Jaccard
+    if nodes1 or nodes2:
+        node_sim = len(nodes1.intersection(nodes2)) / len(nodes1.union(nodes2))
+    else:
+        node_sim = 1.0
+
+    # Calculate Edge Jaccard
+    if edges1 or edges2:
+        edge_sim = len(edges1.intersection(edges2)) / len(edges1.union(edges2))
+    else:
+        edge_sim = 1.0
+
+    combined_sim = 0.5 * node_sim + 0.5 * edge_sim
+    return combined_sim >= 0.7
+
+
+def check_deadlock(scores: List[Any], min_rounds: int, rnd: int) -> bool:
     """Determines if the cognitive loop is stuck in a deadlock of repeated failures.
 
     A deadlock is recognized if we have passed `min_rounds` and any single functional
-    requirement has failed across three or more unique strategies/approaches.
+    requirement has failed across three or more unique strategy/approach clusters.
 
     Args:
-        scores (List[Dict[str, Any]]): The list of historical round evaluations.
+        scores (List[Any]): The list of historical round evaluations.
         min_rounds (int): The configured minimum execution round count.
         rnd (int): The current active round index.
 
@@ -122,25 +197,36 @@ def check_deadlock(scores: List[Dict[str, Any]], min_rounds: int, rnd: int) -> b
     if rnd < min_rounds:
         return False
 
-    failing_approaches: Dict[str, set[str]] = {}
+    failing_entries_by_req: Dict[str, List[Any]] = {}
     for entry in scores:
-        approach = entry.get("approach", "unknown")
-        requirements = entry.get("requirements") or {}
+        requirements = _get_val(entry, "requirements") or {}
         for req, passed in requirements.items():
             if not passed:
-                failing_approaches.setdefault(req, set()).add(approach)
+                failing_entries_by_req.setdefault(req, []).append(entry)
 
-    for req, approaches in failing_approaches.items():
-        if len(approaches) >= 3:
+    for req, entries in failing_entries_by_req.items():
+        clusters: List[List[Any]] = []
+        for entry in entries:
+            matched_cluster = None
+            for cluster in clusters:
+                if _are_approaches_similar(entry, cluster[0]):
+                    matched_cluster = cluster
+                    break
+            if matched_cluster is not None:
+                matched_cluster.append(entry)
+            else:
+                clusters.append([entry])
+
+        if len(clusters) >= 3:
             logger.warning(
-                "Deadlock detected on requirement '%s': failed across %d unique approaches: %s",
+                "Deadlock detected on requirement '%s': failed across %d unique strategy clusters.",
                 req,
-                len(approaches),
-                approaches
+                len(clusters)
             )
             return True
 
     return False
+
 
 
 def get_tool_result_from_editor(tool_use_id: str, name: str, params: Dict[str, Any]) -> str:

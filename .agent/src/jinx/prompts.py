@@ -27,6 +27,11 @@ GATE BEFORE COMMIT: Functional end-to-end verification required.
 
 STATE PERSISTENCE: Between rounds, your state lives in JINX.yaml on disk. You MUST return an updated state block at the end of your response.
 
+APPROACH KNOWLEDGE GRAPH:
+To enable smart deadlock detection, you must model your technical approach for each strategy round as an explicit semantic knowledge graph under `approach_graph`.
+- `nodes`: Structured list of key entities (e.g. files, tools, actions, or concepts), each containing a unique `id` and a `type` (e.g., 'file', 'tool', 'action', 'concept').
+- `edges`: Semantic directed links between those nodes, containing `source` node ID, `target` node ID, and a descriptive relationship label `relation` (e.g., 'reads', 'modifies', 'tests', 'depends_on').
+
 REQUIRED — end every response with a standard markdown YAML code block containing the updated state:
 ```yaml
 task: "task as understood"
@@ -41,6 +46,16 @@ scores:
       req_name: true
     pass_count: 1
     all_pass: false
+    approach_graph:
+      nodes:
+        - id: "auth_service"
+          type: "file"
+        - id: "unit_tests"
+          type: "action"
+      edges:
+        - source: "unit_tests"
+          target: "auth_service"
+          relation: "tests"
 debt:
   - "shortcuts taken"
 open:
@@ -49,4 +64,5 @@ exit_ready: false
 deadlock: false
 ```
 """
+
 
