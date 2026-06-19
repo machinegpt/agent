@@ -347,7 +347,7 @@ The JINX runtime is comprised of the following Python components located in `.ag
 * **`state.py`** (Serialization Layer):
   Handles the file operations for the manifest state file `JINX.yaml`. It features:
   * **Dynamic Path Resolution**: Implements a robust multi-tier lookup (via environment variable `JINX_PATH`, development path checks, or recursive upwards directory traversal from the current working directory) to guarantee JINX runs seamlessly both in local repositories and global pip-installed workspaces.
-  * **Hardened Models**: Utilizes Pydantic schemas (`ScoreEntry` and `StateBlock`) built with fault-tolerant defaults (e.g. `round=0`, `approach="unspecified"`) to prevent parsing exceptions or state drops even if the LLM omits non-essential metrics from its JSON output block.
+  * **Hardened Models**: Utilizes Pydantic schemas (`ScoreEntry` and `StateBlock`) built with fault-tolerant defaults (e.g. `round=0`, `approach="unspecified"`) to prevent parsing exceptions or state drops even if the LLM omits non-essential metrics from its YAML output block.
 * **`tools.py`** (JSON-RPC Helper):
   Defines the available tool schemas (`bash_exec`, `file_read`, `file_write`) exported in LLM generation payloads and formats standardized stdout emissions.
 

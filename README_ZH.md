@@ -347,7 +347,7 @@ JINX 运行时由以下位于 `.agent/` 目录中（其中核心包模块位于 
 * **`state.py`**（状态持久化层）：
   处理状态清单文件 `JINX.yaml` 的文件操作。它具有以下特性：
   * **动态路径解析**：实现了健壮的多级查找机制（通过环境变量 `JINX_PATH`、开发路径检查，或者从当前工作目录 CWD 递归向上遍历目录），以确保 JINX 在本地存储库和通过 pip 全局安装的工作区中都能无缝运行。
-  * **强化的状态模型**：利用构建有容错默认值（例如 `round=0`，`approach="unspecified"`）的 Pydantic 模式（`ScoreEntry` 和 `StateBlock`），以防止由于 LLM 在其 JSON 输出块中遗漏非关键指标而引发的解析异常或状态丢失。
+  * **强化的状态模型**：利用构建有容错默认值（例如 `round=0`，`approach="unspecified"`）的 Pydantic 模式（`ScoreEntry` 和 `StateBlock`），以防止由于 LLM 在其 YAML 输出块中遗漏非关键指标而引发的解析异常或状态丢失。
 * **`tools.py`**（JSON-RPC 辅助类）：
   定义了在 LLM 生成载荷中导出的可用工具模式（`bash_exec`、`file_read`、`file_write`），并格式化标准 stdout 的输出内容。
 
