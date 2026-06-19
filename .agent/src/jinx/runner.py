@@ -376,7 +376,7 @@ def write_llm_request(
             json.dump(request_payload, f, indent=2)
     except OSError as e:
         logger.error("Failed to write llm_generate request to %s: %s", REQUEST_PATH, e)
-        return
+        raise
 
     run_state = {
         "rnd": rnd,
@@ -391,7 +391,7 @@ def write_llm_request(
             json.dump(run_state, f, indent=2)
     except OSError as e:
         logger.error("Failed to write run state metadata to %s: %s", RUN_STATE_PATH, e)
-        return
+        raise
 
     print(f"[JINX_WAITING] Requesting LLM completion for Round {rnd}...", flush=True)
 

@@ -547,23 +547,30 @@ def custom_validation_rules(suite):
 
 ---
 
-## 8. 与 Claude Code CLI 的集成（无缝自动化）
+## 8. 与 Anthropic Claude Code CLI 宿主环境的集成协议
 
-JINX 支持与 Anthropic 官方的 **Claude Code CLI** 命令行开发环境进行全自动、无缝且零开销的集成。
+JINX 架构规范定义了将运行环境作为托管内核部署在官方 **Anthropic Claude Code CLI** 命令行开发环境中的无缝集成模式。在此编排模式下，Claude Code 充当父级编排宿主（Orchestration Host），将 JINX 的逻辑步骤转化为外部服务调用和本地文件系统操作。
 
-通过此集成，Claude Code 会自动担任 JINX 的执行宿主：它接收来自 JINX 的请求，将其传输给强大的 Claude 3.5 Sonnet 模型，将响应写回，在本地执行所需的终端命令和文件操作（如写入代码、运行测试等），并将结果反馈回 JINX 认知循环。
+编排宿主负责执行以下任务：
+1. 拦截传入的用户请求。
+2. 将请求路由至外部推理网关（通过 Anthropic API 调用 Claude 3.5 Sonnet）。
+3. 执行 JINX 的声明式指令，进行文件读取、修改及系统终端命令运行。
+4. 通过 File-IPC（文件进程间通信）机制将执行结果反馈回 JINX 认知循环。
 
-为此，项目根目录下包含了一个极简的 `CLAUDE.md` 文件。该文件指示 Claude Code 将**所有**用户消息重定向到 JINX 循环中。您无需输入特殊的触发前缀（如 `JINX`）或斜杠命令 —— 所有输入都由 JINX 自动处理。
+为了实现端到端的控制权拦截，项目根目录下配置了声明式清单 `CLAUDE.md`，指示 Claude Code 宿主将**所有**传入的用户交互（包括业务任务、日常对话或简单问候）无条件重定向到 JINX 运行环境内核中处理。
 
-### 配置全自动无感模式（无需确认）
+### 声明式执行权限授权（非交互式沙箱模式）
 
-默认情况下，Claude Code 在创建、编辑文件或在终端运行任何 `python` 命令时都会请求用户手动确认。这会降低后台自动化的速度。
+默认情况下，Claude Code CLI 的安全模型要求操作员针对每一次文件修改和 Python 脚本执行进行交互式手动确认。为了保证 JINX 认知循环的完全自主和非阻塞运行（无需手动干预），必须配置宿主的全局安全配置文件。
 
-为了消除这些弹窗确认，让 JINX 能够完全自主、无声地运行，请配置全局 Claude Code 配置文件。该文件位于当前激活用户的通用主目录路径下：
-* **Windows**: `%USERPROFILE%\.claude\settings.json`（通常展开为 `C:\Users\<您的用户名>\.claude\settings.json`，其中用户名由操作系统自动匹配）
-* **macOS/Linux**: `~/.claude/settings.json`（展开为 `/home/<用户名>/.claude/settings.json`）
+全局配置文件位于当前激活用户的主目录通用路径下：
+* **Windows 系统**: `%USERPROFILE%\.claude\settings.json`（动态解析为 `C:\Users\<当前用户名>\.claude\settings.json`）
+* **macOS / Linux 系统**: `~/.claude/settings.json`（解析为 `/home/<用户名>/.claude/settings.json`）
 
-#### 如何快速打开/创建并编辑该配置文件：
+#### 用于初始化或修改配置文件的系统终端指令：
+
+请使用您当前登录的系统账户运行以下命令以快速打开、创建或编辑安全配置文件：
+
 * **Windows (PowerShell)**:
   ```powershell
   notepad "$env:USERPROFILE\.claude\settings.json"
@@ -572,12 +579,12 @@ JINX 支持与 Anthropic 官方的 **Claude Code CLI** 命令行开发环境进�
   ```cmd
   notepad %USERPROFILE%\.claude\settings.json
   ```
-* **macOS/Linux (终端)**:
+* **macOS / Linux (终端)**:
   ```bash
   nano ~/.claude/settings.json
   ```
 
-在该 JSON 配置文件中，添加以下权限配置块（如果文件是全新或空白的，请用花括号 `{}` 包裹）：
+在 JSON 配置文件的结构中注入以下声明式权限配置块（若文件为全新创建，请用外层花括号 `{}` 包裹）：
 
 ```json
 {
@@ -590,18 +597,21 @@ JINX 支持与 Anthropic 官方的 **Claude Code CLI** 命令行开发环境进�
 }
 ```
 
-* **`"defaultMode": "acceptEdits"`**: 自动批准所有本地文件的修改（例如创建交换文件 `jinx_response.json`、编写业务代码、生成测试等）。
-* **`"allow": ["Bash(python *)"]`**: 自动批准 JINX 协调器的启动和运行步骤（`python .agent/jinx.py`）。
+#### 授权参数的架构设计与功能解析：
+| 配置参数 | 数据类型 | 架构描述与功能用途 |
+| :--- | :--- | :--- |
+| `"defaultMode": "acceptEdits"` | `string` | 将宿主的文件沙箱切换为“自动批准”模式。允许 JINX 无阻塞地读取和写入 IPC 交换文件（`jinx_request.json`, `jinx_response.json`）以及软件资产。 |
+| `"allow": ["Bash(python *)"]` | `array[string]` | 终端命令白名单。允许宿主直接启动并执行 JINX 协调器（`python .agent/jinx.py`），无需挂起等待操作员的手动批准。 |
 
-### 启动与运行
+### 启动与交互路由规程
 
-1. 在项目根目录下启动 Claude Code 控制台：
+1. 在项目根目录下初始化 Claude Code 命令行会话：
    ```bash
    claude
    ```
-2. 直接在聊天中输入您的任务或普通对话（使用任意语言）：
-   - *“在 calc.py 中添加除法功能并进行测试验证”*
-   - *“你好，最近怎么样？”*
+2. 直接在会话流中以自然语言输入您的开发任务或普通对话：
+   * *“在 calc.py 中添加除法功能并使用单元测试进行验证”*
+   * *“你好！请描述当前的项目状态”*
 
-Claude Code 会自动读取 `CLAUDE.md` 的规则，启动后台进程 `python .agent/jinx.py`，无缝管理文件 IPC 状态机，直到任务被完整解决并完成端到端验证！
+基于 `CLAUDE.md` 的声明式重定向规则，宿主将自动调用 `python .agent/jinx.py "[用户请求]"` 引导 JINX 协调器，并无感地管理认知循环的所有事务回合，直至任务在端到端验证后完全解决。
 

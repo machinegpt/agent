@@ -547,23 +547,30 @@ The test suite can be run from the repository root:
 
 ---
 
-## 8. Claude Code CLI Integration (Seamless Automation)
+## 8. Integration Protocol for Anthropic Claude Code CLI Host Environment
 
-JINX supports fully automated, seamless, and zero-overhead integration with Anthropic's official **Claude Code CLI** development environment.
+The JINX architectural specification defines seamless runtime deployment as a managed core within the official **Anthropic Claude Code CLI** console development environment. Under this orchestration scheme, Claude Code assumes the role of the parent orchestration host, translating JINX's logical steps into external services and the local file system.
 
-Through this integration, Claude Code automatically assumes the role of JINX's execution host: it intercepts requests from JINX, routes them to the state-of-the-art Claude 3.5 Sonnet model, writes responses back, executes requested terminal commands and file operations natively, and feeds outputs back into the JINX cognitive loop.
+The orchestration host manages:
+1. Interception of incoming user requests.
+2. Routing requests to external inference gateways (Claude 3.5 Sonnet via Anthropic API).
+3. Executing JINX declarative directives for file read, write, and system command execution.
+4. Feeding results back into the JINX cognitive loop via the File-IPC mechanism.
 
-To enable this, a hyper-minimal `CLAUDE.md` file is placed in the project root, instructing Claude Code to route **all** user messages through the JINX loop. You don't need to write custom trigger prefixes like `JINX` or slash commands anymore — every input is handled by JINX automatically.
+To enforce complete routing control, a declarative manifest `CLAUDE.md` is placed in the project root, instructing the Claude Code host to unconditionally redirect all incoming user transactions (including administrative queries and basic greetings) to the JINX runtime core.
 
-### Configuring Non-Interactive Auto-Approve Mode
+### Declarative Execution Authorization (Non-Interactive Sandbox Mode)
 
-By default, Claude Code requests manual user confirmation before creating or editing files, or running any `python` command in the shell. 
+By default, the Claude Code CLI security model requires interactive operator confirmation for each file modification and Python command execution. To ensure an autonomous, non-blocking cognitive loop for JINX, the host's global security profile must be configured.
 
-To eliminate these prompt interruptions and allow JINX to run completely autonomously and silently, configure the global Claude Code settings file. It is located at the universal home directory path for the current active user:
-* **Windows**: `%USERPROFILE%\.claude\settings.json` (resolves to `C:\Users\<Your_Username>\.claude\settings.json` dynamically)
-* **macOS/Linux**: `~/.claude/settings.json` (resolves to `/home/<username>/.claude/settings.json`)
+The global settings configuration file is located at the universal path mapped to the active user profile's home directory:
+* **Windows OS**: `%USERPROFILE%\.claude\settings.json` (resolves to `C:\Users\<Active_User_Account>\.claude\settings.json` dynamically)
+* **macOS / Linux**: `~/.claude/settings.json` (resolves to `/home/<username>/.claude/settings.json`)
 
-#### How to quickly open/create and edit this file:
+#### System Directives to Initialize or Modify the Configuration Profile:
+
+To initialize or edit the security profile under your active user context, execute the appropriate shell command:
+
 * **Windows (PowerShell)**:
   ```powershell
   notepad "$env:USERPROFILE\.claude\settings.json"
@@ -572,12 +579,12 @@ To eliminate these prompt interruptions and allow JINX to run completely autonom
   ```cmd
   notepad %USERPROFILE%\.claude\settings.json
   ```
-* **macOS/Linux (Terminal)**:
+* **macOS / Linux (Terminal)**:
   ```bash
   nano ~/.claude/settings.json
   ```
 
-Add the following permissions block to your JSON settings file (wrap in curly braces `{}` if the file is brand new or empty):
+Insert the following declarative permissions block into the JSON configuration file (wrap in a root `{}` object if the file is being newly created):
 
 ```json
 {
@@ -590,19 +597,23 @@ Add the following permissions block to your JSON settings file (wrap in curly br
 }
 ```
 
-* **`"defaultMode": "acceptEdits"`**: Automatically approves all local file writes and modifications (such as the communication JSON files, `calc.py`, `test_calc.py`, etc.).
-* **`"allow": ["Bash(python *)"]`**: Automatically approves execution and step-transitions of the JINX orchestrator (`python .agent/jinx.py`).
+#### Functional Purpose of Authorization Parameters:
+| Parameter | Value Type | Architectural Description & Functional Purpose |
+| :--- | :--- | :--- |
+| `"defaultMode": "acceptEdits"` | `string` | Configures the host's file sandbox to auto-approve modifications. Allows JINX to perform non-blocking reads and writes of IPC files (`jinx_request.json`, `jinx_response.json`) and target software assets. |
+| `"allow": ["Bash(python *)"]` | `array[string]` | Declarative whitelist of terminal command patterns. Permits the host to launch and execute the JINX orchestrator (`python .agent/jinx.py`) without waiting for manual operator approval. |
 
-### How to Run
+### Session Launch and Message Routing Procedure
 
-1. Launch the Claude Code CLI inside the project root directory:
+1. Initialize the Claude Code CLI session within the project root directory:
    ```bash
    claude
    ```
-2. Write any task description or message directly into the chat in natural language:
-   * *“Add a division function to calc.py and write unit tests for it”*
-   * *“Hello! How are you?”*
+2. Dispatch your software task or conversational prompt directly into the session stream in natural language:
+   * *“Add division to calc.py and verify with unit tests”*
+   * *“Hello! Describe the current project status”*
 
-Claude Code will automatically detect the `CLAUDE.md` rule, launch `python .agent/jinx.py "[your_message]"`, and transparently manage the File-IPC loop until the task is completely resolved and verified end-to-end!
+Following the declarative rule in `CLAUDE.md`, the host will bootstrap the JINX orchestrator via `python .agent/jinx.py "[request]"` and transparently coordinate the transactional rounds of the cognitive cycle until the task is fully verified end-to-end.
+
 
 
