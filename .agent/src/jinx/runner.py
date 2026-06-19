@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from .prompts import STATE_TAG, SYSTEM_PROMPT
 from .state import merge_state, read_jinx, write_jinx
 from .tools import tool_schema
 
@@ -31,37 +32,6 @@ logger = logging.getLogger("jinx.runner")
 # Constants defining maximum execution safety boundaries
 HARD_CAP: int = 40
 TOOL_DEPTH_CAP: int = 20
-STATE_TAG: str = "state"
-
-SYSTEM_PROMPT: str = f"""You are JINX, an agent executing tasks via iterative refinement.
-LOOP PROTOCOL:
-- GATE BEFORE TRY: State what the previous round failed on. No silent retries.
-- TRY: Use an approach different from all prior ones.
-- TEST: Use bash_exec, file_read, and file_write tools.
-- SCORE: Evaluate per-requirement pass/fail.
-- GATE BEFORE COMMIT: Perform end-to-end verification.
-
-PERSISTENCE: Your state lives in JINX.yaml. End every response with this block (valid JSON, no markdown fences):
-<{STATE_TAG}>
-{{
-  "task": "understood task",
-  "facts": ["facts found"],
-  "scores": [
-    {{
-      "round": 1,
-      "approach": "approach",
-      "prior_failure": "failed attempt detail",
-      "requirements": {{"req": true}},
-      "pass_count": 1,
-      "all_pass": false
-    }}
-  ],
-  "debt": ["debts"],
-  "open": ["issues"],
-  "exit_ready": false,
-  "deadlock": false
-}}
-</{STATE_TAG}>"""
 
 
 def parse_state_block(text: str) -> Optional[Dict[str, Any]]:
