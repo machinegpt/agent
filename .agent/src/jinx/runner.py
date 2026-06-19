@@ -30,6 +30,7 @@ logger = logging.getLogger("jinx.runner")
 
 # Constants defining maximum execution safety boundaries
 HARD_CAP: int = 40
+TOOL_DEPTH_CAP: int = 20
 STATE_TAG: str = "state"
 
 SYSTEM_PROMPT: str = f"""You are JINX, a single-agent cognitive loop. You execute tasks through disciplined iterative refinement.
@@ -79,11 +80,12 @@ def parse_state_block(text: str) -> Optional[Dict[str, Any]]:
             block is found and correctly decoded; otherwise, None.
     """
     pattern = rf"<{STATE_TAG}>(.*?)</{STATE_TAG}>"
-    match = re.search(pattern, text, re.DOTALL)
-    if not match:
+    matches = list(re.finditer(pattern, text, re.DOTALL))
+    if not matches:
         logger.debug("No structured state block matching tags found in response.")
         return None
 
+    match = matches[-1]
     raw = match.group(1).strip()
     # Strip optional markdown code fences if wrapped by the LLM
     raw = re.sub(r"^```[a-z]*\n?", "", raw)
@@ -273,13 +275,13 @@ def run(task: str, min_override: Optional[int]) -> None:
                 if isinstance(configured_min, int):
                     min_rounds = configured_min
 
-    history: List[Dict[str, Any]] = []
     rnd: int = 0
 
     logger.info("Starting JINX cognitive loop. Task: '%s'. Min rounds: %d", task, min_rounds)
 
     while rnd < HARD_CAP:
         rnd += 1
+        history: List[Dict[str, Any]] = []
         jinx = read_jinx()
         state_data = jinx.get("state")
         if not isinstance(state_data, dict):
@@ -295,6 +297,7 @@ def run(task: str, min_override: Optional[int]) -> None:
         history.append({"role": "user", "content": user_msg})
 
         full_text: str = ""
+        tool_depth: int = 0
         while True:
             # Send conversation history to the LLM via IPC delegation
             content_blocks = request_llm_from_editor(SYSTEM_PROMPT, history)
@@ -324,6 +327,10 @@ def run(task: str, min_override: Optional[int]) -> None:
 
             if tool_results:
                 history.append({"role": "user", "content": tool_results})
+                tool_depth += 1
+                if tool_depth >= TOOL_DEPTH_CAP:
+                    logger.warning("Inner tool-calling depth limit (%d) reached. Breaking inner loop to prevent infinite hang.", TOOL_DEPTH_CAP)
+                    break
                 # Re-invoke LLM with the results of the tool executions
                 continue
             else:
@@ -345,4 +352,7 @@ def run(task: str, min_override: Optional[int]) -> None:
             if update.get("deadlock") or check_deadlock(scores, min_rounds, rnd):
                 logger.warning("Cognitive loop ended due to deadlock in round %d.", rnd)
                 break
+    else:
+        logger.error("Cognitive loop exhausted HARD_CAP (%d rounds) without resolution.", HARD_CAP)
+        sys.exit(2)
 

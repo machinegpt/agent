@@ -1,18 +1,12 @@
 id: JINX
 protocol:
   loop:
-    min: 1
+    min: 10
 state:
-  task: say hello
-  facts:
-  - hello was said
-  scores:
-  - round: 1
-    approach: mock testing
-    prior_failure: null
-    requirements:
-      run_echo: true
-    pass_count: 1
-    all_pass: true
+  task: "Awaiting assignment..."
+  facts: []
+  scores: []
   debt: []
   open: []
+  exit_ready: false
+  deadlock: false
