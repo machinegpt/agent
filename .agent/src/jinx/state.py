@@ -136,7 +136,7 @@ def merge_state(jinx: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
     try:
         # Validate update using StateBlock model to ensure structural integrity
         validated_block = StateBlock.model_validate(update)
-        validated_dict = validated_block.model_dump(exclude_unset=True)
+        validated_dict = validated_block.model_dump(exclude_none=True)
     except Exception as e:
         logger.error(
             "State block structural validation failed: %s. Rejecting corrupt state update to prevent manifest corruption.",
