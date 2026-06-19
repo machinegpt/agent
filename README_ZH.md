@@ -221,6 +221,35 @@ graph LR
    * **死锁条件**：如果轮数大于或等于 `loop.min` 且相同的要求在 3 个独立的策略中均告失败，则触发死锁。或者在运行时状态被显式标记为 `deadlock: true` 时触发。
    * **硬性上限**：执行循环被严格限制为 40 轮 (`HARD_CAP`)，超过该上限将强制停止执行，以防止 Token过度消耗。
 
+### 认知循环流程图 / Cognitive Control Flow
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "actorBkg": "#21262d", "actorBorder": "#8b949e", "actorTextColor": "#e6edf3", "actorLineColor": "#8b949e", "signalColor": "#8b949e", "signalTextColor": "#e6edf3", "noteBkgColor": "#373320", "noteBorderColor": "#d4a72c", "noteTextColor": "#f0e6c0", "labelBoxBkgColor": "#21262d", "labelBoxBorderColor": "#8b949e", "labelTextColor": "#e6edf3", "loopTextColor": "#e6edf3", "activationBkgColor": "#30363d", "activationBorderColor": "#8b949e"}}}%%
+flowchart TD
+    A([jinx-cli / jinx.py]) --> B[cli.py: 解析参数]
+    B --> C[runner.py: 运行 run]
+    C --> D[state.py: 读取 read_jinx]
+    D -->|env 变量 / 开发路径 / 向上遍历 CWD| E[(JINX.yaml)]
+    C --> F{循环: rnd < HARD_CAP?}
+    F -->|重置历史记录| G[基于 state_dump 构建 user 消息]
+    G --> H[通过 JSON-RPC 请求 request_llm_from_editor]
+    H --> I{包含 tool_use 块?}
+    I -->|是| J[执行 get_tool_result_from_editor]
+    J --> K{tool_depth >= TOOL_DEPTH_CAP?}
+    K -->|是| L[恢复调用, tools=empty, break]
+    K -->|否| H
+    I -->|否| M[解析 parse_state_block - 匹配最后一个]
+    L --> M
+    M --> N[通过 Pydantic 验证合并 merge_state]
+    N --> O[通过 write_jinx 写入 JINX.yaml]
+    O --> E
+    N --> P{exit_ready 且满足 check_exit?}
+    P -->|是| Q([正常退出: 状态码 0])
+    N --> S{检测到 deadlock 或满足 check_deadlock?}
+    S -->|是| T([死锁退出: 状态码 0])
+    F -->|超出 HARD_CAP 限额| U([sys.exit 2])
+```
+
 ### 认知过程时序图 / Cognitive Process Sequence Flow
 
 ```mermaid

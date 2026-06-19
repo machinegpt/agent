@@ -221,6 +221,35 @@ graph LR
    * **Условие дедлока**: Активируется, если количество раундов превышает или равно значению `loop.min` и одно и то же требование падает на 3 независимых подходах. Также активируется при явном установлении флага `deadlock` в значение `true` внутри исполняемой среды.
    * **Жесткий лимит**: Общее количество итерационных раундов ограничено значением 40 (`HARD_CAP`), по достижении которого выполнение принудительно завершается для предотвращения избыточного расхода токенов.
 
+### Блок-схема когнитивного цикла / Cognitive Control Flow
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "actorBkg": "#21262d", "actorBorder": "#8b949e", "actorTextColor": "#e6edf3", "actorLineColor": "#8b949e", "signalColor": "#8b949e", "signalTextColor": "#e6edf3", "noteBkgColor": "#373320", "noteBorderColor": "#d4a72c", "noteTextColor": "#f0e6c0", "labelBoxBkgColor": "#21262d", "labelBoxBorderColor": "#8b949e", "labelTextColor": "#e6edf3", "loopTextColor": "#e6edf3", "activationBkgColor": "#30363d", "activationBorderColor": "#8b949e"}}}%%
+flowchart TD
+    A([jinx-cli / jinx.py]) --> B[cli.py: разбор аргументов]
+    B --> C[runner.py: запуск цикла run]
+    C --> D[state.py: чтение read_jinx]
+    D -->|env / dev-путь / поиск вверх по CWD| E[(JINX.yaml)]
+    C --> F{rnd < HARD_CAP ?}
+    F -->|сброс истории| G[Формирование user msg на основе state_dump]
+    G --> H[Запрос request_llm_from_editor через JSON-RPC]
+    H --> I{Есть блоки tool_use?}
+    I -->|да| J[Вызов get_tool_result_from_editor]
+    J --> K{tool_depth >= TOOL_DEPTH_CAP?}
+    K -->|да| L[Восстановительный вызов, tools=empty, break]
+    K -->|нет| H
+    I -->|нет| M[Метод parse_state_block - последнее совпадение]
+    L --> M
+    M --> N[Слияние merge_state с Pydantic-валидацией]
+    N --> O[Запись write_jinx в JINX.yaml]
+    O --> E
+    N --> P{exit_ready и check_exit?}
+    P -->|да| Q([Чистый выход: код 0])
+    N --> S{deadlock или check_deadlock?}
+    S -->|да| T([Выход по дедлоку: код 0])
+    F -->|исчерпан лимит раундов| U([sys.exit 2])
+```
+
 ### Диаграмма последовательности выполнения / Sequence Flow Diagram
 
 ```mermaid

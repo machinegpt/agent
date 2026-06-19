@@ -221,6 +221,35 @@ graph LR
    * **Deadlock Condition**: Initiated if the round count is greater than or equal to `loop.min` and the same requirements fail on 3 separate approaches. Or if the state is explicitly marked as `deadlock` by the runtime.
    * **Hard Cap**: The execution loop is strictly capped at 40 rounds (`HARD_CAP`), forcing a shutdown to prevent token over-consumption.
 
+### Cognitive Loop Control Flow
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "actorBkg": "#21262d", "actorBorder": "#8b949e", "actorTextColor": "#e6edf3", "actorLineColor": "#8b949e", "signalColor": "#8b949e", "signalTextColor": "#e6edf3", "noteBkgColor": "#373320", "noteBorderColor": "#d4a72c", "noteTextColor": "#f0e6c0", "labelBoxBkgColor": "#21262d", "labelBoxBorderColor": "#8b949e", "labelTextColor": "#e6edf3", "loopTextColor": "#e6edf3", "activationBkgColor": "#30363d", "activationBorderColor": "#8b949e"}}}%%
+flowchart TD
+    A([jinx-cli / jinx.py]) --> B[cli.py: parse args]
+    B --> C[runner.py: run]
+    C --> D[state.py: read_jinx]
+    D -->|env / dev path / CWD traversal| E[(JINX.yaml)]
+    C --> F{while rnd < HARD_CAP}
+    F -->|reset history| G[Build user msg from state_dump]
+    G --> H[request_llm_from_editor via JSON-RPC]
+    H --> I{tool_use blocks?}
+    I -->|yes| J[get_tool_result_from_editor]
+    J --> K{tool_depth >= TOOL_DEPTH_CAP?}
+    K -->|yes| L[Recovery call, tools=empty, break]
+    K -->|no| H
+    I -->|no| M[parse_state_block - last match]
+    L --> M
+    M --> N[merge_state via Pydantic validate]
+    N --> O[write_jinx to JINX.yaml]
+    O --> E
+    N --> P{exit_ready and check_exit?}
+    P -->|yes| Q([Clean exit 0])
+    N --> S{deadlock or check_deadlock?}
+    S -->|yes| T([Exit 0 deadlock])
+    F -->|exhausted| U([sys.exit 2])
+```
+
 ### Cognitive Process Sequence Flow
 
 ```mermaid
