@@ -340,7 +340,6 @@ def run(task: str, min_override: Optional[int]) -> None:
                     })
 
             if tool_results:
-                history.append({"role": "user", "content": tool_results})
                 tool_depth += 1
                 if tool_depth >= TOOL_DEPTH_CAP:
                     logger.warning("Inner tool-calling depth limit (%d) reached. Invoking final summary round to recover state block.", TOOL_DEPTH_CAP)
@@ -350,13 +349,19 @@ def run(task: str, min_override: Optional[int]) -> None:
                         "Do not call any more tools. You must immediately output your final thought "
                         "and the exact, complete <state> block to persist your progress and avoid state loss."
                     )
-                    history.append({"role": "user", "content": final_user_msg})
+                    tool_results.append({
+                        "type": "text",
+                        "text": final_user_msg
+                    })
+                    history.append({"role": "user", "content": tool_results})
                     content_blocks = request_llm_from_editor(SYSTEM_PROMPT, history, tools=[])
                     history.append({"role": "assistant", "content": content_blocks})
                     for block in content_blocks:
                         if block.get("type") == "text":
                             full_text += block.get("text", "")
                     break
+
+                history.append({"role": "user", "content": tool_results})
                 # Re-invoke LLM with the results of the tool executions
                 continue
             else:

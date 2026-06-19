@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.1.2--enterprise-blue?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.1.3--enterprise-blue?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-red?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-brightgreen?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -247,6 +247,12 @@ sequenceDiagram
                 loop For each tool_use
                     Runner->>Host: stdout JSON-RPC (tool call)
                     Host-->>Runner: stdin tool result
+                end
+                alt If tool_depth >= TOOL_DEPTH_CAP (20)
+                    Note over Runner: Depth Cap Fired (Safety Recovery)
+                    Runner->>Host: stdout JSON-RPC (llm_generate with tools=[])
+                    Host-->>Runner: stdin content_blocks + state block
+                    Note over Runner: Break Inner Loop
                 end
             else No tool_use
                 Note over Runner: Break Inner Loop
