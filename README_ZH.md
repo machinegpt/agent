@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.0.5--enterprise-blue?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.0.7--enterprise-blue?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-red?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-brightgreen?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -174,7 +174,51 @@ graph TD
    在每一轮之后，JINX 会更新指标并检查退出或死锁条件：
    * **退出条件**：在当前轮次 `round` 大于或等于最小轮数限制 (`loop.min`) 且 `exit_ready` 被标记为 true 时进行评估。如果最新的实现满足所有核心要求，并且在过去连续 3 轮中没有获得更高的分数，则执行退出。
    * **死锁条件**：如果轮数大于或等于 `loop.min` 且相同的要求在 3 个独立的策略中均告失败，则触发死锁。或者在运行时状态被显式标记为 `deadlock: true` 时触发。
-   * **硬性上限**：执行循环被严格限制为 40 轮 (`HARD_CAP`)，超过该上限将强制停止执行，以防止 Token 过度消耗。
+   * **硬性上限**：执行循环被严格限制为 40 轮 (`HARD_CAP`)，超过该上限将强制停止执行，以防止 Token过度消耗。
+
+### 认知过程时序图 / Cognitive Process Sequence Flow
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "actorBkg": "#21262d", "actorBorder": "#8b949e", "actorTextColor": "#e6edf3", "actorLineColor": "#8b949e", "signalColor": "#8b949e", "signalTextColor": "#e6edf3", "noteBkgColor": "#373320", "noteBorderColor": "#d4a72c", "noteTextColor": "#f0e6c0", "labelBoxBkgColor": "#21262d", "labelBoxBorderColor": "#8b949e", "labelTextColor": "#e6edf3", "loopTextColor": "#e6edf3", "activationBkgColor": "#30363d", "activationBorderColor": "#8b949e"}}}%%
+sequenceDiagram
+    participant CLI as cli.py (main)
+    participant Runner as runner.py (run)
+    participant State as state.py
+    participant Host as Host Editor (stdin/stdout)
+
+    CLI->>Runner: run(task, min_override)
+    Runner->>State: read_jinx()
+    State-->>Runner: jinx dict
+    Runner->>State: write_jinx(jinx) [init state]
+
+    loop "Outer: rnd < HARD_CAP (40)"
+        Runner->>State: read_jinx()
+        State-->>Runner: current state
+
+        loop "Inner: tool_depth < TOOL_DEPTH_CAP (20)"
+            Runner->>Host: stdout JSON-RPC (llm_generate)
+            Host-->>Runner: stdin content_blocks
+            alt If tool_use detected
+                loop For each tool_use
+                    Runner->>Host: stdout JSON-RPC (tool call)
+                    Host-->>Runner: stdin tool result
+                end
+            else No tool_use
+                Note over Runner: Break Inner Loop
+            end
+        end
+
+        Runner->>Runner: parse_state_block (last match)
+        Runner->>State: merge_state + write_jinx
+        alt exit_ready + check_exit
+            Runner->>CLI: return (success)
+        else deadlock detected or deadlock state
+            Runner->>CLI: return (deadlock)
+        else HARD_CAP exhausted
+            Runner->>CLI: sys.exit(2)
+        end
+    end
+```
 
 ---
 

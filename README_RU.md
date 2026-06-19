@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.0.5--enterprise-blue?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.0.7--enterprise-blue?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-red?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-brightgreen?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -175,6 +175,50 @@ graph TD
    * **Условие выхода**: Проверяется, когда индекс раунда `round` больше или равен минимально заданному ограничению (`loop.min`), а параметр `exit_ready` установлен в значение `true`. Выход происходит, если последняя реализация удовлетворяет всем основным требованиям, и за последние 3 последовательных раунда не было получено более высокой оценки выполнения.
    * **Условие дедлока**: Активируется, если количество раундов превышает или равно значению `loop.min` и одно и то же требование падает на 3 независимых подходах. Также активируется при явном установлении флага `deadlock` в значение `true` внутри исполняемой среды.
    * **Жесткий лимит**: Общее количество итерационных раундов ограничено значением 40 (`HARD_CAP`), по достижении которого выполнение принудительно завершается для предотвращения избыточного расхода токенов.
+
+### Диаграмма последовательности выполнения / Sequence Flow Diagram
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "actorBkg": "#21262d", "actorBorder": "#8b949e", "actorTextColor": "#e6edf3", "actorLineColor": "#8b949e", "signalColor": "#8b949e", "signalTextColor": "#e6edf3", "noteBkgColor": "#373320", "noteBorderColor": "#d4a72c", "noteTextColor": "#f0e6c0", "labelBoxBkgColor": "#21262d", "labelBoxBorderColor": "#8b949e", "labelTextColor": "#e6edf3", "loopTextColor": "#e6edf3", "activationBkgColor": "#30363d", "activationBorderColor": "#8b949e"}}}%%
+sequenceDiagram
+    participant CLI as cli.py (main)
+    participant Runner as runner.py (run)
+    participant State as state.py
+    participant Host as Host Editor (stdin/stdout)
+
+    CLI->>Runner: run(task, min_override)
+    Runner->>State: read_jinx()
+    State-->>Runner: jinx dict
+    Runner->>State: write_jinx(jinx) [init state]
+
+    loop "Outer: rnd < HARD_CAP (40)"
+        Runner->>State: read_jinx()
+        State-->>Runner: current state
+
+        loop "Inner: tool_depth < TOOL_DEPTH_CAP (20)"
+            Runner->>Host: stdout JSON-RPC (llm_generate)
+            Host-->>Runner: stdin content_blocks
+            alt If tool_use detected
+                loop For each tool_use
+                    Runner->>Host: stdout JSON-RPC (tool call)
+                    Host-->>Runner: stdin tool result
+                end
+            else No tool_use
+                Note over Runner: Break Inner Loop
+            end
+        end
+
+        Runner->>Runner: parse_state_block (last match)
+        Runner->>State: merge_state + write_jinx
+        alt exit_ready + check_exit
+            Runner->>CLI: return (success)
+        else deadlock detected or deadlock state
+            Runner->>CLI: return (deadlock)
+        else HARD_CAP exhausted
+            Runner->>CLI: sys.exit(2)
+        end
+    end
+```
 
 ---
 

@@ -1,30 +1,40 @@
-# JINX ignores
-.agent/JINX.yaml
-.agent/jinx.egg-info/
+# ==============================================================================
+# JINX Project Git Ignore Configurations
+# ==============================================================================
+
+# --- Python Cache & Bytecode ---
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-.env
-.venv
-env/
+
+# --- Virtual Environments ---
+.venv/
 venv/
+env/
 ENV/
-env.bak/
-venv.bak/
+*.bak/
+
+# --- Build & Distribution (setuptools) ---
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Environment Configuration & Secrets ---
+.env
+.env.local
+.env.*.local
+
+# --- IDE & Editor Artifacts ---
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# --- OS System Files ---
+.DS_Store
+Thumbs.db
