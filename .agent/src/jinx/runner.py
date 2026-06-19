@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from .prompts import SYSTEM_PROMPT
+from .prompts import SYSTEM_PROMPT, TOOL_DEPTH_CRITICAL_MSG, construct_round_prompt
 from .state import merge_state, read_jinx, write_jinx
 from .tools import tool_schema
 
@@ -440,7 +440,7 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
             default_flow_style=False,
             sort_keys=False
         )
-        user_msg = f"ROUND {rnd} of {min_rounds}+\nTASK: {task}\nCURRENT STATE:\n{state_dump}"
+        user_msg = construct_round_prompt(rnd=rnd, min_rounds=min_rounds, task=task, state_dump=state_dump)
         history = [{"role": "user", "content": user_msg}]
 
         write_llm_request(history, rnd, 0, min_rounds, task)
@@ -572,14 +572,13 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
                     default_flow_style=False,
                     sort_keys=False
                 )
-                warning_prefix = ""
-                if not update:
-                    warning_prefix = (
-                        "WARNING: You did not output the REQUIRED markdown YAML state block (```yaml ... ```) at the end of your last response!\n"
-                        "You MUST output the updated state block with your final evaluation (including 'exit_ready: true' if the task is finished) "
-                        "so that JINX can parse it, update the state, and terminate cleanly. Do not skip this block!\n\n"
-                    )
-                user_msg = f"{warning_prefix}ROUND {rnd} of {min_rounds}+\nTASK: {task}\nCURRENT STATE:\n{state_dump}"
+                user_msg = construct_round_prompt(
+                    rnd=rnd,
+                    min_rounds=min_rounds,
+                    task=task,
+                    state_dump=state_dump,
+                    missing_state=not update
+                )
                 history.append({"role": "user", "content": user_msg})
 
                 write_llm_request(history, rnd, 0, min_rounds, task)
@@ -597,14 +596,9 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
 
             if tool_depth >= TOOL_DEPTH_CAP:
                 logger.warning("Inner tool depth limit reached. Forcing state recovery.")
-                final_user_msg = (
-                    "CRITICAL: The inner tool-calling depth limit has been reached. "
-                    "Do not call any more tools. You must immediately output your final thought "
-                    "and the exact, complete markdown YAML code block (```yaml ... ```) to persist your progress and avoid state loss."
-                )
                 tool_results.append({
                     "type": "text",
-                    "text": final_user_msg
+                    "text": TOOL_DEPTH_CRITICAL_MSG
                 })
                 history.append({"role": "user", "content": tool_results})
 
@@ -699,14 +693,13 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
             sort_keys=False
         )
 
-        warning_prefix = ""
-        if last_round_missing_state:
-            warning_prefix = (
-                "WARNING: You did not output the REQUIRED markdown YAML state block (```yaml ... ```) at the end of your last response!\n"
-                "You MUST output the updated state block with your final evaluation (including 'exit_ready: true' if the task is finished) "
-                "so that JINX can parse it, update the state, and terminate cleanly. Do not skip this block!\n\n"
-            )
-        user_msg = f"{warning_prefix}ROUND {rnd} of {min_rounds}+\nTASK: {task}\nCURRENT STATE:\n{state_dump}"
+        user_msg = construct_round_prompt(
+            rnd=rnd,
+            min_rounds=min_rounds,
+            task=task,
+            state_dump=state_dump,
+            missing_state=last_round_missing_state
+        )
         history.append({"role": "user", "content": user_msg})
 
         full_text: str = ""
@@ -769,14 +762,9 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
                 tool_depth += 1
                 if tool_depth >= TOOL_DEPTH_CAP:
                     logger.warning("Inner tool depth limit reached. Forcing final state block recovery.")
-                    final_user_msg = (
-                        "CRITICAL: The inner tool-calling depth limit has been reached. "
-                        "Do not call any more tools. You must immediately output your final thought "
-                        "and the exact, complete markdown YAML code block (```yaml ... ```) to persist your progress and avoid state loss."
-                    )
                     tool_results.append({
                         "type": "text",
-                        "text": final_user_msg
+                        "text": TOOL_DEPTH_CRITICAL_MSG
                     })
                     history.append({"role": "user", "content": tool_results})
                     content_blocks = request_llm_from_editor(SYSTEM_PROMPT, history, tools=[])
