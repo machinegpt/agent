@@ -19,13 +19,30 @@
 
 JINX представляет собой среду выполнения агента, спроектированную для запуска внутри хост-окружения (такого как IDE, консольный текстовый редактор или корпоративный оркестратор). Среда выполнения JINX функционирует без автономного сетевого доступа или встроенных интеграций с внешними сервисами; все запросы на вызов моделей, манипуляции с файлами и выполнение консольных команд делегируются хост-редактору через стандартный ввод (`stdin`) и стандартный вывод (`stdout`) с использованием структурированных пакетов обмена данными в формате JSON-RPC.
 
-```text
-┌─────────────────────────────────┐                 stdout (Пакеты JSON IPC)                 ┌─────────────────────────────────┐
-│                                 │ ───────────────────────────────────────────────────────> │                                 │
-│   Среда Выполнения JINX         │     "jinx_command": "llm_generate" / "bash_exec"         │   Хост-IDE / CLI-Редактор       │
-│   (Стейт-машина и протокол)     │                                                          │   (Управляет API и запуском)    │
-│   (Локальное состояние в YAML)  │ <─────────────────────────────────────────────────────── │                                 │
-└─────────────────────────────────┘             stdin (Результат инструмента / ответ LLM)    └─────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
+graph LR
+    classDef sub fill:#161b22,stroke:#30363d,stroke-dasharray: 3 3,color:#c9d1d9;
+    classDef state fill:#1f242c,stroke:#388bfd,color:#58a6ff;
+    classDef yaml fill:#373320,stroke:#d4a72c,color:#f0e6c0;
+
+    subgraph JINX["Среда Выполнения JINX (Дочерний процесс)"]
+        direction TB
+        SM["Стейт-машина и Протокол<br/>(runner.py)"]:::state
+        DB[("Локальное Состояние<br/>(JINX.yaml)")]:::yaml
+        SM <-->|"Чтение / Запись Состояния"| DB
+    end
+    style JINX fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph HOST["Хост-IDE / CLI-Редактор (Родительский процесс)"]
+        direction TB
+        EXE["Движок Выполнения Инструментов<br/>(bash_exec / операции с файлами)"]:::sub
+        LLM["Внешний Шлюз LLM<br/>(API-ключи и Инференс)"]:::sub
+    end
+    style HOST fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    SM ==>|"stdout (Пакеты JSON-RPC)<br/>jinx_command: llm_generate | bash_exec | file_read | file_write"| HOST
+    HOST ==>|"stdin (Ответные Пакеты)<br/>{content: ...} | {output: ...}"| SM
 ```
 
 ### Спецификация взаимодействия по протоколу JSON-RPC
@@ -256,33 +273,19 @@ sequenceDiagram
 
 ```yaml
 id: JINX
-mode: editor-integrated
-
 protocol:
-  in:
-    gap: infer; ask user only if wrong-guess cost = high or irreversible
-    scope: reject surface ask; trace root cause, true scope, blast radius
-    gate: before first line of code — write scope to state.facts; no code until written
-
   loop:
     min: 10
-    try: new approach; differs from all prior
-    test: use standard IDE tools (bash_exec, file_read, file_write)
-    score: per-requirement pass/fail; rank vs all prior; write round + score to state.scores
-    keep: top-scoring try persists
-    branch: same requirement fails 3x same approach -> switch approach
-    exit: iter >= 10 and top try passes all requirements and last 3 iters no higher score
-    deadlock: iter >= 10 and 3 distinct approaches fail same requirement -> ask user, stop
 
 state:
-  task: "Текст описания задачи"
+  task: "Реализация подписи токенов PyJWT RS256"
   facts:
-    - "Fact 1: Workspace root verified"
-    - "Fact 2: Configuration schema loaded"
+    - "Проверен корневой каталог рабочего пространства"
+    - "Загружена схема конфигурации"
   scores:
     - round: 1
-      approach: "PyJWT RS256 token signing implementation"
-      prior_failure: "None"
+      approach: "Реализация подписи токенов PyJWT RS256"
+      prior_failure: null
       requirements:
         compile: true
         unit_tests: false

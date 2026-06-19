@@ -19,13 +19,30 @@
 
 JINX 是一个旨在运行于宿主环境（例如 IDE、命令行编辑器或企业级协调器）内部的代理运行时。JINX 运行时在没有独立网络访问或直接外部服务集成的状态下运行；所有外部模型调用、文件操作及控制台执行请求均通过标准输入 (`stdin`) 和标准输出 (`stdout`)，采用结构化的 JSON-RPC 通信载荷委托给宿主编辑器。
 
-```text
-┌─────────────────────────────────┐                 stdout (JSON IPC 载荷)                   ┌─────────────────────────────────┐
-│                                 │ ───────────────────────────────────────────────────────> │                                 │
-│   JINX 代理运行时               │     "jinx_command": "llm_generate" / "bash_exec"         │   宿主 IDE / CLI 编辑器         │
-│   (状态机与协议)                │                                                          │   (处理 API 密钥与实际执行)      │
-│   (JINX.yaml 本地状态)          │ <─────────────────────────────────────────────────────── │                                 │
-└─────────────────────────────────┘             stdin (工具执行结果 / LLM 响应)              └─────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
+graph LR
+    classDef sub fill:#161b22,stroke:#30363d,stroke-dasharray: 3 3,color:#c9d1d9;
+    classDef state fill:#1f242c,stroke:#388bfd,color:#58a6ff;
+    classDef yaml fill:#373320,stroke:#d4a72c,color:#f0e6c0;
+
+    subgraph JINX["JINX 代理运行时 (子进程)"]
+        direction TB
+        SM["状态机与协议规范<br/>(runner.py)"]:::state
+        DB[("本地状态存储<br/>(JINX.yaml)")]:::yaml
+        SM <-->|"读写状态"| DB
+    end
+    style JINX fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph HOST["宿主 IDE / CLI 编辑器 (父进程)"]
+        direction TB
+        EXE["工具执行引擎<br/>(bash_exec / 文件操作)"]:::sub
+        LLM["外部 LLM 访问网关<br/>(API 密钥与模型推理)"]:::sub
+    end
+    style HOST fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    SM ==>|"stdout (JSON-RPC 通信载荷)<br/>jinx_command: llm_generate | bash_exec | file_read | file_write"| HOST
+    HOST ==>|"stdin (响应返回载荷)<br/>{content: ...} | {output: ...}"| SM
 ```
 
 ### JSON-RPC 通信规范
@@ -256,33 +273,19 @@ sequenceDiagram
 
 ```yaml
 id: JINX
-mode: editor-integrated
-
 protocol:
-  in:
-    gap: infer; ask user only if wrong-guess cost = high or irreversible
-    scope: reject surface ask; trace root cause, true scope, blast radius
-    gate: before first line of code — write scope to state.facts; no code until written
-
   loop:
     min: 10
-    try: new approach; differs from all prior
-    test: use standard IDE tools (bash_exec, file_read, file_write)
-    score: per-requirement pass/fail; rank vs all prior; write round + score to state.scores
-    keep: top-scoring try persists
-    branch: same requirement fails 3x same approach -> switch approach
-    exit: iter >= 10 and top try passes all requirements and last 3 iters no higher score
-    deadlock: iter >= 10 and 3 distinct approaches fail same requirement -> ask user, stop
 
 state:
-  task: "任务描述文本"
+  task: "PyJWT RS256 令牌签名实现"
   facts:
-    - "Fact 1: Workspace root verified"
-    - "Fact 2: Configuration schema loaded"
+    - "已验证工作区根目录"
+    - "已加载配置架构"
   scores:
     - round: 1
-      approach: "PyJWT RS256 token signing implementation"
-      prior_failure: "None"
+      approach: "PyJWT RS256 令牌签名实现"
+      prior_failure: null
       requirements:
         compile: true
         unit_tests: false

@@ -19,13 +19,30 @@
 
 JINX is an agent runtime designed to run inside a host environment (such as an IDE, command-line editor, or corporate orchestrator). The JINX runtime operates without independent network access or direct external service integrations; all external model invocation, file manipulation, and console execution requests are delegated to the host editor via standard input (`stdin`) and standard output (`stdout`) using structured JSON-RPC communication payloads.
 
-```text
-┌─────────────────────────────────┐                 stdout (JSON IPC Payloads)               ┌─────────────────────────────────┐
-│                                 │ ───────────────────────────────────────────────────────> │                                 │
-│   JINX Agent Runtime            │     "jinx_command": "llm_generate" / "bash_exec"         │   Host IDE / CLI Editor         │
-│   (State Machine & Protocol)    │                                                          │   (Handles API Keys & Execution)│
-│   (Local state in JINX.yaml)    │ <─────────────────────────────────────────────────────── │                                 │
-└─────────────────────────────────┘             stdin (Result of tool / LLM response)        └─────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
+graph LR
+    classDef sub fill:#161b22,stroke:#30363d,stroke-dasharray: 3 3,color:#c9d1d9;
+    classDef state fill:#1f242c,stroke:#388bfd,color:#58a6ff;
+    classDef yaml fill:#373320,stroke:#d4a72c,color:#f0e6c0;
+
+    subgraph JINX["JINX Agent Runtime (Subprocess)"]
+        direction TB
+        SM["State Machine & Protocol<br/>(runner.py)"]:::state
+        DB[("Local State<br/>(JINX.yaml)")]:::yaml
+        SM <-->|"Read / Write State"| DB
+    end
+    style JINX fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph HOST["Host IDE / CLI Editor (Parent Process)"]
+        direction TB
+        EXE["Tool Execution Engine<br/>(bash_exec / file ops)"]:::sub
+        LLM["External LLM Gateway<br/>(API keys & Inference)"]:::sub
+    end
+    style HOST fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    SM ==>|"stdout (JSON-RPC Payloads)<br/>jinx_command: llm_generate | bash_exec | file_read | file_write"| HOST
+    HOST ==>|"stdin (Response Payloads)<br/>{content: ...} | {output: ...}"| SM
 ```
 
 ### JSON-RPC Communication Specification
@@ -256,33 +273,19 @@ All cognitive progress, failure logs, tasks, and loop settings are serialized to
 
 ```yaml
 id: JINX
-mode: editor-integrated
-
 protocol:
-  in:
-    gap: infer; ask user only if wrong-guess cost = high or irreversible
-    scope: reject surface ask; trace root cause, true scope, blast radius
-    gate: before first line of code — write scope to state.facts; no code until written
-
   loop:
     min: 10
-    try: new approach; differs from all prior
-    test: use standard IDE tools (bash_exec, file_read, file_write)
-    score: per-requirement pass/fail; rank vs all prior; write round + score to state.scores
-    keep: top-scoring try persists
-    branch: same requirement fails 3x same approach -> switch approach
-    exit: iter >= 10 and top try passes all requirements and last 3 iters no higher score
-    deadlock: iter >= 10 and 3 distinct approaches fail same requirement -> ask user, stop
 
 state:
-  task: "Task description text"
+  task: "PyJWT RS256 token signing implementation"
   facts:
-    - "Fact 1: Workspace root verified"
-    - "Fact 2: Configuration schema loaded"
+    - "Workspace root verified"
+    - "Configuration schema loaded"
   scores:
     - round: 1
       approach: "PyJWT RS256 token signing implementation"
-      prior_failure: "None"
+      prior_failure: null
       requirements:
         compile: true
         unit_tests: false

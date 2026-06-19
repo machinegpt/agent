@@ -102,8 +102,19 @@ def merge_state(jinx: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: The updated master manifest configuration block.
     """
+    try:
+        # Validate update using StateBlock model to ensure structural integrity
+        validated_block = StateBlock.model_validate(update)
+        validated_dict = validated_block.model_dump(exclude_unset=True)
+    except Exception as e:
+        logger.error(
+            "State block structural validation failed: %s. Rejecting corrupt state update to prevent manifest corruption.",
+            e
+        )
+        return jinx
+
     s: Dict[str, Any] = jinx.setdefault("state", {})
     for key in ("task", "facts", "scores", "debt", "open", "exit_ready", "deadlock"):
-        if key in update:
-            s[key] = update[key]
+        if key in validated_dict:
+            s[key] = validated_dict[key]
     return jinx
