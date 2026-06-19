@@ -128,7 +128,13 @@ def check_exit(scores: List[Dict[str, Any]], min_rounds: int, rnd: int) -> bool:
 
     # Performance comparison between the recent three rounds and the prior history
     last3_best = max(s.get("pass_count", 0) for s in scores[-3:])
-    prior_best = max((s.get("pass_count", 0) for s in scores[:-3]), default=0)
+    prior_history = scores[:-3]
+    if not prior_history:
+        # If there is no prior history to compare against (exactly 3 rounds executed)
+        # and top.all_pass is satisfied, we treat it as a clean convergence and exit.
+        return True
+
+    prior_best = max((s.get("pass_count", 0) for s in prior_history), default=0)
     return last3_best <= prior_best
 
 
