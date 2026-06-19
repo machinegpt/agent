@@ -382,6 +382,8 @@ def run(task: str, min_override: Optional[int]) -> None:
 
             if update.get("deadlock") or check_deadlock(scores, min_rounds, rnd):
                 logger.warning("Cognitive loop ended due to deadlock in round %d.", rnd)
+                jinx["state"]["deadlock"] = True
+                write_jinx(jinx)
                 break
     else:
         logger.error("Cognitive loop exhausted HARD_CAP (%d rounds) without resolution.", HARD_CAP)
