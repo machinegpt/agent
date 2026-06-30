@@ -129,30 +129,34 @@ export default function App() {
 
         const newSession: AgentSession = data.session;
 
-        setSessions((prev) => {
-          // Find existing session by returned ID or prepend as new
+        // Compute the merged session list synchronously, so the auto-switch
+        // check below reads the *post-merge* list (not the stale ref).
+        const mergeLiveSession = (prev: AgentSession[]) => {
           const existingIdx = prev.findIndex((s) => s.id === newSession.id);
-          let updated: AgentSession[];
           if (existingIdx >= 0) {
-            updated = [...prev];
-            updated[existingIdx] = newSession;
-          } else {
-            // Remove the default "live-session" placeholder (status=idle)
-            // that was created on first load but never populated by the server.
-            updated = [newSession, ...prev.filter(
-              (s) => !(s.id === "live-session" && s.status === "idle")
-            )];
+            const merged = [...prev];
+            merged[existingIdx] = newSession;
+            return merged;
           }
-          saveSessions(updated);
-          return updated;
+          // Remove the default "live-session" placeholder (status=idle)
+          // that was created on first load but never populated by the server.
+          return [newSession, ...prev.filter(
+            (s) => !(s.id === "live-session" && s.status === "idle")
+          )];
+        };
+
+        const nextSessions = mergeLiveSession(sessionsRef.current);
+        setSessions(() => {
+          saveSessions(nextSessions);
+          return nextSessions;
         });
 
         // Only auto-switch if the currently viewed session was deleted from
         // the list — otherwise respect the user's selection. This lets them
         // browse old history entries without being yanked back every 2s.
-        const currentActiveId = activeSessionIdRef.current;
-        const currentSessions = sessionsRef.current;
-        if (!currentSessions.find((s) => s.id === currentActiveId)) {
+        // Uses the already-computed nextSessions (post-merge), not the stale
+        // sessionsRef which may still include the removed placeholder.
+        if (!nextSessions.find((s) => s.id === activeSessionIdRef.current)) {
           setActiveSessionId(newSession.id);
         }
       } else {
@@ -550,9 +554,17 @@ export default function App() {
                   {language === "ru" ? "Ожидание запуска JINX" : "Waiting for JINX Agent Session"}
                 </h2>
                 <p className="text-xs text-neutral-400 leading-relaxed">
-                  {language === "ru"
-                    ? "Директория .agent не обнаружена. JINX создаёт её автоматически при первом запуске. Запустите агента через Cloud Code или OpenCode — дашборд сам подхватит состояние."
-                    : "The .agent runtime directory has not been detected yet. JINX provisions it automatically on first launch. Start an agent session via Cloud Code or OpenCode — the dashboard will sync in real-time."}
+                  {(() => {
+                    const isAuthError = liveError.toLowerCase().includes("unauthorized");
+                    if (isAuthError) {
+                      return language === "ru"
+                        ? "Требуется корректный DASHBOARD_API_TOKEN. Обновите токен и повторите запрос."
+                        : "A valid DASHBOARD_API_TOKEN is required. Update the token and retry.";
+                    }
+                    return language === "ru"
+                      ? "Директория .agent не обнаружена. JINX создаёт её автоматически при первом запуске. Запустите агента через Cloud Code или OpenCode — дашборд сам подхватит состояние."
+                      : "The .agent runtime directory has not been detected yet. JINX provisions it automatically on first launch. Start an agent session via Cloud Code or OpenCode — the dashboard will sync in real-time.";
+                  })()}
                 </p>
               </div>
 
@@ -659,7 +671,7 @@ export default function App() {
                   </div>
                   <h2 className="text-sm md:text-base font-bold text-white font-mono tracking-tight truncate max-w-lg">
                   {currentSession.id.startsWith("live-")
-                    ? (language === "ru" ? "Локальный сеанс Python агента" : "Local Python Agent Execution")
+                    ? (language === "ru" ? "Сеанс JINX Agent" : "JINX Agent Session")
                     : currentSession.name
                   }
                   </h2>

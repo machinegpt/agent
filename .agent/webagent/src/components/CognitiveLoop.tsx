@@ -91,6 +91,7 @@ export default function CognitiveLoop({ currentStatus }: CognitiveLoopProps) {
   };
 
   const currentIndex = getStatusIndex(currentStatus);
+  const isErrorState = currentStatus === "error";
 
   return (
     <div id="cognitive-loop-container" className="bg-[#0c0c0e]/90 border border-white/10 rounded-lg p-6 shadow-xl relative overflow-hidden">
@@ -125,10 +126,10 @@ export default function CognitiveLoop({ currentStatus }: CognitiveLoopProps) {
         <div className="hidden lg:grid grid-cols-7 gap-3 relative items-stretch">
           {phases.map((phase, idx) => {
             const Icon = phase.icon;
-            const isCompleted = currentIndex > idx;
-            const isActive = currentIndex === idx;
-            const isPending = currentIndex < idx && currentStatus !== "error";
-            const isError = currentStatus === "error" && idx === (phases.length - 1);
+            const isCompleted = isErrorState ? idx < phases.length - 1 : currentIndex > idx;
+            const isActive = !isErrorState && currentIndex === idx;
+            const isPending = !isErrorState && currentIndex < idx;
+            const isError = isErrorState && idx === (phases.length - 1);
 
             let borderClass = "border-white/5 bg-black/40";
             let glowClass = "";
@@ -220,9 +221,9 @@ export default function CognitiveLoop({ currentStatus }: CognitiveLoopProps) {
           <div className="relative border-l border-white/10 ml-4 pl-5 space-y-4">
             {phases.map((phase, idx) => {
               const Icon = phase.icon;
-              const isCompleted = currentIndex > idx;
-              const isActive = currentIndex === idx;
-              const isError = currentStatus === "error" && idx === (phases.length - 1);
+              const isCompleted = isErrorState ? idx < phases.length - 1 : currentIndex > idx;
+              const isActive = !isErrorState && currentIndex === idx;
+              const isError = isErrorState && idx === (phases.length - 1);
               const isIdle = currentStatus === "idle";
 
               let bgClass = "bg-neutral-900 border-neutral-800 text-neutral-500";

@@ -46,6 +46,7 @@ export default function FileExplorer({ files }: FileExplorerProps) {
       copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
     } catch (err) {
       console.error("Failed to copy to clipboard", err);
+      setCopied(false);
       setCopyFailed(true);
       copyTimerRef.current = setTimeout(() => setCopyFailed(false), 2000);
     }

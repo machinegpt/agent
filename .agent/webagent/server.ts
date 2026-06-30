@@ -26,7 +26,7 @@ const PORT = isAiStudio ? 3000 : (process.env.PORT ? parseInt(process.env.PORT) 
 // reachable by anyone else on the network without a token.
 // AI Studio environments typically use port-forwarding, so default to
 // all interfaces there; local development defaults to loopback.
-const BIND_HOST = process.env.DASHBOARD_BIND_HOST || (isAiStudio ? "0.0.0.0" : "127.0.0.1");
+const BIND_HOST = process.env.DASHBOARD_BIND_HOST || (isAiStudio && API_TOKEN ? "0.0.0.0" : "127.0.0.1");
 const API_TOKEN = process.env.DASHBOARD_API_TOKEN || "";
 
 app.use(express.json({ limit: "50mb" }));
@@ -48,11 +48,10 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
   if (!API_TOKEN) return next();
   const header = (req.headers.authorization || "").trim();
   const scheme = "bearer ";
-  const idx = header.toLowerCase().indexOf(scheme);
-  if (idx === -1) {
+  if (!header.toLowerCase().startsWith(scheme)) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-  const token = header.slice(idx + scheme.length).trim();
+  const token = header.slice(scheme.length).trim();
   if (!token || !timingSafeEqual(token, API_TOKEN)) {
     return res.status(401).json({ error: "Unauthorized" });
   }
@@ -123,7 +122,11 @@ function getOrCreateSessionId(agentDir: string, task: string): string {
   }
 
   if (task && tracker.currentTask !== task) {
-    tracker.seq++;
+    // First observed task uses seq=0 ("live-session") without incrementing;
+    // subsequent task changes increment seq to create unique IDs.
+    if (tracker.currentTask !== "") {
+      tracker.seq++;
+    }
     tracker.currentTask = task;
   }
 
@@ -255,8 +258,8 @@ app.get("/api/live-session", requireAuth, (req, res) => {
       // Determine Status
       let status: any = "idle";
       const anyAllPass = scores.some((s: any) => s.all_pass === true);
-      if (exitReady && anyAllPass) status = "completed";
-      else if (deadlock) status = "error";
+      if (deadlock) status = "error";
+      else if (exitReady && anyAllPass) status = "completed";
       else if (exitReady) status = "completed";
       else if (fs.existsSync(jinxRunStatePath)) {
         try {
