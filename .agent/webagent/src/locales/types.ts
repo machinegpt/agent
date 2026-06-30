@@ -13,6 +13,8 @@ export interface TranslationDict {
     session_history: string;
     runs: string;
     confirm_reset: string;
+    newer_live_available: string;
+    switch_to_live: string;
   };
   tabs: {
     summary: string;

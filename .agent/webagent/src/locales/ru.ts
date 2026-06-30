@@ -15,6 +15,8 @@ export const ru: TranslationDict = {
     session_history: "История сессий",
     runs: "запусков",
     confirm_reset: "Вы уверены, что хотите сбросить все сохраненные логи сессий? Это сотрет всю историю из LocalStorage.",
+    newer_live_available: "◉ Доступна новая сессия",
+    switch_to_live: "Переключиться",
   },
   tabs: {
     summary: "Сводка",

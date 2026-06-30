@@ -2,7 +2,7 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Terminal,
@@ -20,7 +20,9 @@ import {
   RefreshCw,
   AlertCircle,
   HelpCircle,
-  Globe
+  Globe,
+  MoreVertical,
+  Download
 } from "lucide-react";
 import { AgentSession } from "./types";
 import CognitiveLoop from "./components/CognitiveLoop";
@@ -72,6 +74,7 @@ export default function App() {
   const [searchedPaths, setSearchedPaths] = useState<string[]>([]);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [connectionMode, setConnectionMode] = useState<"sse" | "polling">("sse");
 
   // Auth token - stored in localStorage so it survives page reloads
   const [apiToken, setApiToken] = useState<string | null>(() => {
@@ -81,6 +84,21 @@ export default function App() {
   // Rename Session state
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
+
+  // Three-dot menu state
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!menuOpenId) return;
+    const handler = (e: MouseEvent) => {
+      const el = e.target as HTMLElement;
+      if (!el.closest('[data-menu-root="true"]')) {
+        setMenuOpenId(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [menuOpenId]);
 
   // Refs that always mirror the latest sessions/activeSessionId/apiToken. The 2s
   // polling interval below is only re-created when livePollActive changes,
@@ -103,7 +121,43 @@ export default function App() {
     apiTokenRef.current = apiToken;
   }, [apiToken]);
 
-  const fetchLiveSession = async (silent = false) => {
+  // Reusable handler for live session data from either SSE or polling.
+  const applyLiveSessionData = useCallback((data: any) => {
+    if (data.exists) {
+      setLiveError(null);
+      setSearchedPaths([]);
+      setLastSyncedAt(new Date().toLocaleTimeString());
+
+      const newSession: AgentSession = data.session;
+
+      const mergeLiveSession = (prev: AgentSession[]) => {
+        const existingIdx = prev.findIndex((s) => s.id === newSession.id);
+        if (existingIdx >= 0) {
+          const merged = [...prev];
+          merged[existingIdx] = newSession;
+          return merged;
+        }
+        return [newSession, ...prev.filter(
+          (s) => !(s.id === "live-session" && s.status === "idle")
+        )];
+      };
+
+      const nextSessions = mergeLiveSession(sessionsRef.current);
+      setSessions(() => {
+        saveSessions(nextSessions);
+        return nextSessions;
+      });
+
+      if (!nextSessions.find((s) => s.id === activeSessionIdRef.current)) {
+        setActiveSessionId(newSession.id);
+      }
+    } else {
+      setLiveError(data.message || "No .agent folder found.");
+      setSearchedPaths(data.searchedPaths || []);
+    }
+  }, []);
+
+  const fetchLiveSession = useCallback(async (silent = false) => {
     if (!silent) setIsSyncing(true);
     try {
       const headers: Record<string, string> = {};
@@ -121,71 +175,48 @@ export default function App() {
       }
 
       const data = await response.json();
-
-      if (data.exists) {
-        setLiveError(null);
-        setSearchedPaths([]);
-        setLastSyncedAt(new Date().toLocaleTimeString());
-
-        const newSession: AgentSession = data.session;
-
-        // Compute the merged session list synchronously, so the auto-switch
-        // check below reads the *post-merge* list (not the stale ref).
-        const mergeLiveSession = (prev: AgentSession[]) => {
-          const existingIdx = prev.findIndex((s) => s.id === newSession.id);
-          if (existingIdx >= 0) {
-            const merged = [...prev];
-            merged[existingIdx] = newSession;
-            return merged;
-          }
-          // Remove the default "live-session" placeholder (status=idle)
-          // that was created on first load but never populated by the server.
-          return [newSession, ...prev.filter(
-            (s) => !(s.id === "live-session" && s.status === "idle")
-          )];
-        };
-
-        const nextSessions = mergeLiveSession(sessionsRef.current);
-        setSessions(() => {
-          saveSessions(nextSessions);
-          return nextSessions;
-        });
-
-        // Only auto-switch if the currently viewed session was deleted from
-        // the list — otherwise respect the user's selection. This lets them
-        // browse old history entries without being yanked back every 2s.
-        // Uses the already-computed nextSessions (post-merge), not the stale
-        // sessionsRef which may still include the removed placeholder.
-        if (!nextSessions.find((s) => s.id === activeSessionIdRef.current)) {
-          setActiveSessionId(newSession.id);
-        }
-      } else {
-        setLiveError(data.message || "No .agent folder found.");
-        setSearchedPaths(data.searchedPaths || []);
-      }
+      applyLiveSessionData(data);
     } catch (err) {
       console.error("Live fetch failed", err);
       setLiveError("Failed to communicate with local dashboard backend server.");
     } finally {
       if (!silent) setIsSyncing(false);
     }
-  };
+  }, [applyLiveSessionData]);
 
-  // Poll live session on mount & interval
+  // Connect to live session — SSE when no token, polling with auth headers
+  // when token is set (EventSource cannot set custom headers).
   useEffect(() => {
-    fetchLiveSession();
+    const token = apiTokenRef.current;
 
-    let interval: NodeJS.Timeout | null = null;
-    if (livePollActive) {
-      interval = setInterval(() => {
-        fetchLiveSession(true);
-      }, 2000);
+    if (token) {
+      // Polling mode (supports Authorization header)
+      setConnectionMode("polling");
+      fetchLiveSession();
+      if (!livePollActive) return;
+      const interval = setInterval(() => fetchLiveSession(true), 2000);
+      return () => clearInterval(interval);
     }
 
-    return () => {
-      if (interval) clearInterval(interval);
+    // SSE mode (no token — EventSource can't send custom headers)
+    setConnectionMode("sse");
+    if (!livePollActive) return;
+
+    const es = new EventSource("/api/live-session/stream");
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        applyLiveSessionData(data);
+      } catch (e) {
+        console.error("SSE parse error", e);
+      }
     };
-  }, [livePollActive]);
+    es.onerror = () => {
+      console.error("SSE connection error, auto-reconnecting...");
+    };
+
+    return () => es.close();
+  }, [livePollActive, apiToken, fetchLiveSession, applyLiveSessionData]);
 
   // Check if backend requires auth but we don't have a token yet
   useEffect(() => {
@@ -242,10 +273,6 @@ export default function App() {
 
   const deleteSession = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (id.startsWith("live-")) {
-      alert(language === "ru" ? "Нельзя удалить активную сессию мониторинга." : "Cannot delete an active live monitoring session.");
-      return;
-    }
     const updated = sessions.filter((s) => s.id !== id);
     setSessions(updated);
     saveSessions(updated);
@@ -276,6 +303,20 @@ export default function App() {
     setSessions(updated);
     saveSessions(updated);
     setRenamingId(null);
+  };
+
+  const saveArchive = (session: AgentSession, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setMenuOpenId(null);
+    const blob = new Blob([JSON.stringify(session, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `jinx-session-${session.id}-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const resetAllHistory = () => {
@@ -399,7 +440,7 @@ export default function App() {
 
             <div className="flex flex-col gap-2 font-mono text-xs">
               <div className="flex justify-between items-center py-1 border-b border-white/5">
-                <span className="text-neutral-500">{language === "ru" ? "Авто-опрос (2с)" : "Auto Poll (2s)"}</span>
+                <span className="text-neutral-500">{language === "ru" ? "Обновление" : "Live Refresh"}</span>
                 <button
                   onClick={() => setLivePollActive(!livePollActive)}
                   className={`px-2 py-0.5 rounded font-bold text-[10px] tracking-wider transition-colors cursor-pointer uppercase ${
@@ -408,6 +449,12 @@ export default function App() {
                 >
                   {livePollActive ? (language === "ru" ? "ВКЛ" : "ON") : (language === "ru" ? "ВЫКЛ" : "OFF")}
                 </button>
+              </div>
+              <div className="flex justify-between items-center py-1 border-b border-white/5">
+                <span className="text-neutral-500">{language === "ru" ? "Транспорт" : "Transport"}</span>
+                <span className={`text-[10px] font-extrabold tracking-widest ${connectionMode === "sse" ? "text-[#4ade80]" : "text-amber-400"}`}>
+                  {connectionMode === "sse" ? "SSE" : "POLL"}
+                </span>
               </div>
               <div className="flex justify-between items-center py-1 border-b border-white/5">
                 <span className="text-neutral-500">{language === "ru" ? "Состояние сети" : "Backend Status"}</span>
@@ -436,6 +483,28 @@ export default function App() {
                 {sessions.length} {t.sidebar.runs}
               </span>
             </h3>
+
+            {/* Newer live session badge when browsing history */}
+            {(() => {
+              const liveSession = sessions.find(s => s.id.startsWith("live-") && s.status !== "idle");
+              if (liveSession && !activeSessionId.startsWith("live-")) {
+                return (
+                  <button
+                    onClick={() => setActiveSessionId(liveSession.id)}
+                    className="w-full mb-3 px-3 py-2 rounded border border-[#4ade80]/20 bg-[#4ade80]/5 text-left flex items-center justify-between gap-2 transition-all hover:bg-[#4ade80]/10 cursor-pointer group"
+                  >
+                    <span className="text-[10px] font-mono font-bold text-[#4ade80] flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#4ade80] animate-pulse" />
+                      {t.sidebar.newer_live_available}
+                    </span>
+                    <span className="text-[9px] font-mono font-bold uppercase tracking-wider text-[#4ade80]/60 group-hover:text-[#4ade80] transition-colors">
+                      {t.sidebar.switch_to_live} →
+                    </span>
+                  </button>
+                );
+              }
+              return null;
+            })()}
 
             {/* Scroll list */}
             <div id="sessions-history-list" className="flex-1 overflow-y-auto space-y-2 max-h-[400px] md:max-h-[500px]">
@@ -482,31 +551,52 @@ export default function App() {
                           </button>
                         </div>
                       ) : (
-                        <div className="flex-1 font-mono text-xs font-semibold text-neutral-300 truncate">
+                        <div className="flex-1 font-mono text-xs font-semibold text-neutral-300 truncate flex items-center gap-2">
                           {session.id.startsWith("live-")
                             ? (language === "ru" ? "◉ Машинный Агент Live" : "◉ Live Agent Monitor")
                             : session.name
                           }
+                          {session.id.startsWith("live-") && (
+                            <span className="text-[8px] font-extrabold uppercase tracking-widest text-[#4ade80] bg-[#4ade80]/10 border border-[#4ade80]/20 px-1.5 py-0.5 rounded leading-none">
+                              LIVE
+                            </span>
+                          )}
                         </div>
                       )}
 
-                      {/* Actions */}
-                      {!isRenaming && !session.id.startsWith("live-") && (
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 md:opacity-100">
+                      {/* Three-dot menu */}
+                      {!isRenaming && (
+                        <div className="relative">
                           <button
-                            id={`rename-session-${session.id}`}
-                            onClick={(e) => startRename(session.id, session.name, e)}
-                            className="p-0.5 rounded text-neutral-500 hover:text-[#4ade80]"
+                            data-menu-root="true"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setMenuOpenId(menuOpenId === session.id ? null : session.id);
+                            }}
+                            className="p-0.5 rounded text-neutral-500 hover:text-white transition-colors"
                           >
-                            <Edit2 className="w-3 h-3" />
+                            <MoreVertical className="w-3.5 h-3.5" />
                           </button>
-                          <button
-                            id={`delete-session-${session.id}`}
-                            onClick={(e) => deleteSession(session.id, e)}
-                            className="p-0.5 rounded text-neutral-500 hover:text-red-400"
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </button>
+
+                          {menuOpenId === session.id && (
+                            <div data-menu-root="true" className="absolute right-0 top-6 z-50 w-44 bg-neutral-900 border border-white/10 rounded-lg shadow-2xl py-1 overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                              <button
+                                onClick={(e) => saveArchive(session, e)}
+                                className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-neutral-300 hover:bg-white/5 hover:text-white transition-colors text-left"
+                              >
+                                <Download className="w-3.5 h-3.5 text-neutral-500" />
+                                {language === "ru" ? "Сохранить архив" : "Save Archive"}
+                              </button>
+                              <button
+                                id={`delete-session-${session.id}`}
+                                onClick={(e) => deleteSession(session.id, e)}
+                                className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-red-400 hover:bg-red-500/10 transition-colors text-left"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                {language === "ru" ? "Удалить" : "Delete"}
+                              </button>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

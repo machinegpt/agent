@@ -15,6 +15,8 @@ export const en: TranslationDict = {
     session_history: "Session History",
     runs: "runs",
     confirm_reset: "Are you sure you want to reset all saved session logs? This will wipe your LocalStorage history.",
+    newer_live_available: "◉ Newer live session available",
+    switch_to_live: "Switch to live",
   },
   tabs: {
     summary: "Summary",
