@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import FileExplorer from "../../components/FileExplorer";
 import { TestWrapper } from "../TestWrapper";
 
@@ -53,15 +53,18 @@ describe("FileExplorer", () => {
   });
 
   it("shows copy error and clears it after timeout", async () => {
+    vi.useFakeTimers();
     navigator.clipboard.writeText = vi.fn().mockRejectedValue(new Error("denied"));
 
     render(<TestWrapper><FileExplorer files={{ "test.yaml": "content-to-copy" }} /></TestWrapper>);
     fireEvent.click(screen.getByText(/Copy to clipboard/i));
 
-    expect(await screen.findByText(/Copy failed/i)).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(screen.getByText(/Copy failed/i)).toBeInTheDocument();
 
-    await vi.waitFor(() => {
-      expect(screen.queryByText(/Copy failed/i)).not.toBeInTheDocument();
-    }, { timeout: 3000, interval: 100 });
+    act(() => { vi.advanceTimersByTime(2000); });
+    expect(screen.queryByText(/Copy failed/i)).not.toBeInTheDocument();
+
+    vi.useRealTimers();
   });
 });

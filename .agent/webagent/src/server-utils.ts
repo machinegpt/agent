@@ -16,19 +16,25 @@ export interface SessionTrackerEntry {
   seq: number;
 }
 
-const sessionTracker = new Map<string, SessionTrackerEntry>();
+interface SessionTrackerEntryExtended extends SessionTrackerEntry {
+  pid: number;
+}
+
+const sessionTracker = new Map<string, SessionTrackerEntryExtended>();
+let nextPid = 10000 + Math.floor(Math.random() * 9000);
 
 export function createSessionTracker() {
   function getOrCreateSessionId(agentDir: string, task: string): string {
     let tracker = sessionTracker.get(agentDir);
     if (!tracker) {
-      tracker = { currentTask: "", seq: 0 };
+      tracker = { currentTask: "", seq: 0, pid: nextPid++ };
       sessionTracker.set(agentDir, tracker);
     }
 
     if (task && tracker.currentTask !== task) {
       if (tracker.currentTask !== "") {
         tracker.seq++;
+        tracker.pid = nextPid++;
       }
       tracker.currentTask = task;
     }
@@ -36,7 +42,11 @@ export function createSessionTracker() {
     return tracker.seq === 0 ? "live-session" : `live-session-${tracker.seq}`;
   }
 
-  return { getOrCreateSessionId };
+  function getSessionPid(agentDir: string): number {
+    return sessionTracker.get(agentDir)?.pid || 0;
+  }
+
+  return { getOrCreateSessionId, getSessionPid };
 }
 
 /** Reset session tracker state (for testing only). */

@@ -74,4 +74,5 @@ export interface AgentSession {
   facts?: string[];
   debt?: string[];
   open?: string[];
+  copyCount?: number; // how many times this backup was re-uploaded
 }

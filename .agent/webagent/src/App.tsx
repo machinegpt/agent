@@ -22,7 +22,8 @@ import {
   HelpCircle,
   Globe,
   MoreVertical,
-  Download
+  Download,
+  Copy
 } from "lucide-react";
 import { AgentSession } from "./types";
 import CognitiveLoop from "./components/CognitiveLoop";
@@ -55,6 +56,9 @@ export default function App() {
   const [activeSessionId, setActiveSessionId] = useState<string>(() => {
     return localStorage.getItem("jinx_active_session_id") || "live-session";
   });
+
+  // Track previous live session exit_ready state to detect task completion
+  const prevExitReadyRef = useRef(false);
 
   const [activeTab, setActiveTab] = useState<"summary" | "thoughts" | "files" | "console" | "diffs">(() => {
     const saved = localStorage.getItem("jinx_active_tab");
@@ -129,6 +133,22 @@ export default function App() {
       setLastSyncedAt(new Date().toLocaleTimeString());
 
       const newSession: AgentSession = data.session;
+      const exitReady = !!(newSession as any).exitReady;
+      const justCompleted = exitReady && !prevExitReadyRef.current;
+
+      if (justCompleted) {
+        // Task just completed — archive as a dedicated session, start fresh
+        const archivedId = `completed-${Date.now()}`;
+        setSessions((prev) => {
+          const archived = { ...newSession, id: archivedId, copyCount: 0 };
+          const defaultLive = createDefaultLiveSession();
+          return [...prev, archived, defaultLive];
+        });
+        setActiveSessionId(archivedId);
+        setActiveTab("summary");
+        prevExitReadyRef.current = true;
+        return;
+      }
 
       const mergeLiveSession = (prev: AgentSession[]) => {
         const existingIdx = prev.findIndex((s) => s.id === newSession.id);
@@ -148,6 +168,8 @@ export default function App() {
       if (!nextSessions.find((s) => s.id === activeSessionIdRef.current)) {
         setActiveSessionId(newSession.id);
       }
+
+      prevExitReadyRef.current = exitReady;
     } else {
       setLiveError(data.message || "No .agent folder found.");
       setSearchedPaths(data.searchedPaths || []);
@@ -265,6 +287,10 @@ export default function App() {
         const parsed: AgentSession = JSON.parse(text);
         if (parsed && typeof parsed.id === "string" && typeof parsed.name === "string" && typeof parsed.timestamp === "string" && Array.isArray(parsed.plan) && Array.isArray(parsed.thoughts)) {
           setSessions((prev) => {
+            const existing = prev.find(s => s.id === parsed.id);
+            if (existing) {
+              return prev.map(s => s.id === parsed.id ? { ...s, copyCount: (s.copyCount || 0) + 1 } : s);
+            }
             const updated = [...prev, parsed];
             return updated;
           });
@@ -606,7 +632,20 @@ export default function App() {
 
                     <div className="flex items-center justify-between text-[10px] text-neutral-500 font-mono uppercase">
                       <span>{session.id.startsWith("live-") ? "REAL-TIME" : new Date(session.timestamp).toLocaleDateString()}</span>
-                      <span>{session.status}</span>
+                      <span className="flex items-center gap-1.5">
+                        {session.copyCount !== undefined && session.copyCount > 0 && (
+                          <span
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider
+                              bg-emerald-400/10 text-emerald-400/80 border border-emerald-400/20
+                              hover:bg-emerald-400/20 hover:text-emerald-300 transition-colors cursor-default"
+                            title={language === "ru" ? "Загружено как бэкап раз" : "Uploaded as backup this many times"}
+                          >
+                            <Copy className="w-2.5 h-2.5" />
+                            <span>{session.copyCount} {language === "ru" ? "копия" : "copy"}</span>
+                          </span>
+                        )}
+                        <span>{session.status}</span>
+                      </span>
                     </div>
                   </div>
                 );

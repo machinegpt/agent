@@ -108,7 +108,7 @@ function findGitRoot(startDir: string): string | null {
 // frontend can show each task run as a separate history entry. Uses a Map
 // keyed by agentDir, so it survives multiple requests but resets on restart
 // (acceptable since old sessions are preserved in the dashboard's localStorage).
-const { getOrCreateSessionId } = createSessionTracker();
+const { getOrCreateSessionId, getSessionPid } = createSessionTracker();
 
 // Simple TTL cache for git diff output to avoid execSync on every SSE tick.
 // Invalidated after 3 seconds or on detected filesystem changes.
@@ -399,7 +399,7 @@ function getLiveSessionData() {
           promptTokens: 0,
           completionTokens: 0,
           estimatedCost: 0,
-          pid: process.pid,
+          pid: getSessionPid(agentDir),
           hostname: os.hostname(),
           os: process.platform,
         },
@@ -413,6 +413,7 @@ function getLiveSessionData() {
         facts,
         debt,
         open,
+        exitReady,
       },
     };
   }
