@@ -36,6 +36,16 @@ HARD_CAP: int = 40
 TOOL_DEPTH_CAP: int = 20
 
 
+class FlowDict(dict):
+    """Deprecated: flow-style forcing removed. Kept as no-op alias for backward compatibility."""
+    pass
+
+
+class FlowList(list):
+    """Deprecated: flow-style forcing removed. Kept as no-op alias for backward compatibility."""
+    pass
+
+
 class Dumper(yaml.SafeDumper):
     """Isolated, thread-safe PyYAML dumper class for JINX serialization.
 
@@ -50,6 +60,16 @@ JinxYamlDumper = Dumper
 JinxEnterpriseYamlDumper = Dumper
 
 
+def flow_dict_representer(dumper: Dumper, data: "FlowDict") -> Any:
+    """Deprecated no-op: no longer forces flow style; mappings render in block style."""
+    return dumper.represent_mapping('tag:yaml.org,2002:map', data, flow_style=False)
+
+
+def flow_list_representer(dumper: Dumper, data: "FlowList") -> Any:
+    """Deprecated no-op: no longer forces flow style; sequences render in block style."""
+    return dumper.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=False)
+
+
 def str_presenter(dumper: Dumper, data: str) -> Any:
     if '\n' in data:
         # Format multi-line strings cleanly using literal block scalars (|)
@@ -58,7 +78,16 @@ def str_presenter(dumper: Dumper, data: str) -> Any:
 
 
 # Register representers strictly and exclusively to our custom dumper class
+Dumper.add_representer(FlowDict, flow_dict_representer)
+Dumper.add_representer(FlowList, flow_list_representer)
 Dumper.add_representer(str, str_presenter)
+
+
+def to_flow(data: Any) -> Any:
+    """Deprecated: previously forced compact flow-style YAML. Now a no-op that
+    returns standard dict/list structures unchanged; all output renders in block style.
+    """
+    return data
 
 
 # Custom Enterprise Exception Hierarchy
@@ -86,8 +115,9 @@ class Yaml:
     """Thread-safe YAML serialization engine for JINX operations.
 
     Consolidates isolated PyYAML configurations, atomic transactional file writes,
-    and safe parsing logic. All output uses block style exclusively (no inline/flow
-    style) for maximum readability and to minimize LLM state-block parsing errors.
+    and safe parsing logic. Block style is preferred for non-empty mappings/sequences
+    for maximum readability and to minimize LLM state-block parsing errors (PyYAML
+    may still render empty collections like `[]`/`{}` compactly).
     """
 
     @staticmethod
