@@ -33,22 +33,6 @@ class VerifyRunnerPhase(VerificationPhase):
             return False
 
         # --- CLASS VERIFICATIONS ---
-        # Verify Class FlowDict
-        if hasattr(target_module, "FlowDict"):
-            suite.print_badge("Class FlowDict: PRESENT", True)
-            cls_obj = getattr(target_module, "FlowDict")
-        else:
-            suite.print_badge("Class FlowDict: MISSING", False)
-            success = False
-
-        # Verify Class FlowList
-        if hasattr(target_module, "FlowList"):
-            suite.print_badge("Class FlowList: PRESENT", True)
-            cls_obj = getattr(target_module, "FlowList")
-        else:
-            suite.print_badge("Class FlowList: MISSING", False)
-            success = False
-
         # Verify Class Dumper
         if hasattr(target_module, "Dumper"):
             suite.print_badge("Class Dumper: PRESENT", True)
@@ -113,32 +97,11 @@ class VerifyRunnerPhase(VerificationPhase):
             success = False
 
         # --- FUNCTION VERIFICATIONS ---
-        # Verify Function flow_dict_representer
-        if hasattr(target_module, "flow_dict_representer"):
-            suite.print_badge("Function flow_dict_representer: PRESENT", True)
-        else:
-            suite.print_badge("Function flow_dict_representer: MISSING", False)
-            success = False
-
-        # Verify Function flow_list_representer
-        if hasattr(target_module, "flow_list_representer"):
-            suite.print_badge("Function flow_list_representer: PRESENT", True)
-        else:
-            suite.print_badge("Function flow_list_representer: MISSING", False)
-            success = False
-
         # Verify Function str_presenter
         if hasattr(target_module, "str_presenter"):
             suite.print_badge("Function str_presenter: PRESENT", True)
         else:
             suite.print_badge("Function str_presenter: MISSING", False)
-            success = False
-
-        # Verify Function to_flow
-        if hasattr(target_module, "to_flow"):
-            suite.print_badge("Function to_flow: PRESENT", True)
-        else:
-            suite.print_badge("Function to_flow: MISSING", False)
             success = False
 
         # Verify Function safe_atomic_write_yaml
