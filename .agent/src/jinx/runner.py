@@ -36,15 +36,6 @@ HARD_CAP: int = 40
 TOOL_DEPTH_CAP: int = 20
 
 
-# Custom types to enforce flow style (compact inline format) for specific sub-elements in YAML
-class FlowDict(dict):
-    pass
-
-
-class FlowList(list):
-    pass
-
-
 class Dumper(yaml.SafeDumper):
     """Isolated, thread-safe PyYAML dumper class for JINX serialization.
 
@@ -59,14 +50,6 @@ JinxYamlDumper = Dumper
 JinxEnterpriseYamlDumper = Dumper
 
 
-def flow_dict_representer(dumper: Dumper, data: FlowDict) -> Any:
-    return dumper.represent_mapping('tag:yaml.org,2002:map', data, flow_style=True)
-
-
-def flow_list_representer(dumper: Dumper, data: FlowList) -> Any:
-    return dumper.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=True)
-
-
 def str_presenter(dumper: Dumper, data: str) -> Any:
     if '\n' in data:
         # Format multi-line strings cleanly using literal block scalars (|)
@@ -75,23 +58,7 @@ def str_presenter(dumper: Dumper, data: str) -> Any:
 
 
 # Register representers strictly and exclusively to our custom dumper class
-Dumper.add_representer(FlowDict, flow_dict_representer)
-Dumper.add_representer(FlowList, flow_list_representer)
 Dumper.add_representer(str, str_presenter)
-
-
-def to_flow(data: Any) -> Any:
-    """Recursively converts standard dictionaries and lists into FlowDict/FlowList mappings.
-
-    This forces the YAML dumper to represent complex nested data compact in flow style,
-    while leaving top-level textual descriptions in beautiful human-readable block style.
-    """
-    if isinstance(data, dict):
-        return FlowDict({k: to_flow(v) for k, v in data.items()})
-    elif isinstance(data, list):
-        return FlowList([to_flow(v) for v in data])
-    return data
-
 
 
 # Custom Enterprise Exception Hierarchy
@@ -119,12 +86,17 @@ class Yaml:
     """Thread-safe YAML serialization engine for JINX operations.
 
     Consolidates isolated PyYAML configurations, atomic transactional file writes,
-    and safe parsing logic.
+    and safe parsing logic. All output uses block style exclusively (no inline/flow
+    style) for maximum readability and to minimize LLM state-block parsing errors.
     """
 
     @staticmethod
     def dump_to_string(data: Any, width: int = sys.maxsize) -> str:
-        """Serializes structures to YAML strings using our custom isolated dumper."""
+        """Serializes structures to YAML strings using our custom isolated dumper.
+
+        Always renders in block style (default_flow_style=False); nested dicts/lists
+        are never collapsed into compact inline `{...}`/`[...]` form.
+        """
         try:
             return yaml.dump(
                 data,
@@ -139,7 +111,11 @@ class Yaml:
 
     @staticmethod
     def safe_atomic_write(path: Path, data: Any, width: int = sys.maxsize) -> None:
-        """Writes data structures to files atomically via temporary staging files."""
+        """Writes data structures to files atomically via temporary staging files.
+
+        Always renders in block style (default_flow_style=False) for consistency
+        with dump_to_string.
+        """
         temp_path = path.with_suffix(path.suffix + ".tmp")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -531,7 +507,7 @@ def write_llm_request(
         "type": "llm_generate",
         "system": SYSTEM_PROMPT,
         "messages": history,
-        "tools": to_flow(tool_schema())
+        "tools": tool_schema()
     }
     try:
         Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
@@ -668,7 +644,7 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
                 # Post tool executions back to editor
                 request_payload = {
                     "type": "tool_calls",
-                    "calls": to_flow(tool_calls)
+                    "calls": tool_calls
                 }
                 try:
                     Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
@@ -754,7 +730,7 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
                     "type": "llm_generate",
                     "system": SYSTEM_PROMPT,
                     "messages": history,
-                    "tools": to_flow([])
+                    "tools": []
                 }
                 try:
                     Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
@@ -943,4 +919,3 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
     else:
         logger.error("Cognitive loop exhausted HARD_CAP (%d rounds) without resolution.", HARD_CAP)
         sys.exit(2)
-
