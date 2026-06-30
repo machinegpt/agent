@@ -94,7 +94,9 @@ deadlock: <true|false — true only if 3+ genuinely different approaches failed 
 MISSING_STATE_WARNING: str = (
     "WARNING: You did not output the REQUIRED markdown YAML state block (```yaml ... ```) at the end of your last response!\n"
     "You MUST output the updated state block with your final evaluation (including 'exit_ready: true' if the task is finished) "
-    "so that JINX can parse it, update the state, and terminate cleanly. Do not skip this block!\n\n"
+    "so that JINX can parse it, update the state, and terminate cleanly. Do not skip this block!\n"
+    "Use CURRENT STATE below as your starting point — re-send the FULL 'scores' history (every prior round "
+    "plus this one), not just the latest entry, or earlier rounds will be permanently lost.\n\n"
 )
 
 TOOL_DEPTH_CRITICAL_MSG: str = (
