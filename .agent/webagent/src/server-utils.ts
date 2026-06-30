@@ -52,6 +52,7 @@ export function createSessionTracker() {
 /** Reset session tracker state (for testing only). */
 export function _resetSessionTracker() {
   sessionTracker.clear();
+  nextPid = 10000 + Math.floor(Math.random() * 9000);
 }
 
 export { parseDiffText };

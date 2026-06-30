@@ -270,7 +270,7 @@ function getLiveSessionData() {
         history.forEach((msg: any, msgIdx: number) => {
           const role = msg.role;
           const content = msg.content;
-          const approxTime = new Date(mtime - (history.length - msgIdx) * 12000).toISOString();
+          const approxTime = new Date(mtime - (history.length - msgIdx) * 15000).toISOString();
 
           if (role === "assistant") {
             let textContent = "";
@@ -298,11 +298,7 @@ function getLiveSessionData() {
               }
             });
 
-            let cleanText = textContent;
-            const stateBlockMatch = textContent.match(/```(?:yaml|json)[\s\S]*?```/);
-            if (stateBlockMatch) {
-              cleanText = textContent.replace(stateBlockMatch[0], "").trim();
-            }
+            let cleanText = textContent.replace(/```(?:yaml|json)[\s\S]*?```\n*/g, "").trim();
 
             if (cleanText) {
               thoughts.push({
@@ -599,6 +595,17 @@ app.get("/api/live-session/stream", requireAuth, (req, res) => {
   res.on("error", () => {
     clearInterval(interval);
   });
+  res.write(":\n\n"); // initial heartbeat for proxy compatibility
+});
+
+// Express error handler — returns JSON instead of HTML for parse errors
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (err.type === "entity.parse.failed" || err.type === "entity.too.large") {
+    res.status(413).json({ error: "Request body too large or malformed" });
+    return;
+  }
+  console.error("Unhandled error", err);
+  res.status(500).json({ error: "Internal server error" });
 });
 
 async function startServer() {

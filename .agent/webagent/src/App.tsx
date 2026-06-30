@@ -57,8 +57,10 @@ export default function App() {
     return localStorage.getItem("jinx_active_session_id") || "live-session";
   });
 
-  // Track previous live session exit_ready state to detect task completion
-  const prevExitReadyRef = useRef(false);
+  // Track previous live session status to detect genuine task completion.
+  // Uses a ref that resets on page reload so the first poll establishes a
+  // baseline without archiving (prevents duplicates from reloads / Strict Mode).
+  const prevStatusRef = useRef<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<"summary" | "thoughts" | "files" | "console" | "diffs">(() => {
     const saved = localStorage.getItem("jinx_active_tab");
@@ -133,11 +135,13 @@ export default function App() {
       setLastSyncedAt(new Date().toLocaleTimeString());
 
       const newSession: AgentSession = data.session;
-      const exitReady = !!(newSession as any).exitReady;
-      const justCompleted = exitReady && !prevExitReadyRef.current;
+      const currentStatus = newSession.status;
 
-      if (justCompleted) {
-        // Task just completed — archive as a dedicated session, start fresh
+      // First poll: establish baseline, never archive
+      if (prevStatusRef.current === null) {
+        prevStatusRef.current = currentStatus;
+      } else if (currentStatus === "completed" && prevStatusRef.current !== "completed") {
+        // Genuine transition to completed — archive as a dedicated session, start fresh
         const archivedId = `completed-${Date.now()}`;
         setSessions((prev) => {
           const archived = { ...newSession, id: archivedId, copyCount: 0 };
@@ -146,9 +150,10 @@ export default function App() {
         });
         setActiveSessionId(archivedId);
         setActiveTab("summary");
-        prevExitReadyRef.current = true;
+        prevStatusRef.current = "completed";
         return;
       }
+      prevStatusRef.current = currentStatus;
 
       const mergeLiveSession = (prev: AgentSession[]) => {
         const existingIdx = prev.findIndex((s) => s.id === newSession.id);
@@ -168,8 +173,6 @@ export default function App() {
       if (!nextSessions.find((s) => s.id === activeSessionIdRef.current)) {
         setActiveSessionId(newSession.id);
       }
-
-      prevExitReadyRef.current = exitReady;
     } else {
       setLiveError(data.message || "No .agent folder found.");
       setSearchedPaths(data.searchedPaths || []);
