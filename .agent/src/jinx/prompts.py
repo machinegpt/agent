@@ -127,6 +127,3 @@ def construct_round_prompt(
     """
     warning_prefix = MISSING_STATE_WARNING if missing_state else ""
     return f"{warning_prefix}ROUND {rnd} (at least {min_rounds} rounds required before exit is considered)\nTASK: {task}\nCURRENT STATE:\n{state_dump}"
-
-
-
