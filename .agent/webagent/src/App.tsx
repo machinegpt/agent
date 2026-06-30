@@ -137,7 +137,11 @@ export default function App() {
             updated = [...prev];
             updated[existingIdx] = newSession;
           } else {
-            updated = [newSession, ...prev];
+            // Remove the default "live-session" placeholder (status=idle)
+            // that was created on first load but never populated by the server.
+            updated = [newSession, ...prev.filter(
+              (s) => !(s.id === "live-session" && s.status === "idle")
+            )];
           }
           saveSessions(updated);
           return updated;
