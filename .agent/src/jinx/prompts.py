@@ -102,7 +102,11 @@ MISSING_STATE_WARNING: str = (
 TOOL_DEPTH_CRITICAL_MSG: str = (
     "CRITICAL: The inner tool-calling depth limit has been reached. "
     "Do not call any more tools. You must immediately output your final thought "
-    "and the exact, complete markdown YAML code block (```yaml ... ```) to persist your progress and avoid state loss."
+    "and the exact, complete markdown YAML code block (```yaml ... ```) to persist your progress and avoid state loss.\n"
+    "Being cut off here does NOT mean the task is done — only set 'exit_ready: true' if the requirements "
+    "genuinely all passed. Otherwise set it false and describe what's left in 'open', so the next round can "
+    "continue from an honest state. Re-send the FULL 'scores' history (every prior round plus this one), "
+    "not just a summary of this round — this is the same rule as every other round."
 )
 
 
@@ -122,7 +126,7 @@ def construct_round_prompt(
         str: The fully-formed, formatted user prompt string for the cognitive loop.
     """
     warning_prefix = MISSING_STATE_WARNING if missing_state else ""
-    return f"{warning_prefix}ROUND {rnd} of {min_rounds}+\nTASK: {task}\nCURRENT STATE:\n{state_dump}"
+    return f"{warning_prefix}ROUND {rnd} (at least {min_rounds} rounds required before exit is considered)\nTASK: {task}\nCURRENT STATE:\n{state_dump}"
 
 
 
