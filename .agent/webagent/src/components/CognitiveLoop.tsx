@@ -85,7 +85,7 @@ export default function CognitiveLoop({ currentStatus }: CognitiveLoopProps) {
       verify: 4,
       commit: 5,
       completed: 6,
-      error: -2,
+      error: 6,
     };
     return map[status] ?? -1;
   };
@@ -128,7 +128,7 @@ export default function CognitiveLoop({ currentStatus }: CognitiveLoopProps) {
             const isCompleted = currentIndex > idx;
             const isActive = currentIndex === idx;
             const isPending = currentIndex < idx && currentStatus !== "error";
-            const isError = currentStatus === "error" && idx === Math.max(0, currentIndex);
+            const isError = currentStatus === "error" && idx === (phases.length - 1);
 
             let borderClass = "border-white/5 bg-black/40";
             let glowClass = "";
@@ -222,7 +222,7 @@ export default function CognitiveLoop({ currentStatus }: CognitiveLoopProps) {
               const Icon = phase.icon;
               const isCompleted = currentIndex > idx;
               const isActive = currentIndex === idx;
-              const isError = currentStatus === "error" && idx === Math.max(0, currentIndex);
+              const isError = currentStatus === "error" && idx === (phases.length - 1);
               const isIdle = currentStatus === "idle";
 
               let bgClass = "bg-neutral-900 border-neutral-800 text-neutral-500";

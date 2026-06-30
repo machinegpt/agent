@@ -9,6 +9,7 @@ import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 import YAML from "yaml";
 import { execSync } from "child_process";
+import crypto from "crypto";
 import os from "os";
 
 dotenv.config();
@@ -23,7 +24,9 @@ const PORT = isAiStudio ? 3000 : (process.env.PORT ? parseInt(process.env.PORT) 
 // and is strongly encouraged to also set DASHBOARD_API_TOKEN so that
 // /api/live-session (which can return file contents from .agent) is not
 // reachable by anyone else on the network without a token.
-const BIND_HOST = process.env.DASHBOARD_BIND_HOST || "127.0.0.1";
+// AI Studio environments typically use port-forwarding, so default to
+// all interfaces there; local development defaults to loopback.
+const BIND_HOST = process.env.DASHBOARD_BIND_HOST || (isAiStudio ? "0.0.0.0" : "127.0.0.1");
 const API_TOKEN = process.env.DASHBOARD_API_TOKEN || "";
 
 app.use(express.json({ limit: "50mb" }));
@@ -31,11 +34,26 @@ app.use(express.json({ limit: "50mb" }));
 // Require a bearer token on protected routes when DASHBOARD_API_TOKEN is set.
 // If no token is configured, access still defaults to localhost-only via
 // BIND_HOST, so local development keeps working without extra setup.
+function timingSafeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) {
+    crypto.timingSafeEqual(bufA, bufA);
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (!API_TOKEN) return next();
-  const header = req.headers.authorization || "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (token !== API_TOKEN) {
+  const header = (req.headers.authorization || "").trim();
+  const scheme = "bearer ";
+  const idx = header.toLowerCase().indexOf(scheme);
+  if (idx === -1) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const token = header.slice(idx + scheme.length).trim();
+  if (!token || !timingSafeEqual(token, API_TOKEN)) {
     return res.status(401).json({ error: "Unauthorized" });
   }
   next();
@@ -91,6 +109,27 @@ function findGitRoot(startDir: string): string | null {
   return null;
 }
 
+// In-memory session tracker — assigns unique session IDs per task so the
+// frontend can show each task run as a separate history entry. Uses a Map
+// keyed by agentDir, so it survives multiple requests but resets on restart
+// (acceptable since old sessions are preserved in the dashboard's localStorage).
+const sessionTracker = new Map<string, { currentTask: string; seq: number }>();
+
+function getOrCreateSessionId(agentDir: string, task: string): string {
+  let tracker = sessionTracker.get(agentDir);
+  if (!tracker) {
+    tracker = { currentTask: "", seq: 0 };
+    sessionTracker.set(agentDir, tracker);
+  }
+
+  if (task && tracker.currentTask !== task) {
+    tracker.seq++;
+    tracker.currentTask = task;
+  }
+
+  return tracker.seq === 0 ? "live-session" : `live-session-${tracker.seq}`;
+}
+
 // Function to parse diff text
 function parseDiffText(filename: string, text: string) {
   const diffs: any[] = [];
@@ -144,6 +183,13 @@ function parseDiffText(filename: string, text: string) {
 
   return diffs;
 }
+
+// Non-protected endpoint so the frontend can detect whether auth is needed
+// without requiring a valid token. Only reveals whether a token is configured,
+// never the token value itself.
+app.get("/api/auth-check", (req, res) => {
+  res.json({ tokenConfigured: !!API_TOKEN });
+});
 
 // REST Endpoint to fetch real live agent logs from .agent directory
 app.get("/api/live-session", requireAuth, (req, res) => {
@@ -208,7 +254,9 @@ app.get("/api/live-session", requireAuth, (req, res) => {
 
       // Determine Status
       let status: any = "idle";
-      if (deadlock) status = "error";
+      const anyAllPass = scores.some((s: any) => s.all_pass === true);
+      if (exitReady && anyAllPass) status = "completed";
+      else if (deadlock) status = "error";
       else if (exitReady) status = "completed";
       else if (fs.existsSync(jinxRunStatePath)) {
         try {
@@ -379,6 +427,7 @@ app.get("/api/live-session", requireAuth, (req, res) => {
       // agentDir), not process.cwd() — the server is typically started from
       // .agent/webagent, which usually has no .git of its own.
       let diffs: any[] = [];
+      let diffsError: string | null = null;
       const repoRoot = findGitRoot(agentDir);
       if (repoRoot) {
         try {
@@ -386,21 +435,24 @@ app.get("/api/live-session", requireAuth, (req, res) => {
             encoding: "utf8",
             cwd: repoRoot,
             stdio: ["ignore", "pipe", "ignore"],
-            timeout: 5000
+            timeout: 5000,
+            maxBuffer: 10 * 1024 * 1024,
           });
           if (gitDiff && gitDiff.trim()) {
             diffs = parseDiffText("workspace.diff", gitDiff);
           }
-        } catch (e) {
-          // Keep completely silent to prevent cluttering stderr / logs
+        } catch (e: any) {
+          diffsError = e?.message?.includes("timed out") ? "Git diff timed out on large repo." : "Git diff failed.";
         }
       }
+
+      const sessionId = getOrCreateSessionId(agentDir, task);
 
       return res.json({
         exists: true,
         path: agentDir,
         session: {
-          id: "live-session",
+          id: sessionId,
           name: task,
           timestamp: fs.statSync(jinxYamlPath).mtime.toISOString(),
           status,
@@ -418,6 +470,7 @@ app.get("/api/live-session", requireAuth, (req, res) => {
           rpcLog,
           terminalLog,
           diffs,
+          diffsError,
           files,
           facts,
           debt,

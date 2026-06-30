@@ -46,6 +46,7 @@ export const ru: TranslationDict = {
     select_file_placeholder: "ВЫБЕРИТЕ ФАЙЛ ИЗ РАБОЧЕЙ ОБЛАСТИ .AGENT",
     copied: "Скопировано",
     copy_to_clipboard: "Копировать в буфер",
+    copy_failed: "Ошибка копирования",
   },
   terminal: {
     terminal_io: "Журнал ввода/вывода терминала",

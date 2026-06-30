@@ -73,17 +73,23 @@ export default function App() {
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
 
+  // Auth token - stored in localStorage so it survives page reloads
+  const [apiToken, setApiToken] = useState<string | null>(() => {
+    return localStorage.getItem("jinx_api_token");
+  });
+
   // Rename Session state
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
 
-  // Refs that always mirror the latest sessions/activeSessionId. The 2s
+  // Refs that always mirror the latest sessions/activeSessionId/apiToken. The 2s
   // polling interval below is only re-created when livePollActive changes,
   // so fetchLiveSession's own closure can go stale; reading through these
   // refs instead of the outer state avoids using outdated values when the
   // interval callback fires.
   const sessionsRef = useRef(sessions);
   const activeSessionIdRef = useRef(activeSessionId);
+  const apiTokenRef = useRef(apiToken);
 
   useEffect(() => {
     sessionsRef.current = sessions;
@@ -93,10 +99,27 @@ export default function App() {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
 
+  useEffect(() => {
+    apiTokenRef.current = apiToken;
+  }, [apiToken]);
+
   const fetchLiveSession = async (silent = false) => {
     if (!silent) setIsSyncing(true);
     try {
-      const response = await fetch("/api/live-session");
+      const headers: Record<string, string> = {};
+      const token = apiTokenRef.current;
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const response = await fetch("/api/live-session", { headers });
+
+      if (response.status === 401) {
+        localStorage.removeItem("jinx_api_token");
+        setApiToken(null);
+        setLiveError("Unauthorized: valid DASHBOARD_API_TOKEN required.");
+        return;
+      }
+
       const data = await response.json();
 
       if (data.exists) {
@@ -107,8 +130,8 @@ export default function App() {
         const newSession: AgentSession = data.session;
 
         setSessions((prev) => {
-          // Find existing live-session or prepend
-          const existingIdx = prev.findIndex((s) => s.id === "live-session");
+          // Find existing session by returned ID or prepend as new
+          const existingIdx = prev.findIndex((s) => s.id === newSession.id);
           let updated: AgentSession[];
           if (existingIdx >= 0) {
             updated = [...prev];
@@ -120,14 +143,13 @@ export default function App() {
           return updated;
         });
 
-        // Set active session to live-session by default if it just loaded
-        // successfully. Reads from refs (not the outer activeSessionId /
-        // sessions state) so this stays correct even when this call comes
-        // from an older setInterval closure.
+        // Only auto-switch if the currently viewed session was deleted from
+        // the list — otherwise respect the user's selection. This lets them
+        // browse old history entries without being yanked back every 2s.
         const currentActiveId = activeSessionIdRef.current;
         const currentSessions = sessionsRef.current;
-        if (currentActiveId !== "live-session" && !currentSessions.find((s) => s.id === currentActiveId)) {
-          setActiveSessionId("live-session");
+        if (!currentSessions.find((s) => s.id === currentActiveId)) {
+          setActiveSessionId(newSession.id);
         }
       } else {
         setLiveError(data.message || "No .agent folder found.");
@@ -156,6 +178,23 @@ export default function App() {
       if (interval) clearInterval(interval);
     };
   }, [livePollActive]);
+
+  // Check if backend requires auth but we don't have a token yet
+  useEffect(() => {
+    if (apiToken) return;
+    fetch("/api/auth-check")
+      .then(r => r.json())
+      .then(data => {
+        if (data.tokenConfigured) {
+          const token = prompt("DASHBOARD_API_TOKEN is set on the server. Enter the token:");
+          if (token) {
+            localStorage.setItem("jinx_api_token", token);
+            setApiToken(token);
+          }
+        }
+      })
+      .catch(() => {});
+  }, [apiToken]);
 
   // Sync state preferences with LocalStorage
   useEffect(() => {
@@ -195,8 +234,8 @@ export default function App() {
 
   const deleteSession = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (id === "live-session") {
-      alert(language === "ru" ? "Нельзя удалить активную сессию мониторинга." : "Cannot delete the active live monitoring session.");
+    if (id.startsWith("live-")) {
+      alert(language === "ru" ? "Нельзя удалить активную сессию мониторинга." : "Cannot delete an active live monitoring session.");
       return;
     }
     const updated = sessions.filter((s) => s.id !== id);
@@ -436,7 +475,7 @@ export default function App() {
                         </div>
                       ) : (
                         <div className="flex-1 font-mono text-xs font-semibold text-neutral-300 truncate">
-                          {session.id === "live-session"
+                          {session.id.startsWith("live-")
                             ? (language === "ru" ? "◉ Машинный Агент Live" : "◉ Live Agent Monitor")
                             : session.name
                           }
@@ -444,7 +483,7 @@ export default function App() {
                       )}
 
                       {/* Actions */}
-                      {!isRenaming && session.id !== "live-session" && (
+                      {!isRenaming && !session.id.startsWith("live-") && (
                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 md:opacity-100">
                           <button
                             id={`rename-session-${session.id}`}
@@ -465,7 +504,7 @@ export default function App() {
                     </div>
 
                     <div className="flex items-center justify-between text-[10px] text-neutral-500 font-mono uppercase">
-                      <span>{session.id === "live-session" ? "REAL-TIME" : new Date(session.timestamp).toLocaleDateString()}</span>
+                      <span>{session.id.startsWith("live-") ? "REAL-TIME" : new Date(session.timestamp).toLocaleDateString()}</span>
                       <span>{session.status}</span>
                     </div>
                   </div>
@@ -497,19 +536,19 @@ export default function App() {
         {/* Primary Dashboard Space */}
         <main className="flex-1 flex flex-col gap-6 min-w-0 relative z-10 order-1 lg:order-none">
           {/* Handle Live-Session Error / Setup Guidelines */}
-          {activeSessionId === "live-session" && liveError ? (
+          {activeSessionId.startsWith("live-") && liveError ? (
             <div className="bg-[#0c0c0e]/95 border border-amber-500/20 rounded-lg p-6 md:p-8 shadow-2xl flex flex-col justify-center items-center text-center space-y-6">
               <div className="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-500">
                 <AlertCircle className="w-6 h-6" />
               </div>
               <div className="space-y-2 max-w-lg">
                 <h2 className="text-base font-bold font-mono text-white uppercase tracking-wide">
-                  {language === "ru" ? "Ожидание локального Python агента" : "Waiting for local Python Agent..."}
+                  {language === "ru" ? "Ожидание запуска JINX" : "Waiting for JINX Agent Session"}
                 </h2>
                 <p className="text-xs text-neutral-400 leading-relaxed">
                   {language === "ru"
-                    ? "Не удалось обнаружить директорию .agent в стандартных путях. Веб-интерфейс работает в режиме реального времени и автоматически отобразит состояние выполнения, как только запустится Python агент."
-                    : "The .agent runtime folder could not be found yet. The dashboard automatically syncs with the filesystem to display plans, terminal operations, and git diffs as the Python agent executes."}
+                    ? "Директория .agent не обнаружена. JINX создаёт её автоматически при первом запуске. Запустите агента через Cloud Code или OpenCode — дашборд сам подхватит состояние."
+                    : "The .agent runtime directory has not been detected yet. JINX provisions it automatically on first launch. Start an agent session via Cloud Code or OpenCode — the dashboard will sync in real-time."}
                 </p>
               </div>
 
@@ -527,34 +566,47 @@ export default function App() {
                 </div>
               )}
 
-              {/* Steps to run python agent */}
+              {/* Steps to launch agent */}
               <div className="w-full max-w-xl bg-neutral-950 border border-white/10 rounded-lg p-5 text-left font-mono text-xs space-y-3">
                 <div className="flex items-center gap-2 text-white font-bold uppercase tracking-wider text-[11px] pb-2 border-b border-white/5">
                   <HelpCircle className="w-4 h-4 text-[#4ade80]" />
-                  {language === "ru" ? "Инструкция по запуску агента" : "How to Connect Your Python Agent"}
+                  {language === "ru" ? "Запуск агента" : "Launching an Agent Session"}
                 </div>
                 <div className="space-y-2.5 text-neutral-300">
                   <p>
                     {language === "ru"
-                      ? "1. Склонируйте и настройте репозиторий агента на вашем ПК:"
-                      : "1. Navigate to your local machinegpt agent project root directory:"}
+                      ? "JINX — это когнитивный рантайм, который управляется через одну из двух точек входа:"
+                      : "JINX is a cognitive runtime orchestrated through one of two entry points:"}
                   </p>
-                  <pre className="bg-black p-2.5 rounded text-[10px] text-amber-400 font-semibold overflow-x-auto">
-                    git clone https://github.com/machinegpt/agent<br/>
-                    cd agent
-                  </pre>
-                  <p>
+                  <div className="bg-black/40 border border-white/5 rounded-lg p-3 space-y-3">
+                    <div>
+                      <span className="text-[#4ade80] font-bold text-[11px] uppercase tracking-wider">
+                        {language === "ru" ? "Вариант A: Cloud Code" : "Option A: Cloud Code"}
+                      </span>
+                      <p className="text-neutral-400 mt-1 leading-relaxed">
+                        {language === "ru"
+                          ? "Откройте репозиторий в Cloud Code editor и отправьте задачу агенту через встроенный чат. JINX запустится автоматически."
+                          : "Open the repository in Cloud Code editor and send a task to the agent via the built-in chat interface. JINX will start automatically."}
+                      </p>
+                    </div>
+                    <div className="border-t border-white/5 pt-3">
+                      <span className="text-[#4ade80] font-bold text-[11px] uppercase tracking-wider">
+                        {language === "ru" ? "Вариант B: OpenCode CLI" : "Option B: OpenCode CLI"}
+                      </span>
+                      <p className="text-neutral-400 mt-1 leading-relaxed">
+                        {language === "ru"
+                          ? "Запустите OpenCode в терминале, укажите задачу — JINX выполнит её в подпроцессе:"
+                          : "Run OpenCode in your terminal with a task description — JINX handles execution as a subprocess:"}
+                      </p>
+                      <pre className="bg-black p-2.5 rounded text-[10px] text-amber-400 font-semibold overflow-x-auto mt-2">
+                        opencode
+                      </pre>
+                    </div>
+                  </div>
+                  <p className="text-neutral-500 text-[10px] leading-relaxed">
                     {language === "ru"
-                      ? "2. Запустите вашего Python-агента JINX. Он автоматически инициализирует директорию .agent:"
-                      : "2. Run your JINX Python agent which creates the .agent/ directory structure:"}
-                  </p>
-                  <pre className="bg-black p-2.5 rounded text-[10px] text-amber-400 font-semibold overflow-x-auto">
-                    python .agent/jinx.py "[user_message]"
-                  </pre>
-                  <p className="text-neutral-500 text-[10px] italic leading-tight">
-                    {language === "ru"
-                      ? "Примечание: Данный сайт спроектирован для работы внутри папки .agent/webagent или в корневом каталоге проекта."
-                      : "Note: This web application is optimized to be placed inside the .agent/webagent subfolder, or served directly from the repository."}
+                      ? "После запуска JINX инициализирует директорию .agent с конфигурацией, состоянием и логами. Дашборд автоматически обнаружит её и отобразит ход выполнения в реальном времени."
+                      : "Once started, JINX bootstraps the .agent directory with configuration, state, and logs. The dashboard automatically detects it and streams execution progress in real-time."}
                   </p>
                 </div>
               </div>
@@ -571,7 +623,7 @@ export default function App() {
                 {sessions.length > 1 && (
                   <button
                     onClick={() => {
-                      const backupSession = sessions.find(s => s.id !== "live-session");
+                      const backupSession = sessions.find(s => !s.id.startsWith("live-"));
                       if (backupSession) setActiveSessionId(backupSession.id);
                     }}
                     className="bg-transparent hover:bg-white/5 text-neutral-400 hover:text-white border border-white/10 px-4 py-2 rounded-lg font-mono text-xs transition-all cursor-pointer"
@@ -602,10 +654,10 @@ export default function App() {
                     <span className="text-[10px] font-mono text-neutral-500 uppercase">PID: {currentSession.stats.pid || "N/A"}</span>
                   </div>
                   <h2 className="text-sm md:text-base font-bold text-white font-mono tracking-tight truncate max-w-lg">
-                    {currentSession.id === "live-session"
-                      ? (language === "ru" ? "Локальный сеанс Python агента" : "Local Python Agent Execution")
-                      : currentSession.name
-                    }
+                  {currentSession.id.startsWith("live-")
+                    ? (language === "ru" ? "Локальный сеанс Python агента" : "Local Python Agent Execution")
+                    : currentSession.name
+                  }
                   </h2>
                   <p className="text-[10px] text-neutral-500 font-mono mt-1 uppercase">
                     {t.session_info.launched_at}{new Date(currentSession.timestamp).toLocaleString()}
@@ -623,7 +675,7 @@ export default function App() {
                       {language === "ru" ? "СИНХРОНИЗАЦИЯ" : "SYNCED TIME"}
                     </div>
                     <div className="text-sm md:text-base font-bold text-[#4ade80] mt-0.5">
-                      {currentSession.id === "live-session" ? (lastSyncedAt || "LIVE") : "BACKUP"}
+                      {currentSession.id.startsWith("live-") ? (lastSyncedAt || "LIVE") : "BACKUP"}
                     </div>
                   </div>
                   <div>

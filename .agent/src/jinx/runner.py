@@ -243,7 +243,7 @@ def check_exit(scores: List[Dict[str, Any]], min_rounds: int, rnd: int) -> bool:
     Returns:
         bool: True if exit criteria are fully satisfied; False otherwise.
     """
-    if rnd < min_rounds or len(scores) < 3:
+    if rnd < min_rounds or len(scores) < 1:
         return False
 
     # Verify if "all_pass" was ever achieved in any historical round

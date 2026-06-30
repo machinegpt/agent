@@ -46,6 +46,7 @@ export const en: TranslationDict = {
     select_file_placeholder: "SELECT A FILE FROM THE .AGENT WORKSPACE",
     copied: "Copied",
     copy_to_clipboard: "Copy to clipboard",
+    copy_failed: "Copy failed",
   },
   terminal: {
     terminal_io: "Terminal Standard I/O Log",

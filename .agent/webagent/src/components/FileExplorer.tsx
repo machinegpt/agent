@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { File, Folder, Code, Terminal, FileCode, CheckCircle2, Copy, Check } from "lucide-react";
 import { useLanguage } from "../context/LanguageContext";
 
@@ -22,6 +22,8 @@ export default function FileExplorer({ files }: FileExplorerProps) {
     return fileNames[0] || "";
   });
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const copyTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (selectedFile) {
@@ -29,20 +31,25 @@ export default function FileExplorer({ files }: FileExplorerProps) {
     }
   }, [selectedFile]);
 
-  const [copyFailed, setCopyFailed] = useState(false);
-
-    const handleCopy = async (text: string) => {
-      try {
-        await navigator.clipboard.writeText(text);
-        setCopyFailed(false);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      } catch (err) {
-        console.error("Failed to copy to clipboard", err);
-        setCopyFailed(true);
-        setTimeout(() => setCopyFailed(false), 2000);
-      }
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
     };
+  }, []);
+
+  const handleCopy = async (text: string) => {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyFailed(false);
+      setCopied(true);
+      copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("Failed to copy to clipboard", err);
+      setCopyFailed(true);
+      copyTimerRef.current = setTimeout(() => setCopyFailed(false), 2000);
+    }
+  };
 
   const getFileIcon = (name: string) => {
     if (name.endsWith(".yaml") || name.endsWith(".yml")) {
@@ -144,7 +151,7 @@ export default function FileExplorer({ files }: FileExplorerProps) {
               >
                 {copyFailed ? (
                   <span className="text-red-400 font-bold">
-                    {language === "ru" ? "Ошибка копирования" : "Copy failed"}
+                    {t.file_explorer.copy_failed}
                   </span>
                 ) : copied ? (
                   <>
