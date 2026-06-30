@@ -143,10 +143,7 @@ export default function App() {
       };
 
       const nextSessions = mergeLiveSession(sessionsRef.current);
-      setSessions(() => {
-        saveSessions(nextSessions);
-        return nextSessions;
-      });
+      setSessions(nextSessions);
 
       if (!nextSessions.find((s) => s.id === activeSessionIdRef.current)) {
         setActiveSessionId(newSession.id);
@@ -248,26 +245,48 @@ export default function App() {
     localStorage.setItem("jinx_live_poll_active", String(livePollActive));
   }, [livePollActive]);
 
+  useEffect(() => {
+    saveSessions(sessions);
+  }, [sessions]);
+
   const currentSession = sessions.find((s) => s.id === activeSessionId) || sessions[0];
 
-  // Manual fallback uploader
-  const handleFolderUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Upload backup JSON file or .agent folder files
+  const handleBackupUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const uploadedFiles = e.target.files;
     if (!uploadedFiles || uploadedFiles.length === 0) return;
 
     try {
       const fileArray = Array.from(uploadedFiles);
+
+      // If it's a single .json file, try to parse it as a session backup
+      if (fileArray.length === 1 && fileArray[0].name.endsWith(".json")) {
+        const text = await fileArray[0].text();
+        const parsed: AgentSession = JSON.parse(text);
+        if (parsed && typeof parsed.id === "string" && typeof parsed.name === "string" && typeof parsed.timestamp === "string" && Array.isArray(parsed.plan) && Array.isArray(parsed.thoughts)) {
+          setSessions((prev) => {
+            const updated = [...prev, parsed];
+            return updated;
+          });
+          setActiveSessionId(parsed.id);
+          setActiveTab("summary");
+          return;
+        }
+      }
+
+      // Otherwise treat as .agent folder files
       const parsedSession = await parseAgentFolder(fileArray);
       setSessions((prev) => {
-        const updated = [parsedSession, ...prev];
-        saveSessions(updated);
+        const updated = [...prev, parsedSession];
         return updated;
       });
       setActiveSessionId(parsedSession.id);
       setActiveTab("summary");
     } catch (err) {
-      console.error("Folder loading failure", err);
-      alert("Failed to parse .agent folder. Ensure files inside (.agent/plan.json, .agent/state.json, etc.) are valid.");
+      console.error("Backup upload failure", err);
+      alert("Failed to parse backup. Ensure the file is a valid session backup (.json) or .agent folder contents.");
+    } finally {
+      e.target.value = "";
     }
   };
 
@@ -484,27 +503,11 @@ export default function App() {
               </span>
             </h3>
 
-            {/* Newer live session badge when browsing history */}
-            {(() => {
-              const liveSession = sessions.find(s => s.id.startsWith("live-") && s.status !== "idle");
-              if (liveSession && !activeSessionId.startsWith("live-")) {
-                return (
-                  <button
-                    onClick={() => setActiveSessionId(liveSession.id)}
-                    className="w-full mb-3 px-3 py-2 rounded border border-[#4ade80]/20 bg-[#4ade80]/5 text-left flex items-center justify-between gap-2 transition-all hover:bg-[#4ade80]/10 cursor-pointer group"
-                  >
-                    <span className="text-[10px] font-mono font-bold text-[#4ade80] flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#4ade80] animate-pulse" />
-                      {t.sidebar.newer_live_available}
-                    </span>
-                    <span className="text-[9px] font-mono font-bold uppercase tracking-wider text-[#4ade80]/60 group-hover:text-[#4ade80] transition-colors">
-                      {t.sidebar.switch_to_live} →
-                    </span>
-                  </button>
-                );
-              }
-              return null;
-            })()}
+            <LiveSessionBanner
+              sessions={sessions}
+              activeSessionId={activeSessionId}
+              onSwitch={setActiveSessionId}
+            />
 
             {/* Scroll list */}
             <div id="sessions-history-list" className="flex-1 overflow-y-auto space-y-2 max-h-[400px] md:max-h-[500px]">
@@ -610,10 +613,10 @@ export default function App() {
               })}
             </div>
 
-            {/* Folder Picker as a manual option */}
+            {/* Upload session backup JSON or .agent folder */}
             <div className="mt-4 pt-4 border-t border-white/5">
               <label
-                htmlFor="folder-upload"
+                htmlFor="backup-upload"
                 className="w-full border border-dashed border-white/10 hover:border-[#4ade80]/50 bg-black/40 hover:bg-[#4ade80]/5 rounded-lg py-2.5 px-3 flex items-center justify-center gap-2 cursor-pointer transition-all group text-center"
               >
                 <FolderOpen className="w-4 h-4 text-neutral-500 group-hover:text-[#4ade80]" />
@@ -621,11 +624,11 @@ export default function App() {
               </label>
               <input
                 type="file"
-                id="folder-upload"
+                id="backup-upload"
                 multiple
                 className="hidden"
-                onChange={handleFolderUpload}
-                {...{ webkitdirectory: "", directory: "" }}
+                accept=".json"
+                onChange={handleBackupUpload}
               />
             </div>
           </div>
@@ -935,5 +938,33 @@ export default function App() {
         </div>
       </footer>
     </div>
+  );
+}
+
+function LiveSessionBanner({
+  sessions,
+  activeSessionId,
+  onSwitch,
+}: {
+  sessions: AgentSession[];
+  activeSessionId: string;
+  onSwitch: (id: string) => void;
+}) {
+  const { t } = useLanguage();
+  const liveSession = sessions.find(s => s.id.startsWith("live-") && s.status !== "idle");
+  if (!liveSession || activeSessionId.startsWith("live-")) return null;
+  return (
+    <button
+      onClick={() => onSwitch(liveSession.id)}
+      className="w-full mb-3 px-3 py-2 rounded border border-[#4ade80]/20 bg-[#4ade80]/5 text-left flex items-center justify-between gap-2 transition-all hover:bg-[#4ade80]/10 cursor-pointer group"
+    >
+      <span className="text-[10px] font-mono font-bold text-[#4ade80] flex items-center gap-1.5">
+        <span className="w-1.5 h-1.5 rounded-full bg-[#4ade80] animate-pulse" />
+        {t.sidebar.newer_live_available}
+      </span>
+      <span className="text-[9px] font-mono font-bold uppercase tracking-wider text-[#4ade80]/60 group-hover:text-[#4ade80] transition-colors">
+        {t.sidebar.switch_to_live} →
+      </span>
+    </button>
   );
 }

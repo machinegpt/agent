@@ -20,6 +20,22 @@ interface PhaseDetail {
   icon: any;
 }
 
+const statusIndexMap: Record<SessionStatus, number> = {
+  idle: -1,
+  perceive: 0,
+  analyze: 1,
+  plan: 2,
+  execute: 3,
+  verify: 4,
+  commit: 5,
+  completed: 6,
+  error: 6,
+};
+
+function getStatusIndex(status: SessionStatus) {
+  return statusIndexMap[status] ?? -1;
+}
+
 export default function CognitiveLoop({ currentStatus }: CognitiveLoopProps) {
   const { language, t } = useLanguage();
 
@@ -74,21 +90,6 @@ export default function CognitiveLoop({ currentStatus }: CognitiveLoopProps) {
       icon: CheckCircle,
     },
   ];
-
-  const getStatusIndex = (status: SessionStatus) => {
-    const map: Record<SessionStatus, number> = {
-      idle: -1,
-      perceive: 0,
-      analyze: 1,
-      plan: 2,
-      execute: 3,
-      verify: 4,
-      commit: 5,
-      completed: 6,
-      error: 6,
-    };
-    return map[status] ?? -1;
-  };
 
   const currentIndex = getStatusIndex(currentStatus);
   const isErrorState = currentStatus === "error";

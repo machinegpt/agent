@@ -29,7 +29,7 @@ export default function DiffViewer({ diffs }: DiffViewerProps) {
         const lines = diff.diffText.split("\n");
 
         return (
-          <div key={index} className="bg-[#0c0c0e]/90 border border-white/10 rounded-lg shadow-xl overflow-hidden">
+          <div key={diff.filepath} className="bg-[#0c0c0e]/90 border border-white/10 rounded-lg shadow-xl overflow-hidden">
             {/* Header */}
             <div className="bg-neutral-950/80 px-4 py-3 border-b border-white/10 flex items-center justify-between">
               <div className="flex items-center gap-2">

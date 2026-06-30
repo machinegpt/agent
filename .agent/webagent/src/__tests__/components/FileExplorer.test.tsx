@@ -4,6 +4,7 @@ import { TestWrapper } from "../TestWrapper";
 
 beforeEach(() => {
   localStorage.clear();
+  vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn() } });
 });
 
 describe("FileExplorer", () => {
@@ -43,12 +44,24 @@ describe("FileExplorer", () => {
   });
 
   it("copies content to clipboard on copy button click", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, { clipboard: { writeText } });
+    navigator.clipboard.writeText = vi.fn().mockResolvedValue(undefined);
 
     const files = { "test.yaml": "content-to-copy" };
     render(<TestWrapper><FileExplorer files={files} /></TestWrapper>);
     fireEvent.click(screen.getByText(/Copy to clipboard/i));
-    expect(writeText).toHaveBeenCalledWith("content-to-copy");
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("content-to-copy");
+  });
+
+  it("shows copy error and clears it after timeout", async () => {
+    navigator.clipboard.writeText = vi.fn().mockRejectedValue(new Error("denied"));
+
+    render(<TestWrapper><FileExplorer files={{ "test.yaml": "content-to-copy" }} /></TestWrapper>);
+    fireEvent.click(screen.getByText(/Copy to clipboard/i));
+
+    expect(await screen.findByText(/Copy failed/i)).toBeInTheDocument();
+
+    await vi.waitFor(() => {
+      expect(screen.queryByText(/Copy failed/i)).not.toBeInTheDocument();
+    }, { timeout: 3000, interval: 100 });
   });
 });

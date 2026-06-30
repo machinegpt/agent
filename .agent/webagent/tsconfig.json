@@ -1,14 +1,13 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "experimentalDecorators": true,
-    "useDefineForClassFields": false,
     "module": "ESNext",
     "lib": [
       "ES2022",
       "DOM",
       "DOM.Iterable"
     ],
+    "strict": true,
     "skipLibCheck": true,
     "moduleResolution": "bundler",
     "isolatedModules": true,
@@ -21,7 +20,7 @@
       ]
     },
     "allowImportingTsExtensions": true,
-    "noEmit": true
-  },
-  "exclude": ["src/__tests__"]
+    "noEmit": true,
+    "types": ["node", "vitest/globals"]
+  }
 }

@@ -166,7 +166,7 @@ export default function RunSummary({ session }: RunSummaryProps) {
             <Monitor className="w-4 h-4" />
             <span className="text-[9px] uppercase tracking-wider font-bold">{t.run_summary.host_node}</span>
           </div>
-          <div className="text-xs font-bold text-neutral-350 truncate mt-0.5">{session.stats.hostname || "localhost"}</div>
+          <div className="text-xs font-bold text-neutral-400 truncate mt-0.5">{session.stats.hostname || "localhost"}</div>
         </div>
       </div>
     </div>

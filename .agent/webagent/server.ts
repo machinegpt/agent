@@ -15,7 +15,7 @@ import { timingSafeEqual, createSessionTracker, parseDiffText } from "./src/serv
 dotenv.config();
 
 const app = express();
-const isAiStudio = process.cwd() === "/" || fs.existsSync("/metadata.json");
+const isAiStudio = process.env.AI_STUDIO === "true";
 const PORT = isAiStudio ? 3000 : (process.env.PORT ? parseInt(process.env.PORT) : 3301);
 
 // --- Security: bind host & API token -----------------------------------
@@ -29,7 +29,7 @@ const PORT = isAiStudio ? 3000 : (process.env.PORT ? parseInt(process.env.PORT) 
 const API_TOKEN = process.env.DASHBOARD_API_TOKEN || "";
 const BIND_HOST = process.env.DASHBOARD_BIND_HOST || (isAiStudio && API_TOKEN ? "0.0.0.0" : "127.0.0.1");
 
-app.use(express.json({ limit: "50mb" }));
+app.use(express.json({ limit: "10mb" }));
 
 // Require a bearer token on protected routes when DASHBOARD_API_TOKEN is set.
 // If no token is configured, access still defaults to localhost-only via
@@ -39,10 +39,11 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
   const header = (req.headers.authorization || "").trim();
   const scheme = "bearer ";
   if (!header.toLowerCase().startsWith(scheme)) {
-    return res.status(401).json({ error: "Unauthorized" });
+    res.setHeader("WWW-Authenticate", 'Bearer realm="dashboard"'); return res.status(401).json({ error: "Unauthorized" });
   }
   const token = header.slice(scheme.length).trim();
   if (!token || !timingSafeEqual(token, API_TOKEN)) {
+    res.setHeader("WWW-Authenticate", 'Bearer realm="dashboard"');
     return res.status(401).json({ error: "Unauthorized" });
   }
   next();
@@ -57,25 +58,30 @@ function findAgentDir(): string | null {
   ];
 
   for (const p of pathsToTry) {
-    if (fs.existsSync(p) && fs.statSync(p).isDirectory()) {
+    let resolved: string;
+    try {
+      resolved = fs.realpathSync(p);
+    } catch {
+      continue;
+    }
+    if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
       // Confirm it looks like an agent folder (has JINX.yaml, state.json, plan.json, or other typical files)
       if (
-        fs.existsSync(path.join(p, "JINX.yaml")) ||
-        fs.existsSync(path.join(p, "state.json")) ||
-        fs.existsSync(path.join(p, "plan.json")) ||
-        fs.existsSync(path.join(p, "thoughts.json")) ||
-        fs.existsSync(path.join(p, "thought.json")) ||
-        fs.existsSync(path.join(p, "terminal.log")) ||
-        fs.existsSync(path.join(p, "stdout.log"))
+        fs.existsSync(path.join(resolved, "JINX.yaml")) ||
+        fs.existsSync(path.join(resolved, "state.yaml")) ||
+        fs.existsSync(path.join(resolved, "state.json")) ||
+        fs.existsSync(path.join(resolved, "plan.yaml")) ||
+        fs.existsSync(path.join(resolved, "plan.json")) ||
+        fs.existsSync(path.join(resolved, "thoughts.yaml")) ||
+        fs.existsSync(path.join(resolved, "thoughts.json")) ||
+        fs.existsSync(path.join(resolved, "thought.yaml")) ||
+        fs.existsSync(path.join(resolved, "thought.json")) ||
+        fs.existsSync(path.join(resolved, "terminal.log")) ||
+        fs.existsSync(path.join(resolved, "stdout.log"))
       ) {
-        return p;
+        return resolved;
       }
     }
-  }
-
-  // Fallback to first path if it exists
-  if (fs.existsSync(pathsToTry[0])) {
-    return pathsToTry[0];
   }
 
   return null;
@@ -108,6 +114,7 @@ const { getOrCreateSessionId } = createSessionTracker();
 // Invalidated after 3 seconds or on detected filesystem changes.
 let diffCache: { diff: string; repoRoot: string; timestamp: number } | null = null;
 let diffWatching = false;
+let diffWatcher: fs.FSWatcher | null = null;
 
 function getCachedGitDiff(repoRoot: string): { diff: string; error: string | null } {
   const now = Date.now();
@@ -127,13 +134,13 @@ function getCachedGitDiff(repoRoot: string): { diff: string; error: string | nul
     if (!diffWatching) {
       diffWatching = true;
       try {
-        const watcher = fs.watch(repoRoot, { recursive: true }, () => { diffCache = null; });
-        watcher.on("error", () => { diffCache = null; });
+        diffWatcher = fs.watch(repoRoot, { recursive: true }, () => { diffCache = null; });
+        diffWatcher.on("error", () => { diffCache = null; });
       } catch (e) { /* fs.watch recursive not supported on all platforms */ }
     }
     return { diff, error: null };
   } catch (e: any) {
-    const error = e?.message?.includes("timed out") ? "Git diff timed out on large repo." : "Git diff failed.";
+    const error = e?.signal === "SIGTERM" ? "Git diff timed out on large repo." : "Git diff failed.";
     return { diff: "", error };
   }
 }
@@ -146,7 +153,7 @@ app.get("/api/auth-check", (req, res) => {
 });
 
 // Core data-fetching function shared by the REST endpoint and SSE stream.
-function getLiveSessionData(): any {
+function getLiveSessionData() {
   const agentDir = findAgentDir();
 
   if (!agentDir) {
@@ -198,16 +205,14 @@ function getLiveSessionData(): any {
 
     const task = state.task || "JINX Cognitive Loop Run";
     const facts = state.facts || [];
-    const scores = state.scores || [];
+    const scores = Array.isArray(state.scores) ? state.scores : [];
     const debt = state.debt || [];
     const open = state.open || [];
     const exitReady = !!state.exit_ready;
     const deadlock = !!state.deadlock;
 
     let status: any = "idle";
-    const anyAllPass = scores.some((s: any) => s.all_pass === true);
     if (deadlock) status = "error";
-    else if (exitReady && anyAllPass) status = "completed";
     else if (exitReady) status = "completed";
     else if (fs.existsSync(jinxRunStatePath)) {
       try {
@@ -285,6 +290,7 @@ function getLiveSessionData(): any {
                   method: toolName,
                   params: toolParams,
                 });
+                rpcIdx++;
 
                 if (toolName === "bash_exec" && toolParams.script) {
                   terminalLog.push(`$ ${toolParams.script}`);
@@ -386,7 +392,9 @@ function getLiveSessionData(): any {
         name: task,
         timestamp: fs.statSync(jinxYamlPath).mtime.toISOString(),
         status,
-        elapsedTime: scores.length * 60,
+        elapsedTime: fs.existsSync(jinxRunStatePath)
+          ? Math.max(0, Math.round((fs.statSync(jinxRunStatePath).mtime.getTime() - fs.statSync(jinxYamlPath).mtime.getTime()) / 1000))
+          : scores.length * 60,
         stats: {
           promptTokens: 0,
           completionTokens: 0,
@@ -414,23 +422,25 @@ function getLiveSessionData(): any {
   let pid = 0;
   const errors: string[] = [];
 
-  if (files["state.json"]) {
+  const stateKey = files["state.yaml"] ? "state.yaml" : (files["state.json"] ? "state.json" : null);
+  if (stateKey) {
     try {
-      const stateObj = JSON.parse(files["state.json"]);
+      const stateObj = YAML.parse(files[stateKey]);
       status = (stateObj.phase || stateObj.status || "idle").toLowerCase();
       pid = stateObj.active_pid || stateObj.pid || 0;
       if (stateObj.errors && Array.isArray(stateObj.errors)) {
         errors.push(...stateObj.errors);
       }
     } catch (e) {
-      console.error("Failed to parse state.json", e);
+      console.error("Failed to parse state file", e);
     }
   }
 
   let plan: any[] = [];
-  if (files["plan.json"]) {
+  const planKey = files["plan.yaml"] ? "plan.yaml" : (files["plan.json"] ? "plan.json" : null);
+  if (planKey) {
     try {
-      const parsed = JSON.parse(files["plan.json"]);
+      const parsed = YAML.parse(files[planKey]);
       const rawList = Array.isArray(parsed) ? parsed : (parsed.steps || parsed.plan || []);
       plan = rawList.map((p: any, idx: number) => {
         if (typeof p === "string") {
@@ -444,15 +454,15 @@ function getLiveSessionData(): any {
         };
       });
     } catch (e) {
-      console.error("Failed to parse plan.json", e);
+      console.error("Failed to parse plan file", e);
     }
   }
 
   let thoughts: any[] = [];
-  const thoughtsKey = files["thoughts.json"] ? "thoughts.json" : (files["thought.json"] ? "thought.json" : null);
-  if (thoughtsKey && files[thoughtsKey]) {
+  const thoughtsKey = files["thoughts.yaml"] ? "thoughts.yaml" : (files["thoughts.json"] ? "thoughts.json" : (files["thought.yaml"] ? "thought.yaml" : (files["thought.json"] ? "thought.json" : null)));
+  if (thoughtsKey) {
     try {
-      const parsed = JSON.parse(files[thoughtsKey]);
+      const parsed = YAML.parse(files[thoughtsKey]);
       const rawList = Array.isArray(parsed) ? parsed : [];
       thoughts = rawList.map((t: any, idx: number) => {
         return {
@@ -585,6 +595,9 @@ app.get("/api/live-session/stream", requireAuth, (req, res) => {
   req.on("close", () => {
     clearInterval(interval);
   });
+  res.on("error", () => {
+    clearInterval(interval);
+  });
 });
 
 async function startServer() {
@@ -603,7 +616,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, BIND_HOST, () => {
+  const server = app.listen(PORT, BIND_HOST, () => {
     console.log(`Server running on http://${BIND_HOST}:${PORT}`);
     if (BIND_HOST !== "127.0.0.1" && BIND_HOST !== "localhost" && !API_TOKEN) {
       console.warn(
@@ -613,6 +626,13 @@ async function startServer() {
       );
     }
   });
+
+  const shutdown = (signal: string) => {
+    console.log(`Received ${signal}, shutting down gracefully...`);
+    if (diffWatcher) try { diffWatcher.close(); } catch (e) {} server.close(() => process.exit(0));
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
 startServer();

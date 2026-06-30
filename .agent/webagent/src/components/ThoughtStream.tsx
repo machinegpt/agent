@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { motion } from "motion/react";
 import { ThoughtLog, SessionStatus } from "../types";
 import { MessageSquare, HelpCircle, AlertTriangle, CheckSquare, Settings, Search, Filter } from "lucide-react";
@@ -79,13 +79,13 @@ export default function ThoughtStream({ thoughts }: ThoughtStreamProps) {
     }
   };
 
-  const filteredThoughts = thoughts.filter((t) => {
+  const filteredThoughts = useMemo(() => thoughts.filter((t) => {
     const matchesSearch = t.text.toLowerCase().includes(searchTerm.toLowerCase()) || 
                           t.phase.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesCategory = selectedCategory === "all" || t.category === selectedCategory;
     const matchesPhase = selectedPhase === "all" || t.phase === selectedPhase;
     return matchesSearch && matchesCategory && matchesPhase;
-  });
+  }), [thoughts, searchTerm, selectedCategory, selectedPhase]);
 
   return (
     <div id="thought-stream-card" className="bg-[#0c0c0e]/90 border border-white/10 rounded-lg p-6 shadow-xl flex flex-col h-full">

@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import YAML from "yaml";
 import { AgentSession, PlanStep, ThoughtLog, RPCMessage, CodeDiff, SessionStatus } from "./types";
+import { parseDiffText } from "./diff-utils";
 
 // Load saved sessions from LocalStorage
 export function getSavedSessions(): AgentSession[] {
@@ -59,63 +61,6 @@ export function createDefaultLiveSession(): AgentSession {
   };
 }
 
-// Simple parser for .patch diff text to generate CodeDiff structures
-export function parseDiffText(filename: string, text: string): CodeDiff[] {
-  const diffs: CodeDiff[] = [];
-  // Parse simple diff lines
-  const lines = text.split("\n");
-  let currentFile = filename;
-  let currentDiffLines: string[] = [];
-  let additions = 0;
-  let deletions = 0;
-
-  for (const line of lines) {
-    if (line.startsWith("diff --git")) {
-      if (currentDiffLines.length > 0) {
-        diffs.push({
-          filepath: currentFile,
-          filename: currentFile.split("/").pop() || currentFile,
-          additions,
-          deletions,
-          diffText: currentDiffLines.join("\n"),
-        });
-      }
-      currentDiffLines = [];
-      additions = 0;
-      deletions = 0;
-      const match = line.match(/b\/(.+)$/);
-      if (match) currentFile = match[1];
-    }
-    
-    currentDiffLines.push(line);
-    if (line.startsWith("+") && !line.startsWith("+++")) additions++;
-    if (line.startsWith("-") && !line.startsWith("---")) deletions++;
-  }
-
-  if (currentDiffLines.length > 0) {
-    diffs.push({
-      filepath: currentFile,
-      filename: currentFile.split("/").pop() || currentFile,
-      additions,
-      deletions,
-      diffText: currentDiffLines.join("\n"),
-    });
-  }
-
-  // If no git diff header but text exists, return a single diff structure
-  if (diffs.length === 0 && text.trim().length > 0) {
-    return [{
-      filepath: filename,
-      filename: filename.split("/").pop() || filename,
-      additions: text.split("\n").filter(l => l.startsWith("+")).length,
-      deletions: text.split("\n").filter(l => l.startsWith("-")).length,
-      diffText: text,
-    }];
-  }
-
-  return diffs;
-}
-
 // Parse imported files list from folder selection to create a structured session
 export async function parseAgentFolder(filesList: File[]): Promise<AgentSession> {
   const sessionFiles: Record<string, string> = {};
@@ -141,9 +86,9 @@ export async function parseAgentFolder(filesList: File[]): Promise<AgentSession>
     sessionFiles[filename] = content;
 
     // Parser for JINX standard files
-    if (filename === "state.json") {
+    if (filename === "state.yaml" || filename === "state.json") {
       try {
-        const stateObj = JSON.parse(content);
+        const stateObj = YAML.parse(content);
         if (stateObj.phase) status = stateObj.phase.toLowerCase() as SessionStatus;
         if (stateObj.active_pid) pid = stateObj.active_pid;
         if (stateObj.errors && stateObj.errors.length > 0) {
@@ -151,11 +96,11 @@ export async function parseAgentFolder(filesList: File[]): Promise<AgentSession>
           terminalLog.push(`[ERROR] ${stateObj.errors.join(", ")}`);
         }
       } catch (e) {
-        console.error("Failed to parse state.json", e);
+        console.error("Failed to parse state file", e);
       }
-    } else if (filename === "plan.json") {
+    } else if (filename === "plan.yaml" || filename === "plan.json") {
       try {
-        const planObj = JSON.parse(content);
+        const planObj = YAML.parse(content);
         if (Array.isArray(planObj)) {
           plan = planObj.map((p: any, idx: number) => ({
             id: p.id || `step-${idx}`,
@@ -165,11 +110,11 @@ export async function parseAgentFolder(filesList: File[]): Promise<AgentSession>
           }));
         }
       } catch (e) {
-        console.error("Failed to parse plan.json", e);
+        console.error("Failed to parse plan file", e);
       }
-    } else if (filename === "thoughts.json" || filename === "thought.json") {
+    } else if (filename === "thoughts.yaml" || filename === "thought.yaml" || filename === "thoughts.json" || filename === "thought.json") {
       try {
-        const thoughtObj = JSON.parse(content);
+        const thoughtObj = YAML.parse(content);
         if (Array.isArray(thoughtObj)) {
           thoughts = thoughtObj.map((t: any, idx: number) => ({
             id: t.id || `thought-${idx}`,
@@ -180,7 +125,7 @@ export async function parseAgentFolder(filesList: File[]): Promise<AgentSession>
           }));
         }
       } catch (e) {
-        console.error("Failed to parse thoughts.json", e);
+        console.error("Failed to parse thoughts file", e);
       }
     } else if (filename === "rpc.log" || filename === "rpc_log.json" || filename === "ipc.log") {
       try {
