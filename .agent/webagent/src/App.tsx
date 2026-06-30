@@ -137,8 +137,18 @@ export default function App() {
       const newSession: AgentSession = data.session;
       const currentStatus = newSession.status;
 
-      // First poll: establish baseline, never archive
+      // First poll: establish baseline; archive cold-start completed sessions
       if (prevStatusRef.current === null) {
+        if (currentStatus === "completed") {
+          const archivedId = `completed-${Date.now()}`;
+          setSessions((prev) => {
+            const archived = { ...newSession, id: archivedId, copyCount: 0 };
+            const defaultLive = createDefaultLiveSession();
+            return [defaultLive, archived, ...prev.filter((s) => s.id !== newSession.id)];
+          });
+          setActiveSessionId(archivedId);
+          setActiveTab("summary");
+        }
         prevStatusRef.current = currentStatus;
       } else if (currentStatus === "completed" && prevStatusRef.current !== "completed") {
         // Genuine transition to completed — archive as a dedicated session, start fresh
@@ -146,7 +156,7 @@ export default function App() {
         setSessions((prev) => {
           const archived = { ...newSession, id: archivedId, copyCount: 0 };
           const defaultLive = createDefaultLiveSession();
-          return [...prev, archived, defaultLive];
+          return [defaultLive, archived, ...prev.filter((s) => s.id !== newSession.id)];
         });
         setActiveSessionId(archivedId);
         setActiveTab("summary");
@@ -417,7 +427,7 @@ export default function App() {
               </div>
 
               <div className="px-3 py-1 border border-white/10 rounded-full text-[11px] font-mono bg-black/40 text-neutral-300">
-                MONITORING v1.2.0
+                MONITORING v1.2.1
               </div>
             </div>
 
@@ -971,7 +981,7 @@ export default function App() {
       {/* High-tech pixel status footer */}
       <footer className="border-t border-neutral-900 bg-neutral-950/80 px-6 py-4 flex flex-col sm:flex-row items-center justify-between text-[11px] font-mono text-neutral-500 mt-12">
         <div className="flex items-center gap-2">
-          <span>WORKSPACE MONITOR v1.2.0</span>
+          <span>WORKSPACE MONITOR v1.2.1</span>
           <span className="text-neutral-800">|</span>
           <span>COMPATIBLE WITH JINX RUNTIME SPEC 1.0.0</span>
         </div>

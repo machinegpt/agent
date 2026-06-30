@@ -32,6 +32,8 @@ export function createSessionTracker() {
     }
 
     if (task && tracker.currentTask !== task) {
+      // Only increment seq when transitioning from one real task to another.
+      // The empty-string → first-real-task transition should NOT change the session ID.
       if (tracker.currentTask !== "") {
         tracker.seq++;
         tracker.pid = nextPid++;

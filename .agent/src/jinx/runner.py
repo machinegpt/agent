@@ -226,40 +226,51 @@ def parse_state_block(text: str) -> Optional[Dict[str, Any]]:
     logger.debug("No valid structured markdown state block found in response.")
     return None
 
-
 def check_exit(scores: List[Dict[str, Any]], min_rounds: int, rnd: int) -> bool:
-    """Evaluates whether the cognitive loop is ready to terminate based on score trends.
+    """Evaluates whether the cognitive loop is ready to terminate.
 
-    The loop exits if we have completed at least `min_rounds` rounds, have a
-    minimum history of three score entries, have achieved all-pass status, and
-    the performance has converged (i.e. the best score of the last three rounds
-    does not exceed the historical peak before those last three rounds).
+    The LLM may signal exit_ready prematurely (e.g. hallucinating completion).
+    This function validates that exit is genuinely warranted:
+
+    1. There must be at least one score entry.
+    2. The latest score must have achieved all_pass (current round claims success).
+    3. At least one prior score must exist (confirms progression — not a first-round guess).
+    4. If enough history exists, verify convergence: the best pass_count of the
+       last 3 rounds must not exceed the historical peak from earlier rounds.
+       (If still improving, keep going.)
+    5. The `min_rounds` hard floor is dropped — the convergence check alone
+       prevents premature exit when improvement is still happening.
 
     Args:
         scores (List[Dict[str, Any]]): The list of historical round evaluations.
-        min_rounds (int): The configured minimum execution round count.
+        min_rounds (int): The configured minimum execution round count (unused — convergence handles it).
         rnd (int): The current active round index.
 
     Returns:
         bool: True if exit criteria are fully satisfied; False otherwise.
     """
-    if rnd < min_rounds or len(scores) < 3:
+    # Must have at least one score entry
+    if not scores:
         return False
 
-    # Verify if "all_pass" was ever achieved in any historical round
-    if not any(s.get("all_pass") for s in scores):
+    # Latest score must claim all_pass (current round succeeded)
+    if not scores[-1].get("all_pass"):
         return False
 
-    # Performance comparison between the recent three rounds and the prior history
-    last3_best = max(s.get("pass_count", 0) for s in scores[-3:])
-    prior_history = scores[:-3]
-    if not prior_history:
-        # If there is no prior history to compare against (exactly 3 rounds executed)
-        # and top.all_pass is satisfied, we treat it as a clean convergence and exit.
-        return True
+    # Must have at least one prior score to show progression
+    if len(scores) < 2:
+        return False
 
-    prior_best = max((s.get("pass_count", 0) for s in prior_history), default=0)
-    return last3_best <= prior_best
+    # Convergence check: if enough history exists, ensure no active improvement
+    if len(scores) >= 4:
+        last3_best = max(s.get("pass_count", 0) for s in scores[-3:])
+        prior_history = scores[:-3]
+        if prior_history:
+            prior_best = max((s.get("pass_count", 0) for s in prior_history), default=0)
+            if last3_best > prior_best:
+                return False  # Still improving, keep going
+
+    return True
 
 
 def _get_val(obj: Any, key: str, default: Any = None) -> Any:

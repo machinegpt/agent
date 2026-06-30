@@ -378,7 +378,7 @@ function getLiveSessionData() {
       diffsError = result.error;
     }
 
-    const sessionId = getOrCreateSessionId(agentDir, task);
+    const sessionId = getOrCreateSessionId(agentDir, state.task || "");
 
     return {
       exists: true,
@@ -586,6 +586,7 @@ app.get("/api/live-session/stream", requireAuth, (req, res) => {
     }
   };
 
+  res.write(":\n\n"); // initial heartbeat for proxy compatibility
   send();
   const interval = setInterval(send, 2000);
 
@@ -595,7 +596,6 @@ app.get("/api/live-session/stream", requireAuth, (req, res) => {
   res.on("error", () => {
     clearInterval(interval);
   });
-  res.write(":\n\n"); // initial heartbeat for proxy compatibility
 });
 
 // Express error handler — returns JSON instead of HTML for parse errors

@@ -61,6 +61,13 @@ describe("createSessionTracker", () => {
     getOrCreateSessionId("/repo/.agent", "");
     expect(getOrCreateSessionId("/repo/.agent", "task one")).toBe("live-session");
   });
+
+  it("transition from empty to first real task keeps same session id", () => {
+    const { getOrCreateSessionId } = createSessionTracker();
+    getOrCreateSessionId("/repo/.agent", "");
+    expect(getOrCreateSessionId("/repo/.agent", "First real task")).toBe("live-session");
+    expect(getOrCreateSessionId("/repo/.agent", "First real task")).toBe("live-session");
+  });
 });
 
 describe("parseDiffText", () => {
