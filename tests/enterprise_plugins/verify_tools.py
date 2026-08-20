@@ -55,14 +55,76 @@ class VerifyToolsPhase(VerificationPhase):
                     suite.print_badge("Function tool_schema: INVALID RETURN TYPE", False)
                     success = False
                 else:
-                    tool_names = {item.get("name") for item in schema if isinstance(item, dict)}
-                    required = {"bash_exec", "file_read", "file_write"}
-                    missing = sorted(required - tool_names)
-                    if missing:
-                        suite.print_badge(f"Function tool_schema: MISSING TOOLS {missing}", False)
+                    required_tools = {
+                        "bash_exec": {
+                            "properties": {"script": {"type": "string"}},
+                            "required": ["script"],
+                        },
+                        "file_read": {
+                            "properties": {
+                                "path": {"type": "string"},
+                                "start_line": {"type": "integer"},
+                                "end_line": {"type": "integer"},
+                            },
+                            "required": ["path"],
+                        },
+                        "file_write": {
+                            "properties": {
+                                "path": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                            "required": ["path", "content"],
+                        },
+                    }
+                    valid = True
+                    for entry in schema:
+                        if not isinstance(entry, dict):
+                            valid = False
+                            break
+                        name = entry.get("name")
+                        if not isinstance(name, str) or name not in required_tools:
+                            valid = False
+                            break
+                        description = entry.get("description")
+                        if not isinstance(description, str) or not description.strip():
+                            valid = False
+                            break
+                        input_schema = entry.get("input_schema")
+                        if not isinstance(input_schema, dict):
+                            valid = False
+                            break
+                        if input_schema.get("type") != "object":
+                            valid = False
+                            break
+                        properties = input_schema.get("properties")
+                        if not isinstance(properties, dict):
+                            valid = False
+                            break
+                        required_fields = input_schema.get("required")
+                        expected = required_tools[name]
+                        if not isinstance(required_fields, list) or set(required_fields) != set(expected["required"]):
+                            valid = False
+                            break
+                        for field_name, field_spec in expected["properties"].items():
+                            if field_name not in properties:
+                                valid = False
+                                break
+                            prop = properties[field_name]
+                            if not isinstance(prop, dict):
+                                valid = False
+                                break
+                            if prop.get("type") != field_spec["type"]:
+                                valid = False
+                                break
+                        if not valid:
+                            break
+                    if not valid:
+                        suite.print_badge("Function tool_schema: INVALID SCHEMA STRUCTURE", False)
                         success = False
                     else:
                         suite.print_badge("Function tool_schema: VALID SCHEMA", True)
             except Exception as e:
                 suite.print_badge("Function tool_schema: CALL FAILED (" + str(e) + ")", False)
                 success = False
+
+        return success

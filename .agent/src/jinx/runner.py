@@ -154,12 +154,12 @@ def parse_state_block(text: str) -> Optional[Dict[str, Any]]:
             try:
                 data = yaml.safe_load(raw)
                 if isinstance(data, dict):
-                    # Support both flat format (task/facts at top level) and
-                    # nested format (id/protocol/state at top level, state keys inside state:)
-                    if len(set(data.keys()) & state_keys) >= 2:
+                    # Support both flat and nested state blocks even when only one
+                    # recognized state field is present (for example exit_ready).
+                    if len(set(data.keys()) & state_keys) >= 1:
                         return data
                     nested = data.get("state")
-                    if isinstance(nested, dict) and len(set(nested.keys()) & state_keys) >= 2:
+                    if isinstance(nested, dict) and len(set(nested.keys()) & state_keys) >= 1:
                         return data
             except yaml.YAMLError:
                 continue

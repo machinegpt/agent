@@ -65,7 +65,13 @@ function findAgentDir(): string | null {
     } catch {
       continue;
     }
-    if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+      continue;
+    }
+
+    const basename = path.basename(resolved);
+    const hasAgentMarker = AGENT_MARKERS.some((m) => fs.existsSync(path.join(resolved, m)));
+    if (basename === ".agent" || hasAgentMarker) {
       return resolved;
     }
   }
