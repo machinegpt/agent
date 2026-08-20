@@ -1,4 +1,8 @@
-"""Unit tests for jinx.state persistence and merge helpers."""
+"""State management and persistence regression tests for JINX.
+
+These tests cover the contract of the state manifest, validation logic, and
+stale-run detection without relying on real waiting or sleeping.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +10,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-import pytest
 import yaml
 
 from jinx.state import (
-    StateBlock,
     StateManager,
     _resolve_jinx_path,
     merge_state,
@@ -20,7 +22,7 @@ from jinx.state import (
 
 
 class TestResolveJinxPath:
-    """Tests for JINX.yaml path resolution."""
+    """Path resolution contract for JINX.yaml."""
 
     def test_env_override_takes_precedence(self, monkeypatch, tmp_path: Path) -> None:
         env_path = tmp_path / "custom" / "JINX.yaml"
@@ -33,8 +35,8 @@ class TestResolveJinxPath:
         assert _resolve_jinx_path() == (tmp_path / "custom" / "JINX.yaml").resolve()
 
 
-class TestLoadState:
-    """Tests for StateManager.load_state."""
+class TestStateManagerLoad:
+    """Loading behaviour for the on-disk state manifest."""
 
     def test_missing_file_returns_empty_dict(self, monkeypatch, tmp_path: Path) -> None:
         monkeypatch.setenv("JINX_PATH", str(tmp_path / "nonexistent.yaml"))
@@ -60,8 +62,8 @@ class TestLoadState:
         assert StateManager.load_state() == {}
 
 
-class TestPersistState:
-    """Tests for StateManager.persist_state atomic writes."""
+class TestStateManagerPersist:
+    """Atomic write and persist semantics for the state file."""
 
     def test_writes_yaml_round_trip(self, monkeypatch, tmp_path: Path) -> None:
         jinx_path = tmp_path / "JINX.yaml"
@@ -94,7 +96,7 @@ class TestPersistState:
 
 
 class TestMergeState:
-    """Tests for merge_state incremental updates."""
+    """Incremental merge validation and field preservation."""
 
     def test_valid_update_merged_into_state(self) -> None:
         jinx: dict[str, Any] = {"state": {"task": "old"}}
@@ -108,7 +110,7 @@ class TestMergeState:
 
     def test_invalid_update_rejected_without_corrupting_state(self) -> None:
         jinx: dict[str, Any] = {"state": {"task": "preserved", "facts": ["keep"]}}
-        update = {"task": 12345}  # int violates StateBlock.task Optional[str]
+        update = {"task": 12345}
 
         result = merge_state(jinx, update)
 
@@ -124,6 +126,45 @@ class TestMergeState:
         assert result["state"]["task"] == "existing"
         assert result["state"]["facts"] == ["a"]
         assert result["state"]["exit_ready"] is True
+
+    def test_none_fields_are_ignored_across_all_state_keys(self) -> None:
+        jinx: dict[str, Any] = {
+            "state": {
+                "task": "existing-task",
+                "facts": ["keep"],
+                "debt": ["debt-old"],
+                "open": ["issue-old"],
+                "scores": [{"round": 1, "all_pass": False, "pass_count": 1}],
+            }
+        }
+        update: dict[str, Any] = {
+            "task": None,
+            "facts": None,
+            "debt": None,
+            "open": None,
+            "scores": None,
+            "exit_ready": False,
+            "deadlock": True,
+        }
+
+        result = merge_state(jinx, update)
+
+        assert result["state"]["task"] == "existing-task"
+        assert result["state"]["facts"] == ["keep"]
+        assert result["state"]["debt"] == ["debt-old"]
+        assert result["state"]["open"] == ["issue-old"]
+        assert result["state"]["scores"][0]["round"] == 1
+        assert result["state"]["deadlock"] is True
+
+    def test_simplified_score_verdict_is_normalized(self) -> None:
+        jinx: dict[str, Any] = {"state": {}}
+        update = {"scores": [{"round": 1, "verdict": "pass", "detail": "works now"}]}
+
+        result = merge_state(jinx, update)
+
+        assert result["state"]["scores"][0]["all_pass"] is True
+        assert result["state"]["scores"][0]["pass_count"] == 1
+        assert result["state"]["scores"][0]["requirements"] == {"task_complete": True}
 
     def test_score_history_truncates_prior_failure(self) -> None:
         jinx: dict[str, Any] = {"state": {}}
@@ -142,15 +183,101 @@ class TestMergeState:
 
         kept = result["state"]["scores"]
         assert len(kept) == 7
-        # First entries should have prior_failure stripped
         assert "prior_failure" not in kept[0]
-        # The most recent 5 should retain prior_failure
         assert kept[-1].get("prior_failure") == "failure-6"
         assert kept[-3].get("prior_failure") == "failure-4"
 
 
+class TestHistoryCompaction:
+    """History compaction logic for request payloads."""
+
+    def test_compact_history_keeps_recent_messages_only(self) -> None:
+        from jinx.runner import compact_history_for_request
+
+        history = [
+            {"role": "user", "content": "ROUND 1/10 — TASK: first\nSTATE:\nstate-1"},
+            {"role": "assistant", "content": [{"type": "text", "text": "reply-1"}]},
+            {"role": "user", "content": "ROUND 2/10 — TASK: first\nSTATE:\nstate-2"},
+            {"role": "assistant", "content": [{"type": "text", "text": "reply-2"}]},
+            {"role": "user", "content": "ROUND 3/10 — TASK: first\nSTATE:\nstate-3"},
+            {"role": "assistant", "content": [{"type": "text", "text": "reply-3"}]},
+            {"role": "user", "content": "ROUND 4/10 — TASK: first\nSTATE:\nstate-4"},
+            {"role": "assistant", "content": [{"type": "text", "text": "reply-4"}]},
+        ]
+
+        compact = compact_history_for_request(history, max_messages=4)
+
+        assert len(compact) == 4
+        assert all("ROUND 1/10" not in str(msg["content"]) for msg in compact)
+        assert compact[-1]["content"] == [{"type": "text", "text": "reply-4"}]
+
+
+class TestStaleRunDetection:
+    """Guard against false stale-session detection without real waits."""
+
+    def test_recent_file_activity_prevents_stale_timeout(self, monkeypatch, tmp_path: Path) -> None:
+        from jinx.runner import _is_run_state_stale
+
+        request_path = tmp_path / "jinx_request.yaml"
+        run_state_path = tmp_path / "jinx_run_state.yaml"
+        monkeypatch.setattr("jinx.runner.REQUEST_PATH", request_path)
+        monkeypatch.setattr("jinx.runner.RUN_STATE_PATH", run_state_path)
+
+        request_path.write_text("type: llm_generate\n", encoding="utf-8")
+        run_state_path.write_text("waiting_for: llm_generate\n", encoding="utf-8")
+
+        assert _is_run_state_stale({"updated_at": 0}, timeout_seconds=30) is False
+
+    def test_recent_run_state_timestamp_does_not_mark_session_stale(self, monkeypatch) -> None:
+        from jinx.runner import _is_run_state_stale
+
+        fake_now = 1_000.0
+        monkeypatch.setattr("jinx.runner.time.time", lambda: fake_now)
+
+        run_state = {"updated_at": fake_now - 5}
+        assert _is_run_state_stale(run_state, timeout_seconds=30) is False
+
+    def test_stale_session_without_recent_activity_is_detected(self, monkeypatch, tmp_path: Path) -> None:
+        from jinx.runner import _is_run_state_stale
+
+        request_path = tmp_path / "jinx_request.yaml"
+        run_state_path = tmp_path / "jinx_run_state.yaml"
+        monkeypatch.setattr("jinx.runner.REQUEST_PATH", request_path)
+        monkeypatch.setattr("jinx.runner.RUN_STATE_PATH", run_state_path)
+
+        fake_now = 2_000.0
+        monkeypatch.setattr("jinx.runner.time.time", lambda: fake_now)
+
+        request_path.write_text("type: llm_generate\n", encoding="utf-8")
+        run_state_path.write_text("waiting_for: llm_generate\n", encoding="utf-8")
+
+        old_time = fake_now - 60
+        os.utime(request_path, (old_time, old_time))
+        os.utime(run_state_path, (old_time, old_time))
+
+        assert _is_run_state_stale({"updated_at": old_time}, timeout_seconds=30) is True
+
+    def test_recent_file_activity_is_preferred_over_old_run_state_value(self, monkeypatch, tmp_path: Path) -> None:
+        from jinx.runner import _is_run_state_stale
+
+        request_path = tmp_path / "jinx_request.yaml"
+        run_state_path = tmp_path / "jinx_run_state.yaml"
+        monkeypatch.setattr("jinx.runner.REQUEST_PATH", request_path)
+        monkeypatch.setattr("jinx.runner.RUN_STATE_PATH", run_state_path)
+
+        fake_now = 5_000.0
+        monkeypatch.setattr("jinx.runner.time.time", lambda: fake_now)
+
+        request_path.write_text("type: llm_generate\n", encoding="utf-8")
+        run_state_path.write_text("waiting_for: llm_generate\n", encoding="utf-8")
+        os.utime(request_path, (fake_now - 5, fake_now - 5))
+        os.utime(run_state_path, (fake_now - 10, fake_now - 10))
+
+        assert _is_run_state_stale({"updated_at": 0}, timeout_seconds=30) is False
+
+
 class TestLegacyAliases:
-    """Tests for read_jinx / write_jinx compatibility helpers."""
+    """Compatibility adapters for manifest read/write helpers."""
 
     def test_read_jinx_delegates_to_state_manager(self, monkeypatch, tmp_path: Path) -> None:
         jinx_path = tmp_path / "JINX.yaml"

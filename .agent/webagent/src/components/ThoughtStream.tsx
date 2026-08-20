@@ -5,8 +5,8 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { motion } from "motion/react";
-import { ThoughtLog, SessionStatus } from "../types";
-import { MessageSquare, HelpCircle, AlertTriangle, CheckSquare, Settings, Search, Filter } from "lucide-react";
+import { ThoughtLog } from "../types";
+import { MessageSquare, HelpCircle, AlertTriangle, CheckSquare, Settings, Search } from "lucide-react";
 import { useLanguage } from "../context/LanguageContext";
 
 interface ThoughtStreamProps {
@@ -39,11 +39,11 @@ export default function ThoughtStream({ thoughts }: ThoughtStreamProps) {
 
   const categories = [
     { value: "all", label: t.thought_stream.category_all },
-    { value: "monologue", label: t.categories.monologue, icon: MessageSquare, color: "text-blue-400 bg-blue-500/10" },
-    { value: "question", label: t.categories.question, icon: HelpCircle, color: "text-amber-400 bg-amber-500/10" },
-    { value: "decision", label: t.categories.decision, icon: Settings, color: "text-purple-400 bg-purple-500/10" },
-    { value: "check", label: t.categories.check, icon: AlertTriangle, color: "text-rose-400 bg-rose-500/10" },
-    { value: "system", label: t.categories.system, icon: CheckSquare, color: "text-emerald-400 bg-emerald-500/10" },
+    { value: "monologue", label: t.categories.monologue },
+    { value: "question", label: t.categories.question },
+    { value: "decision", label: t.categories.decision },
+    { value: "check", label: t.categories.check },
+    { value: "system", label: t.categories.system },
   ];
 
   const phases = [

@@ -9,18 +9,15 @@ import {
   History,
   Trash2,
   FolderOpen,
-  Cpu,
   LayoutDashboard,
   GitPullRequest,
   FileCode,
   Activity,
-  Edit2,
   Check,
   X,
   RefreshCw,
   AlertCircle,
   HelpCircle,
-  Globe,
   MoreVertical,
   Download,
   Copy
@@ -57,10 +54,13 @@ export default function App() {
     return localStorage.getItem("jinx_active_session_id") || "live-session";
   });
 
-  // Track previous live session status to detect genuine task completion.
-  // Uses a ref that resets on page reload so the first poll establishes a
-  // baseline without archiving (prevents duplicates from reloads / Strict Mode).
+  // Track previous live session status to detect genuine task completion/error.
+  // Initialized to a sentinel so the first poll establishes a baseline without
+  // archiving. Reset on unmount so React Strict Mode doesn't trigger spurious archives.
   const prevStatusRef = useRef<string | null>(null);
+  useEffect(() => {
+    return () => { prevStatusRef.current = null; };
+  }, []);
 
   const [activeTab, setActiveTab] = useState<"summary" | "thoughts" | "files" | "console" | "diffs">(() => {
     const saved = localStorage.getItem("jinx_active_tab");
@@ -127,6 +127,22 @@ export default function App() {
     apiTokenRef.current = apiToken;
   }, [apiToken]);
 
+  // Pure function: merges a new live session into the session list.
+  // Extracted from applyLiveSessionData to avoid re-creating it on every poll tick.
+  const mergeLiveSession = useCallback((prev: AgentSession[], newSession: AgentSession): AgentSession[] => {
+    const existingIdx = prev.findIndex((s) => s.id === newSession.id);
+    if (existingIdx >= 0) {
+      const merged = [...prev];
+      merged[existingIdx] = newSession;
+      return merged;
+    }
+    // Remove ALL idle live- sessions (live-session, live-session-1, etc.)
+    // to prevent duplicates when JINX restarts with a new task
+    return [newSession, ...prev.filter(
+      (s) => !(s.id.startsWith("live-") && s.status === "idle")
+    )];
+  }, []);
+
   // Reusable handler for live session data from either SSE or polling.
   const applyLiveSessionData = useCallback((data: any) => {
     if (data.exists) {
@@ -137,22 +153,26 @@ export default function App() {
       const newSession: AgentSession = data.session;
       const currentStatus = newSession.status;
 
-      // First poll: establish baseline; archive cold-start completed sessions
+      // Terminal states that should be archived into a dedicated session entry.
+      const isTerminal = currentStatus === "completed" || currentStatus === "error";
+
+      // First poll: establish baseline without archiving.
       if (prevStatusRef.current === null) {
-        if (currentStatus === "completed") {
-          const archivedId = `completed-${Date.now()}`;
-          setSessions((prev) => {
-            const archived = { ...newSession, id: archivedId, copyCount: 0 };
-            const defaultLive = createDefaultLiveSession();
-            return [defaultLive, archived, ...prev.filter((s) => s.id !== newSession.id)];
-          });
-          setActiveSessionId(archivedId);
-          setActiveTab("summary");
-        }
         prevStatusRef.current = currentStatus;
-      } else if (currentStatus === "completed" && prevStatusRef.current !== "completed") {
-        // Genuine transition to completed — archive as a dedicated session, start fresh
-        const archivedId = `completed-${Date.now()}`;
+        // If the live session is already terminal on cold start, still surface
+        // it — but don't create a separate archive (avoids duplicates on reload).
+        if (isTerminal) {
+          const nextSessions = mergeLiveSession(sessionsRef.current, newSession);
+          setSessions(nextSessions);
+          if (!nextSessions.find((s) => s.id === activeSessionIdRef.current)) {
+            setActiveSessionId(newSession.id);
+          }
+          return;
+        }
+      } else if (isTerminal && prevStatusRef.current !== currentStatus) {
+        // Genuine transition to a terminal state — archive as a dedicated
+        // session and spin up a fresh live slot.
+        const archivedId = `${currentStatus}-${Date.now()}`;
         setSessions((prev) => {
           const archived = { ...newSession, id: archivedId, copyCount: 0 };
           const defaultLive = createDefaultLiveSession();
@@ -160,29 +180,26 @@ export default function App() {
         });
         setActiveSessionId(archivedId);
         setActiveTab("summary");
-        prevStatusRef.current = "completed";
+        prevStatusRef.current = currentStatus;
         return;
       }
       prevStatusRef.current = currentStatus;
 
-      const mergeLiveSession = (prev: AgentSession[]) => {
-        const existingIdx = prev.findIndex((s) => s.id === newSession.id);
-        if (existingIdx >= 0) {
-          const merged = [...prev];
-          merged[existingIdx] = newSession;
-          return merged;
-        }
-        return [newSession, ...prev.filter(
-          (s) => !(s.id === "live-session" && s.status === "idle")
-        )];
-      };
-
-      const nextSessions = mergeLiveSession(sessionsRef.current);
-      setSessions(nextSessions);
-
-      if (!nextSessions.find((s) => s.id === activeSessionIdRef.current)) {
-        setActiveSessionId(newSession.id);
-      }
+      // Use functional updater to avoid race conditions on rapid polls.
+      setSessions((prev) => {
+        const nextSessions = mergeLiveSession(prev, newSession);
+        return nextSessions;
+      });
+      // After merge, ensure the active session is valid.
+      // Note: can't read the just-set value synchronously, so use a microtask.
+      queueMicrotask(() => {
+        setSessions((current) => {
+          if (!current.find((s) => s.id === activeSessionIdRef.current)) {
+            setActiveSessionId(newSession.id);
+          }
+          return current;
+        });
+      });
     } else {
       setLiveError(data.message || "No .agent folder found.");
       setSearchedPaths(data.searchedPaths || []);
@@ -333,14 +350,12 @@ export default function App() {
     e.stopPropagation();
     const updated = sessions.filter((s) => s.id !== id);
     setSessions(updated);
-    saveSessions(updated);
     if (activeSessionId === id && updated.length > 0) {
       setActiveSessionId(updated[0].id);
     } else if (updated.length === 0) {
       const defaultLive = createDefaultLiveSession();
       setSessions([defaultLive]);
       setActiveSessionId(defaultLive.id);
-      saveSessions([defaultLive]);
     }
   };
 
@@ -359,7 +374,6 @@ export default function App() {
       return s;
     });
     setSessions(updated);
-    saveSessions(updated);
     setRenamingId(null);
   };
 
@@ -381,7 +395,6 @@ export default function App() {
     const defaultLive = createDefaultLiveSession();
     setSessions([defaultLive]);
     setActiveSessionId(defaultLive.id);
-    saveSessions([defaultLive]);
     setConfirmReset(false);
   };
 
@@ -427,7 +440,7 @@ export default function App() {
               </div>
 
               <div className="px-3 py-1 border border-white/10 rounded-full text-[11px] font-mono bg-black/40 text-neutral-300">
-                MONITORING v1.2.2
+                MONITORING v1.2.3
               </div>
             </div>
 
@@ -550,7 +563,12 @@ export default function App() {
 
             {/* Scroll list */}
             <div id="sessions-history-list" className="flex-1 overflow-y-auto space-y-2 max-h-[400px] md:max-h-[500px]">
-              {sessions.map((session) => {
+              {[...sessions].sort((a, b) => {
+                // Live sessions always at top, then by timestamp descending
+                if (a.id.startsWith("live-") && !b.id.startsWith("live-")) return -1;
+                if (!a.id.startsWith("live-") && b.id.startsWith("live-")) return 1;
+                return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+              }).map((session) => {
                 const isActive = session.id === activeSessionId;
                 const isRenaming = renamingId === session.id;
 
@@ -981,7 +999,7 @@ export default function App() {
       {/* High-tech pixel status footer */}
       <footer className="border-t border-neutral-900 bg-neutral-950/80 px-6 py-4 flex flex-col sm:flex-row items-center justify-between text-[11px] font-mono text-neutral-500 mt-12">
         <div className="flex items-center gap-2">
-          <span>WORKSPACE MONITOR v1.2.2</span>
+          <span>WORKSPACE MONITOR v1.2.3</span>
           <span className="text-neutral-800">|</span>
           <span>COMPATIBLE WITH JINX RUNTIME SPEC 1.0.0</span>
         </div>

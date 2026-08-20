@@ -5,7 +5,7 @@
 
 import { useState } from "react";
 import { RPCMessage } from "../types";
-import { ArrowUpRight, ArrowDownLeft, Terminal, Cpu, Info, ShieldAlert } from "lucide-react";
+import { ArrowUpRight, ArrowDownLeft, Terminal, ShieldAlert } from "lucide-react";
 import { useLanguage } from "../context/LanguageContext";
 
 interface TerminalConsoleProps {

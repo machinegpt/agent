@@ -3,18 +3,12 @@ import { TranslationDict } from "./types";
 export const ru: TranslationDict = {
   header: {
     spec_interceptor: "MACHINE_GPT_LOOP // SPEC INTERCEPTOR",
-    active_run: "Активный запуск",
-    completed_session: "Завершенная сессия",
     agent: "АГЕНТ",
     logs: "-ЛОГИ",
   },
   sidebar: {
-    sovereign_actions: "Действия",
-    sync_folder: "Синхронизировать .agent",
-    select_workspace: "Выбрать рабочую область",
     session_history: "История сессий",
     runs: "запусков",
-    confirm_reset: "Вы уверены, что хотите сбросить все сохраненные логи сессий? Это сотрет всю историю из LocalStorage.",
     newer_live_available: "◉ Доступна новая сессия",
     switch_to_live: "Переключиться",
   },
@@ -121,5 +115,4 @@ export const ru: TranslationDict = {
       desc: "Подпроцесс остановлен, код зафиксирован",
     },
   },
-  loading: "ЗАГРУЗКА РАБОЧЕЙ ОБЛАСТИ АГЕНТА...",
 };

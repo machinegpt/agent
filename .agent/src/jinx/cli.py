@@ -19,7 +19,7 @@ import logging
 from pathlib import Path
 import sys
 
-from .runner import run
+from .runner import run, RUN_STATE_PATH
 
 # Setup a dedicated stderr logger for internal CLI logs
 logger = logging.getLogger("jinx.cli")
@@ -60,8 +60,7 @@ def main() -> None:
 
     task_str: str = " ".join(args.task).strip()
     
-    run_state_path = Path(__file__).resolve().parent.parent.parent / "jinx_run_state.yaml"
-    is_resuming = (args.ipc == "file") and run_state_path.exists()
+    is_resuming = (args.ipc == "file") and RUN_STATE_PATH.exists()
 
     if not task_str and not is_resuming:
         logger.error("No task argument provided. Please specify a task description.")

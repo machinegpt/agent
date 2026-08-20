@@ -13,79 +13,8 @@ body {
   color: #ffffff;
 }
 
-/* Bold Typography Custom Classes */
-.huge-text {
-  font-size: clamp(1.8rem, 5vw, 3.5rem);
-  line-height: 0.85;
-  letter-spacing: -0.03em;
-  font-weight: 900;
-  text-transform: uppercase;
-}
-
 .bg-grid {
   background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px);
   background-size: 24px 24px;
-}
-
-.border-alpha {
-  border-color: rgba(255, 255, 255, 0.1);
-}
-
-.accent-green {
-  color: #4ade80;
-}
-
-/* Custom Markdown styles for Gemini Analyst report */
-.markdown-body h1, .markdown-body h2, .markdown-body h3 {
-  font-family: var(--font-sans);
-  font-weight: 800;
-  color: #ffffff;
-  margin-top: 1.25rem;
-  margin-bottom: 0.5rem;
-  letter-spacing: -0.025em;
-  text-transform: uppercase;
-}
-.markdown-body h1 { font-size: 1.25rem; border-b: 1px solid rgba(255, 255, 255, 0.1); padding-bottom: 0.25rem; }
-.markdown-body h2 { font-size: 1.1rem; }
-.markdown-body h3 { font-size: 0.95rem; }
-.markdown-body p {
-  margin-bottom: 0.75rem;
-  font-size: 0.85rem;
-  color: #d1d5db;
-}
-.markdown-body ul, .markdown-body ol {
-  margin-bottom: 0.75rem;
-  padding-left: 1.25rem;
-  list-style-type: disc;
-  font-size: 0.85rem;
-  color: #d1d5db;
-}
-.markdown-body li {
-  margin-bottom: 0.25rem;
-}
-.markdown-body code {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  background-color: #171717;
-  padding: 0.125rem 0.25rem;
-  border-radius: 0.25rem;
-  color: #4ade80;
-}
-.markdown-body pre {
-  background-color: #0c0c0e;
-  padding: 0.75rem;
-  border-radius: 0.375rem;
-  overflow-x: auto;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  margin-bottom: 0.75rem;
-}
-.markdown-body pre code {
-  background-color: transparent;
-  padding: 0;
-  color: #e5e7eb;
-}
-.markdown-body strong {
-  font-weight: 700;
-  color: #ffffff;
 }
 

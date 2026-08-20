@@ -16,15 +16,18 @@
 
 import json
 import logging
+import os
 import re
 import sys
 import textwrap
-import atexit
 import signal
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from pathlib import Path
 import yaml
+import threading
+import queue as _queue
 
 from .prompts import SYSTEM_PROMPT, TOOL_DEPTH_CRITICAL_MSG, construct_round_prompt
 from .state import merge_state, read_jinx, write_jinx
@@ -34,6 +37,12 @@ logger = logging.getLogger("jinx.runner")
 
 HARD_CAP: int = 40
 TOOL_DEPTH_CAP: int = 20
+
+# IPC configuration (can be overridden via environment)
+IPC_TIMEOUT = int(os.getenv("JINX_IPC_TIMEOUT", "10"))
+IPC_RETRIES = int(os.getenv("JINX_IPC_RETRIES", "3"))
+IPC_BACKOFF = float(os.getenv("JINX_IPC_BACKOFF", "1.0"))
+BACKGROUND_WAIT_TIMEOUT = int(os.getenv("JINX_BACKGROUND_WAIT_TIMEOUT", "30"))
 
 
 class Dumper(yaml.SafeDumper):
@@ -70,34 +79,45 @@ class Yaml:
 
     @staticmethod
     def dump_to_string(data: Any, width: int = sys.maxsize) -> str:
-        """Serializes structures to YAML strings using the isolated dumper."""
+        """Serializes structures to YAML strings using the isolated dumper.
+
+        Post-processes output to remove blank lines for compact storage.
+        """
         try:
-            return yaml.dump(
+            raw = yaml.dump(
                 data, Dumper=Dumper, allow_unicode=True,
                 default_flow_style=False, sort_keys=False, width=width
             )
+            # Remove all blank lines (empty or whitespace-only) for compact output.
+            lines = raw.split('\n')
+            cleaned = [line for line in lines if line.strip() != '']
+            return '\n'.join(cleaned) + ('\n' if cleaned and cleaned[-1] else '')
         except Exception as e:
             raise SerializationError(f"Failed to serialize YAML string: {e}") from e
 
     @staticmethod
     def safe_atomic_write(path: Path, data: Any, width: int = sys.maxsize) -> None:
-        """Writes data to files atomically via temporary staging files."""
-        temp_path = path.with_suffix(path.suffix + ".tmp")
+        """Writes data to files atomically via temporary staging files.
+
+        Post-processes YAML to remove blank lines for compact output.
+        """
+        temp_path = None
         try:
+            # Serialize using the canonical dump helper and clean blank lines.
+            clean_yaml = Yaml.dump_to_string(data, width=width)
+            temp_path = path.with_suffix(path.suffix + ".tmp")
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(temp_path, "w", encoding="utf-8") as f:
-                yaml.dump(
-                    data, f, Dumper=Dumper, allow_unicode=True,
-                    default_flow_style=False, sort_keys=False, width=width
-                )
+                f.write(clean_yaml)
             temp_path.replace(path)
         except Exception as e:
             logger.error("Atomic write failed on %s: %s", path, e, exc_info=True)
             try:
-                temp_path.unlink(missing_ok=True)
+                if temp_path is not None and temp_path.exists():
+                    temp_path.unlink(missing_ok=True)
             except OSError:
                 pass
-            raise IPCError(f"File-IPC write failure on {path.name}: {e}") from e
+            raise IPCError(f"Atomic write failure on {path.name}: {e}") from e
 
     @staticmethod
     def load_from_file(path: Path) -> Any:
@@ -109,24 +129,12 @@ class Yaml:
             raise SerializationError(f"Failed to load YAML file at {path}: {e}") from e
 
 
-# Backwards-compatibility aliases / wrappers
-# These keep older import/usage sites working when names changed.
-JinxYamlDumper = Dumper
-JinxEnterpriseYamlDumper = Dumper
-# Historically a ValidationError symbol was exported; map it to the
-# serialization-level error currently raised for YAML issues.
-ValidationError = SerializationError
-EnterpriseYamlEngine = Yaml
-
-def safe_atomic_write_yaml(path: Path, data: Any, width: int = sys.maxsize) -> None:
-    """Compatibility wrapper for older safe_atomic_write_yaml API."""
-    return Yaml.safe_atomic_write(path, data, width)
-
-
 def parse_state_block(text: str) -> Optional[Dict[str, Any]]:
     """Extracts and parses the JINX state block from markdown code fences."""
     code_block_pattern = r"[ \t]*```(?:json|yaml|yml)?[ \t]*\r?\n(.*?)\r?\n[ \t]*```"
     code_matches = list(re.finditer(code_block_pattern, text, re.DOTALL))
+
+    state_keys = {"task", "facts", "scores", "debt", "open", "exit_ready", "deadlock"}
 
     if code_matches:
         for match in reversed(code_matches):
@@ -134,8 +142,12 @@ def parse_state_block(text: str) -> Optional[Dict[str, Any]]:
             try:
                 data = yaml.safe_load(raw)
                 if isinstance(data, dict):
-                    state_keys = {"task", "facts", "scores", "debt", "open", "exit_ready", "deadlock"}
+                    # Support both flat format (task/facts at top level) and
+                    # nested format (id/protocol/state at top level, state keys inside state:)
                     if len(set(data.keys()) & state_keys) >= 2:
+                        return data
+                    nested = data.get("state")
+                    if isinstance(nested, dict) and len(set(nested.keys()) & state_keys) >= 2:
                         return data
             except yaml.YAMLError:
                 continue
@@ -178,14 +190,18 @@ def check_exit(scores: List[Dict[str, Any]], min_rounds: int, rnd: int) -> bool:
     """Evaluates whether the cognitive loop is ready to terminate."""
     if rnd < min_rounds:
         return False
-    if not scores or not scores[-1].get("all_pass") or len(scores) < 2:
+    if not scores or len(scores) < 2:
+        return False
+
+    latest = scores[-1]
+    if not _get_val(latest, "all_pass", False):
         return False
 
     if len(scores) >= 4:
-        last3_best = max(s.get("pass_count", 0) for s in scores[-3:])
+        last3_best = max(_get_val(s, "pass_count", 0) for s in scores[-3:])
         prior_history = scores[:-3]
         if prior_history:
-            prior_best = max((s.get("pass_count", 0) for s in prior_history), default=0)
+            prior_best = max((_get_val(s, "pass_count", 0) for s in prior_history), default=0)
             if last3_best > prior_best:
                 return False
 
@@ -201,53 +217,62 @@ def _get_val(obj: Any, key: str, default: Any = None) -> Any:
     return default
 
 
+def _extract_graph_data(g: Any) -> Optional[Dict[str, Any]]:
+    """Extracts graph data from a dict or Pydantic model."""
+    if g is None:
+        return None
+    if hasattr(g, "model_dump"):
+        return g.model_dump()
+    if isinstance(g, dict):
+        return g
+    return None
+
+
+def _node_ids(g: Dict[str, Any]) -> set:
+    """Returns the set of normalized node IDs from a graph dict."""
+    raw = g.get("nodes")
+    if not isinstance(raw, list):
+        return set()
+    return {
+        str(n.get("id", "")).strip().lower()
+        for n in raw if isinstance(n, dict) and n.get("id")
+    }
+
+
+def _edge_keys(g: Dict[str, Any]) -> set:
+    """Returns the set of (source, relation, target) tuples from a graph dict."""
+    raw = g.get("edges")
+    if not isinstance(raw, list):
+        return set()
+    return {
+        (
+            str(e.get("source", "")).strip().lower(),
+            str(e.get("relation", "")).strip().lower(),
+            str(e.get("target", "")).strip().lower(),
+        )
+        for e in raw
+        if isinstance(e, dict) and e.get("source") and e.get("target")
+    }
+
+
 def _are_approaches_similar(entry1: Any, entry2: Any) -> bool:
     """Calculates semantic similarity between two approach graphs or falls back to text-matching."""
     graph1 = _get_val(entry1, "approach_graph")
     graph2 = _get_val(entry2, "approach_graph")
 
-    def extract_graph_data(g: Any) -> Optional[Dict[str, Any]]:
-        if g is None:
-            return None
-        if hasattr(g, "model_dump"):
-            return g.model_dump()
-        if isinstance(g, dict):
-            return g
-        return None
-
-    g1 = extract_graph_data(graph1)
-    g2 = extract_graph_data(graph2)
+    g1 = _extract_graph_data(graph1)
+    g2 = _extract_graph_data(graph2)
 
     if not g1 or not g2:
         return _get_val(entry1, "approach", "") == _get_val(entry2, "approach", "")
 
-    def node_ids(g: Dict[str, Any]) -> set:
-        raw = g.get("nodes")
-        if not isinstance(raw, list):
-            return set()
-        return {
-            str(n.get("id", "")).strip().lower()
-            for n in raw if isinstance(n, dict) and n.get("id")
-        }
-    def edge_keys(g: Dict[str, Any]) -> set:
-        raw = g.get("edges")
-        if not isinstance(raw, list):
-            return set()
-        return {
-            (
-                str(e.get("source", "")).strip().lower(),
-                str(e.get("relation", "")).strip().lower(),
-                str(e.get("target", "")).strip().lower(),
-            )
-            for e in raw
-            if isinstance(e, dict) and e.get("source") and e.get("target")
-        }
-    nodes1, nodes2 = node_ids(g1), node_ids(g2)
-    edges1, edges2 = edge_keys(g1), edge_keys(g2)
+    nodes1, nodes2 = _node_ids(g1), _node_ids(g2)
+    edges1, edges2 = _edge_keys(g1), _edge_keys(g2)
     if not nodes1 and not edges1 and not nodes2 and not edges2:
         return _get_val(entry1, "approach", "") == _get_val(entry2, "approach", "")
-    node_sim = len(nodes1.intersection(nodes2)) / len(nodes1.union(nodes2)) if (nodes1 or nodes2) else None
-    edge_sim = len(edges1.intersection(edges2)) / len(edges1.union(edges2)) if (edges1 or edges2) else None
+    # Guard against division by zero when one side is entirely empty
+    node_sim = len(nodes1.intersection(nodes2)) / len(nodes1.union(nodes2)) if nodes1.union(nodes2) else None
+    edge_sim = len(edges1.intersection(edges2)) / len(edges1.union(edges2)) if edges1.union(edges2) else None
     if node_sim is not None and edge_sim is not None:
         return (0.5 * node_sim + 0.5 * edge_sim) >= 0.7
     if node_sim is not None:
@@ -303,20 +328,25 @@ def get_tool_result_from_editor(tool_use_id: str, name: str, params: Dict[str, A
         print(json.dumps(payload), flush=True)
     except OSError as e:
         logger.error("Failed to transmit tool payload: %s", e)
-        return f"Error: Failed to transmit payload: {e}", False, True
+        raise IPCError(f"Failed to transmit tool payload: {e}") from e
 
+    # Await stdin with timeout to avoid indefinite blocking when editor doesn't reply.
     try:
-        line = sys.stdin.readline()
-        if not line:
-            return "Error: Editor disconnected.", False, True
-        response = json.loads(line)
+        line = _read_stdin_with_retries(IPC_TIMEOUT, IPC_RETRIES, IPC_BACKOFF)
+        if line is None:
+            raise IPCError(f"Timeout waiting for editor response after {IPC_TIMEOUT}s x{IPC_RETRIES} attempts")
+        try:
+            response = json.loads(line)
+        except json.JSONDecodeError as e:
+            raise IPCError(f"Malformed JSON from editor: {e}") from e
+
         status = response.get("status", "")
         is_error = "error" in response or (isinstance(status, str) and "error" in status.lower())
-        output = response.get("output") or response.get("content") or response.get("error") or str(response)
+        output = response.get("output") if "output" in response else (response.get("content") if "content" in response else (response.get("error") if "error" in response else str(response)))
         was_sliced = bool(response.get("sliced") or response.get("is_sliced"))
         return str(output), was_sliced, is_error
-    except (json.JSONDecodeError, OSError) as e:
-        return f"Error receiving input: {e}", False, True
+    except OSError as e:
+        raise IPCError(f"Error receiving input: {e}") from e
 
 
 def request_llm_from_editor(
@@ -334,15 +364,17 @@ def request_llm_from_editor(
         return []
 
     try:
-        line = sys.stdin.readline()
-        if not line:
-            return []
+        line = _read_stdin_with_retries(IPC_TIMEOUT, IPC_RETRIES, IPC_BACKOFF)
+        if line is None:
+            raise IPCError(f"Timeout waiting for LLM response from editor after {IPC_TIMEOUT}s x{IPC_RETRIES} attempts")
         data = json.loads(line)
         content = data.get("content") or []
-        return content if isinstance(content, list) else []
-    except (json.JSONDecodeError, OSError) as e:
+        if not isinstance(content, list):
+            raise IPCError("Invalid LLM response content format (expected list)")
+        return content
+    except (json.JSONDecodeError, OSError, IPCError) as e:
         logger.error("Error receiving LLM response: %s", e)
-        return []
+        raise IPCError(f"Error receiving LLM response: {e}") from e
 
 
 AGENT_DIR: Path = Path(__file__).resolve().parent.parent.parent
@@ -367,14 +399,14 @@ def _signal_cleanup(signum=None, frame=None) -> None:
         clean_up_ipc_files()
     except Exception:
         pass
-    # On signal, exit with non-zero to indicate external termination.
+    # Use os._exit to avoid sys.exit raising SystemExit inside a signal handler,
+    # which can cause recursion if the handler itself was invoked during cleanup.
     try:
-        sys.exit(1)
-    except SystemExit:
-        raise
+        os._exit(1)
+    except Exception:
+        pass
 
 
-atexit.register(clean_up_ipc_files)
 for sig in ("SIGINT", "SIGTERM", "SIGHUP"):
     try:
         signum = getattr(signal, sig)
@@ -409,13 +441,69 @@ def _init_new_session(task: str, jinx: Dict[str, Any]) -> None:
     write_jinx(jinx)
 
 
+def _touch_run_state(run_state: Dict[str, Any]) -> Dict[str, Any]:
+    """Marks a run state as recently updated so stale waits can recover."""
+    run_state["updated_at"] = time.time()
+    return run_state
+
+
+def _is_run_state_stale(run_state: Dict[str, Any], timeout_seconds: int = BACKGROUND_WAIT_TIMEOUT) -> bool:
+    """Returns True only when the session is truly idle and no active file activity is detected."""
+    if not isinstance(run_state, dict):
+        return False
+
+    updated_at = run_state.get("updated_at")
+    if isinstance(updated_at, (int, float)):
+        if (time.time() - float(updated_at)) <= timeout_seconds:
+            return False
+
+    for candidate in (RUN_STATE_PATH, REQUEST_PATH):
+        try:
+            if candidate.exists() and (time.time() - candidate.stat().st_mtime) <= timeout_seconds:
+                return False
+        except OSError:
+            continue
+
+    return True
+
+
+def _extract_last_tool_calls(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Extracts the latest tool_use blocks from the accumulated history."""
+    for msg in reversed(history):
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        calls: List[Dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                tool_use_id, name, params, err = _validate_tool_use_block(block)
+                if err is None and tool_use_id is not None and name is not None:
+                    calls.append({"id": tool_use_id, "name": name, "params": params})
+        if calls:
+            return calls
+    return []
+
+
+def compact_history_for_request(
+    history: List[Dict[str, Any]], max_messages: int = 6
+) -> List[Dict[str, Any]]:
+    """Keeps the most recent exchange while trimming stale repeated context."""
+    if len(history) <= max_messages:
+        return history
+    return history[-max_messages:]
+
+
 def write_llm_request(
-    history: List[Dict[str, Any]], rnd: int, tool_depth: int, min_rounds: int, task: str
+    history: List[Dict[str, Any]], rnd: int, tool_depth: int, min_rounds: int
 ) -> None:
     """Writes the current prompt/history state and requests LLM generation."""
     request_payload = {
         "type": "llm_generate", "system": SYSTEM_PROMPT,
-        "messages": history, "tools": tool_schema()
+        "messages": compact_history_for_request(history), "tools": tool_schema()
     }
     try:
         Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
@@ -424,7 +512,8 @@ def write_llm_request(
 
     run_state = {
         "rnd": rnd, "tool_depth": tool_depth, "history": history,
-        "waiting_for": "llm_generate", "min_rounds": min_rounds, "task": task
+        "waiting_for": "llm_generate", "min_rounds": min_rounds,
+        "updated_at": time.time()
     }
     try:
         Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
@@ -449,9 +538,9 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
         clean_up_ipc_files()
 
         state_dump = Yaml.dump_to_string(jinx["state"])
-        user_msg = construct_round_prompt(rnd=1, min_rounds=min_rounds, task=task, state_dump=state_dump)
+        user_msg = construct_round_prompt(rnd=1, min_rounds=min_rounds, state_dump=state_dump)
         try:
-            write_llm_request([{"role": "user", "content": user_msg}], 1, 0, min_rounds, task)
+            write_llm_request([{"role": "user", "content": user_msg}], 1, 0, min_rounds)
         except (IPCError, OSError, JinxError) as e:
             logger.error("Failed to write initial LLM request: %s", e, exc_info=True)
             clean_up_ipc_files()
@@ -467,7 +556,7 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
         clean_up_ipc_files()
         sys.exit(1)
 
-    required_keys = ("rnd", "tool_depth", "history", "waiting_for", "min_rounds", "task")
+    required_keys = ("rnd", "tool_depth", "history", "waiting_for", "min_rounds")
     missing = [k for k in required_keys if k not in run_state]
     if missing:
         logger.error("Run state is incomplete. Missing keys: %s", ", ".join(missing))
@@ -478,9 +567,20 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
     history = run_state["history"]
     waiting_for = run_state["waiting_for"]
     min_rounds = run_state["min_rounds"]
-    task = run_state["task"]
 
     if not RESPONSE_PATH.exists():
+        if _is_run_state_stale(run_state):
+            logger.warning(
+                "Waiting for %s timed out after %ss; reissuing request in background-safe retry mode.",
+                waiting_for, BACKGROUND_WAIT_TIMEOUT
+            )
+            if waiting_for == "tool_calls":
+                tool_calls = _extract_last_tool_calls(history)
+                if tool_calls:
+                    _write_tool_request(tool_calls, history, rnd, tool_depth, min_rounds, run_state)
+                    return
+            write_llm_request(history, rnd, tool_depth, min_rounds)
+            return
         logger.error("Awaiting editor response at %s", RESPONSE_PATH)
         sys.exit(1)
 
@@ -496,14 +596,14 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
     try:
         if waiting_for == "llm_generate":
             try:
-                _handle_llm_response(response_data, history, rnd, tool_depth, min_rounds, task, run_state)
+                _handle_llm_response(response_data, history, rnd, tool_depth, min_rounds, run_state)
             except (IPCError, OSError, JinxError) as e:
                 logger.error("IPC failure while handling LLM response: %s", e, exc_info=True)
                 clean_up_ipc_files()
                 sys.exit(1)
         elif waiting_for == "tool_calls":
             try:
-                _handle_tool_response(response_data, history, rnd, tool_depth, min_rounds, task, run_state)
+                _handle_tool_response(response_data, history, rnd, tool_depth, min_rounds, run_state)
             except (IPCError, OSError, JinxError) as e:
                 logger.error("IPC failure while handling tool response: %s", e, exc_info=True)
                 clean_up_ipc_files()
@@ -523,11 +623,11 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
 
 def _handle_llm_response(
     response_data: Dict[str, Any], history: List[Dict[str, Any]],
-    rnd: int, tool_depth: int, min_rounds: int, task: str,
+    rnd: int, tool_depth: int, min_rounds: int,
     run_state: Dict[str, Any]
 ) -> None:
     """Handles the response from an LLM generation request."""
-    raw_content = response_data.get("content") or []
+    raw_content = response_data.get("content")
     if isinstance(raw_content, str):
         content_blocks = [{"type": "text", "text": raw_content}]
     elif isinstance(raw_content, list):
@@ -535,8 +635,10 @@ def _handle_llm_response(
             b if isinstance(b, dict) else {"type": "text", "text": str(b)}
             for b in raw_content
         ]
-    else:
+    elif raw_content is not None:
         content_blocks = [{"type": "text", "text": str(raw_content)}]
+    else:
+        content_blocks = [{"type": "text", "text": ""}]
 
     if not content_blocks:
         content_blocks = [{"type": "text", "text": ""}]
@@ -563,7 +665,7 @@ def _handle_llm_response(
 
     if valid_calls:
         try:
-            _write_tool_request(valid_calls, history, rnd, tool_depth + 1, min_rounds, task, run_state)
+            _write_tool_request(valid_calls, history, rnd, tool_depth + 1, min_rounds, run_state)
         except (IPCError, OSError, JinxError) as e:
             logger.error("IPC failure while writing tool_calls request: %s", e, exc_info=True)
             clean_up_ipc_files()
@@ -576,19 +678,21 @@ def _handle_llm_response(
     if update:
         jinx = merge_state(jinx, update)
         write_jinx(jinx)
+        # Re-resolve min_rounds so protocol changes from LLM take effect mid-session
+        min_rounds = _resolve_min_rounds(jinx, None)
         scores = jinx["state"].get("scores", [])
 
         if update.get("exit_ready") and check_exit(scores, min_rounds, rnd):
-            clean_up_ipc_files()
             print("[JINX_COMPLETE] Task resolved successfully!", flush=True)
+            clean_up_ipc_files()
             return
 
         if update.get("deadlock") or check_deadlock(scores, min_rounds, rnd):
             if not update.get("deadlock"):
                 jinx["state"]["deadlock"] = True
                 write_jinx(jinx)
-            clean_up_ipc_files()
             print("[JINX_DEADLOCK] Loop aborted due to strategy deadlock.", flush=True)
+            clean_up_ipc_files()
             return
 
     # Transition to next round
@@ -600,10 +704,10 @@ def _handle_llm_response(
 
     jinx = read_jinx()
     state_dump = Yaml.dump_to_string(jinx.get("state") or {})
-    user_msg = construct_round_prompt(rnd=rnd, min_rounds=min_rounds, task=task, state_dump=state_dump, missing_state=not update)
+    user_msg = construct_round_prompt(rnd=rnd, min_rounds=min_rounds, state_dump=state_dump, missing_state=not update)
     history.append({"role": "user", "content": user_msg})
     try:
-        write_llm_request(history, rnd, 0, min_rounds, task)
+        write_llm_request(history, rnd, 0, min_rounds)
     except (IPCError, OSError, JinxError) as e:
         logger.error("IPC failure while writing next LLM request: %s", e, exc_info=True)
         clean_up_ipc_files()
@@ -612,7 +716,7 @@ def _handle_llm_response(
 
 def _handle_tool_response(
     response_data: Dict[str, Any], history: List[Dict[str, Any]],
-    rnd: int, tool_depth: int, min_rounds: int, task: str,
+    rnd: int, tool_depth: int, min_rounds: int,
     run_state: Dict[str, Any]
 ) -> None:
     """Handles the response from tool execution."""
@@ -636,7 +740,7 @@ def _handle_tool_response(
 
     history.append({"role": "user", "content": tool_results})
     try:
-        write_llm_request(history, rnd, tool_depth, min_rounds, task)
+        write_llm_request(history, rnd, tool_depth, min_rounds)
     except (IPCError, OSError, JinxError) as e:
         logger.error("IPC failure while writing LLM request after tool response: %s", e, exc_info=True)
         clean_up_ipc_files()
@@ -645,8 +749,7 @@ def _handle_tool_response(
 
 def _write_tool_request(
     tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
-    rnd: int, tool_depth: int, min_rounds: int, task: str,
-    run_state: Dict[str, Any]
+    rnd: int, tool_depth: int, min_rounds: int, run_state: Dict[str, Any]
 ) -> None:
     """Writes a tool_calls request and updates run state."""
     request_payload = {"type": "tool_calls", "calls": tool_calls}
@@ -656,7 +759,7 @@ def _write_tool_request(
         # Propagate as IPCError so callers can clean up IPC files.
         raise IPCError(f"Failed to write tool_calls request: {e}") from e
 
-    run_state.update({"tool_depth": tool_depth, "history": history, "waiting_for": "tool_calls"})
+    run_state.update({"tool_depth": tool_depth, "history": history, "waiting_for": "tool_calls", "updated_at": time.time()})
     try:
         Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
     except JinxError as e:
@@ -670,14 +773,15 @@ def _write_llm_request_no_tools(
 ) -> None:
     """Writes an LLM request with empty tools list (for final summary)."""
     request_payload = {
-        "type": "llm_generate", "system": SYSTEM_PROMPT, "messages": history, "tools": []
+        "type": "llm_generate", "system": SYSTEM_PROMPT,
+        "messages": compact_history_for_request(history), "tools": []
     }
     try:
         Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
     except JinxError as e:
         raise IPCError(f"Failed to write final summary request: {e}") from e
 
-    run_state.update({"waiting_for": "llm_generate", "history": history})
+    run_state.update({"waiting_for": "llm_generate", "history": history, "updated_at": time.time()})
     try:
         Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
     except JinxError as e:
@@ -699,53 +803,58 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
 
     rnd: int = 0
     last_round_missing_state: bool = False
+    history: List[Dict[str, Any]] = []
 
     logger.info("Starting JINX loop (JSON-RPC). Task: '%s'. Min rounds: %d", task, min_rounds)
 
     while rnd < HARD_CAP:
         rnd += 1
-        history: List[Dict[str, Any]] = []
         jinx = read_jinx()
         state_data = jinx.get("state") or {}
         state_dump = Yaml.dump_to_string(state_data)
 
         user_msg = construct_round_prompt(
-            rnd=rnd, min_rounds=min_rounds, task=task,
+            rnd=rnd, min_rounds=min_rounds,
             state_dump=state_dump, missing_state=last_round_missing_state
         )
         history.append({"role": "user", "content": user_msg})
 
         full_text: str = ""
         tool_depth: int = 0
-        while True:
-            content_blocks = request_llm_from_editor(SYSTEM_PROMPT, history)
-            history.append({"role": "assistant", "content": content_blocks})
+        try:
+            while True:
+                content_blocks = request_llm_from_editor(SYSTEM_PROMPT, history)
+                history.append({"role": "assistant", "content": content_blocks})
 
-            for block in content_blocks:
-                if block.get("type") == "text":
-                    full_text += block.get("text", "")
+                for block in content_blocks:
+                    if block.get("type") == "text":
+                        full_text += block.get("text", "")
 
-            tool_results: List[Dict[str, Any]] = []
-            for block in content_blocks:
-                if block.get("type") == "tool_use":
-                    tool_results.append(_execute_rpc_tool(block))
+                tool_results: List[Dict[str, Any]] = []
+                for block in content_blocks:
+                    if block.get("type") == "tool_use":
+                        tool_results.append(_execute_rpc_tool(block))
 
-            if tool_results:
-                tool_depth += 1
-                if tool_depth >= TOOL_DEPTH_CAP:
-                    logger.warning("Tool depth limit reached in RPC mode.")
-                    tool_results.append({"type": "text", "text": TOOL_DEPTH_CRITICAL_MSG})
+                if tool_results:
+                    tool_depth += 1
+                    if tool_depth >= TOOL_DEPTH_CAP:
+                        logger.warning("Tool depth limit reached in RPC mode.")
+                        tool_results.append({"type": "text", "text": TOOL_DEPTH_CRITICAL_MSG})
+                        history.append({"role": "user", "content": tool_results})
+                        content_blocks = request_llm_from_editor(SYSTEM_PROMPT, history, tools=[])
+                        history.append({"role": "assistant", "content": content_blocks})
+                        for block in content_blocks:
+                            if block.get("type") == "text":
+                                full_text += block.get("text", "")
+                        break
                     history.append({"role": "user", "content": tool_results})
-                    content_blocks = request_llm_from_editor(SYSTEM_PROMPT, history, tools=[])
-                    history.append({"role": "assistant", "content": content_blocks})
-                    for block in content_blocks:
-                        if block.get("type") == "text":
-                            full_text += block.get("text", "")
+                    continue
+                else:
                     break
-                history.append({"role": "user", "content": tool_results})
-                continue
-            else:
-                break
+        except IPCError as e:
+            logger.critical("IPC failure during RPC loop: %s", e, exc_info=True)
+            clean_up_ipc_files()
+            sys.exit(1)
 
         update = parse_state_block(full_text)
         if update:
@@ -801,3 +910,44 @@ def _slice_file_content(result_content: str, params: Dict[str, Any]) -> str:
     except (ValueError, TypeError) as e:
         logger.error("Failed to parse line slice params: %s", e)
         return f"Error: Failed to slice file content: {e}"
+
+
+def _read_stdin_line(timeout: int) -> Optional[str]:
+    """Read a line from stdin with a timeout (seconds).
+
+    Returns the line (without trailing newline) or None if timeout elapsed.
+    """
+    q: _queue.Queue = _queue.Queue()
+
+    def _reader(queue: _queue.Queue):
+        try:
+            line = sys.stdin.readline()
+            queue.put(line)
+        except Exception:
+            queue.put(None)
+
+    t = threading.Thread(target=_reader, args=(q,), daemon=True)
+    t.start()
+    try:
+        return q.get(timeout=timeout)
+    except _queue.Empty:
+        return None
+
+
+def _read_stdin_with_retries(timeout: int, retries: int, backoff: float) -> Optional[str]:
+    """Attempt to read a line from stdin multiple times with backoff.
+
+    Returns the line or None only after exhausting retries.
+    """
+    attempt = 0
+    while attempt < retries:
+        line = _read_stdin_line(timeout)
+        if line is not None:
+            return line
+        attempt += 1
+        if attempt < retries:
+            try:
+                time.sleep(backoff)
+            except Exception:
+                pass
+    return None

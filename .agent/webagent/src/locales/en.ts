@@ -3,18 +3,12 @@ import { TranslationDict } from "./types";
 export const en: TranslationDict = {
   header: {
     spec_interceptor: "MACHINE_GPT_LOOP // SPEC INTERCEPTOR",
-    active_run: "Active Run",
-    completed_session: "Completed Session",
     agent: "AGENT",
     logs: "-LOGS",
   },
   sidebar: {
-    sovereign_actions: "Actions",
-    sync_folder: "Sync .agent Folder",
-    select_workspace: "Select local workspace",
     session_history: "Session History",
     runs: "runs",
-    confirm_reset: "Are you sure you want to reset all saved session logs? This will wipe your LocalStorage history.",
     newer_live_available: "◉ Newer live session available",
     switch_to_live: "Switch to live",
   },
@@ -121,5 +115,4 @@ export const en: TranslationDict = {
       desc: "Subprocess shut down, code committed",
     },
   },
-  loading: "LOADING AGENT WORKSPACE...",
 };

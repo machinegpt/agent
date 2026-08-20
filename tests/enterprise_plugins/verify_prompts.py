@@ -1,7 +1,7 @@
 # ==============================================================================
 # AI-Generated Enterprise Verification Plugin
 # Module: jinx.prompts
-# Generated At: 2026-06-30T20:31:35Z
+# Generated At: 2026-08-20T17:22:45Z
 #
 # This file is dynamically managed by the JINX AI Synthesis Engine.
 # Public classes and methods are verified automatically.
@@ -61,16 +61,19 @@ class VerifyPromptsPhase(VerificationPhase):
             suite.print_badge("Function construct_round_prompt: PRESENT", True)
 
             # Test round prompt constructor without missing state
-            test_task = "Verify Refactoring"
-            test_state = "task: None"
-            res_normal = target_module.construct_round_prompt(rnd=2, min_rounds=5, task=test_task, state_dump=test_state, missing_state=False)
-            expected_normal = f"ROUND 2 of 5+\nTASK: {test_task}\nCURRENT STATE:\n{test_state}"
+            test_state = "task: Verify Refactoring\nfacts: []"
+            res_normal = target_module.construct_round_prompt(rnd=2, min_rounds=5, state_dump=test_state, missing_state=False)
+            expected_normal = f"ROUND 2 (at least 5 rounds required before exit is considered)\nCURRENT STATE:\n{test_state}"
             assert res_normal == expected_normal, f"Round prompt mismatch without missing state warning.\nExpected:\n{expected_normal}\nGot:\n{res_normal}"
 
             # Test round prompt constructor with missing state
-            res_warning = target_module.construct_round_prompt(rnd=2, min_rounds=5, task=test_task, state_dump=test_state, missing_state=True)
-            expected_warning = f"{target_module.MISSING_STATE_WARNING}ROUND 2 of 5+\nTASK: {test_task}\nCURRENT STATE:\n{test_state}"
+            res_warning = target_module.construct_round_prompt(rnd=2, min_rounds=5, state_dump=test_state, missing_state=True)
+            expected_warning = f"{target_module.MISSING_STATE_WARNING}ROUND 2 (at least 5 rounds required before exit is considered)\nCURRENT STATE:\n{test_state}"
             assert res_warning == expected_warning, f"Round prompt mismatch with missing state warning.\nExpected:\n{expected_warning}\nGot:\n{res_warning}"
+
+            # Verify task is NOT duplicated: no separate TASK: line in prompt
+            assert "TASK:" not in res_normal, "Redundant TASK: line found in prompt — task should only appear inside state_dump"
+            assert "TASK:" not in res_warning, "Redundant TASK: line found in prompt — task should only appear inside state_dump"
             
             suite.print_badge("Function construct_round_prompt: BEHAVIOR VERIFIED", True)
 

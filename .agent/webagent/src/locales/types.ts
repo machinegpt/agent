@@ -1,18 +1,12 @@
 export interface TranslationDict {
   header: {
     spec_interceptor: string;
-    active_run: string;
-    completed_session: string;
     agent: string;
     logs: string;
   };
   sidebar: {
-    sovereign_actions: string;
-    sync_folder: string;
-    select_workspace: string;
     session_history: string;
     runs: string;
-    confirm_reset: string;
     newer_live_available: string;
     switch_to_live: string;
   };
@@ -98,5 +92,4 @@ export interface TranslationDict {
     commit: { label: string; desc: string };
     completed: { label: string; desc: string };
   };
-  loading: string;
 }

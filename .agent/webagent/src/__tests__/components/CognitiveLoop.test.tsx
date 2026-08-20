@@ -34,7 +34,8 @@ describe("CognitiveLoop", () => {
 
   it("shows idle message waiting for agent", () => {
     render(<TestWrapper><CognitiveLoop currentStatus="idle" /></TestWrapper>);
-    expect(screen.getByText(/Waiting for JINX Agent/i)).toBeInTheDocument();
+    const idleMsgs = screen.getAllByText(/Waiting for JINX Agent/i);
+    expect(idleMsgs.length).toBeGreaterThanOrEqual(1);
   });
 
   it("renders completed status", () => {

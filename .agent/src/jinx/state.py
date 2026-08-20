@@ -18,7 +18,7 @@ import logging
 import os
 from pathlib import Path
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 import yaml
 from pydantic import BaseModel, Field
 
@@ -46,11 +46,44 @@ def _resolve_jinx_path() -> Path:
     return Path.cwd() / ".agent" / "JINX.yaml"
 
 
-def __getattr__(name: str) -> Any:
-    """Handles dynamic lookups for module-level attributes."""
-    if name == "JINX_PATH":
-        return _resolve_jinx_path()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+# Module-level constant — replaces the fragile __getattr__ pattern.
+JINX_PATH: Path = _resolve_jinx_path()
+
+
+def atomic_write_yaml(path: Path, data: Any, width: int = sys.maxsize) -> None:
+    """Atomically writes data to a YAML file via a temporary staging file.
+
+    This is the single source of truth for atomic YAML writes. Both
+    ``StateManager.persist_state`` and runner's ``Yaml.safe_atomic_write``
+    delegate here to avoid duplicating the temp-file-replace pattern.
+
+    Post-processes YAML to remove blank lines for compact output.
+    """
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        import io
+        buf = io.StringIO()
+        yaml.dump(
+            data, buf, allow_unicode=True,
+            default_flow_style=False, sort_keys=False, width=width,
+        )
+        raw = buf.getvalue()
+        lines = raw.split('\n')
+        cleaned = [line for line in lines if line.strip() != '']
+        clean_yaml = '\n'.join(cleaned)
+        if clean_yaml and not clean_yaml.endswith('\n'):
+            clean_yaml += '\n'
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write(clean_yaml)
+        temp_path.replace(path)
+    except Exception as e:
+        logger.error("Atomic write failed on %s: %s", path, e, exc_info=True)
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise OSError(f"Atomic write failure on {path.name}: {e}") from e
 
 
 class GraphNode(BaseModel):
@@ -73,7 +106,14 @@ class ApproachGraph(BaseModel):
 
 
 class ScoreEntry(BaseModel):
-    """Evaluation metrics and requirements score entry for a single strategy round."""
+    """Evaluation metrics and requirements score entry for a single strategy round.
+
+    Accepts two formats:
+    - Full:    {round, approach, requirements: {name: bool}, pass_count, all_pass}
+    - Simplified: {round, verdict: "pass"|"fail", detail: <string>}
+
+    The simplified format is auto-normalized to the full format on load.
+    """
     round: int = 0
     approach: str = "unspecified"
     prior_failure: Optional[str] = None
@@ -81,6 +121,19 @@ class ScoreEntry(BaseModel):
     pass_count: int = 0
     all_pass: bool = False
     approach_graph: Optional[ApproachGraph] = None
+    # Simplified format fields (optional, auto-converted)
+    verdict: Optional[str] = None
+    detail: Optional[str] = None
+
+    def model_post_init(self, __context: Any) -> None:
+        """Normalize simplified verdict format to full format."""
+        if self.verdict is not None and not self.requirements:
+            is_pass = self.verdict.lower().strip() in ("pass", "passed", "ok", "true", "1")
+            self.all_pass = is_pass
+            self.pass_count = 1 if is_pass else 0
+            self.requirements = {"task_complete": is_pass}
+            if self.detail and self.approach == "unspecified":
+                self.approach = self.detail[:80]
 
 
 class StateBlock(BaseModel):
@@ -109,28 +162,62 @@ class StateManager:
                 return data if isinstance(data, dict) else {}
         except (yaml.YAMLError, OSError) as e:
             logger.error("Failed to read JINX.yaml at %s: %s", jinx_path, e)
-            raise OSError(f"State read failure on {jinx_path.name}: {e}") from e
+            return {}
 
     @classmethod
     def persist_state(cls, data: Dict[str, Any]) -> None:
         """Persists the master state to JINX.yaml atomically."""
-        jinx_path = _resolve_jinx_path()
-        temp_path = jinx_path.with_suffix(jinx_path.suffix + ".tmp")
-        try:
-            jinx_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(temp_path, "w", encoding="utf-8") as f:
-                yaml.dump(
-                    data, f, allow_unicode=True,
-                    default_flow_style=False, sort_keys=False, width=sys.maxsize
-                )
-            temp_path.replace(jinx_path)
-        except Exception as e:
-            logger.error("Atomic persistence failed on %s: %s", jinx_path, e, exc_info=True)
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise OSError(f"State write failure on {jinx_path.name}: {e}") from e
+        atomic_write_yaml(_resolve_jinx_path(), data)
+
+
+def _normalize_score_entry(entry: Any) -> Dict[str, Any]:
+    """Normalizes a single score entry to the full ScoreEntry format.
+
+    Handles both:
+    - Full format:    {round, approach, requirements: {name: bool}, pass_count, all_pass}
+    - Simplified:     {round, verdict: "pass"|"fail", detail: <string>}
+    """
+    if not isinstance(entry, dict):
+        return entry
+
+    # Already in full format with requirements
+    if entry.get("requirements") and isinstance(entry["requirements"], dict):
+        return entry
+
+    # Simplified verdict format
+    verdict = entry.get("verdict")
+    if verdict is not None:
+        is_pass = str(verdict).lower().strip() in ("pass", "passed", "ok", "true", "1")
+        normalized = {
+            "round": entry.get("round", 0),
+            "approach": entry.get("detail", entry.get("approach", "unspecified"))[:80] if entry.get("detail") else entry.get("approach", "unspecified"),
+            "requirements": {"task_complete": is_pass},
+            "pass_count": 1 if is_pass else 0,
+            "all_pass": is_pass,
+        }
+        if entry.get("prior_failure"):
+            normalized["prior_failure"] = entry["prior_failure"]
+        if entry.get("approach_graph"):
+            normalized["approach_graph"] = entry["approach_graph"]
+        return normalized
+
+    return entry
+
+
+def _normalize_state_update(update: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalizes the entire state update block before validation.
+
+    Ensures all score entries are in the full ScoreEntry format so
+    pydantic model_validate does not reject them.
+
+    None-valued fields are ignored intentionally so partial updates can
+    preserve existing state while still allowing explicit boolean flags like
+    ``deadlock`` or ``exit_ready`` to be applied.
+    """
+    clean_update = {k: v for k, v in update.items() if v is not None}
+    if "scores" in clean_update and isinstance(clean_update["scores"], list):
+        clean_update["scores"] = [_normalize_score_entry(e) for e in clean_update["scores"]]
+    return clean_update
 
 
 def read_jinx() -> Dict[str, Any]:
@@ -147,7 +234,22 @@ def write_jinx(data: Dict[str, Any]) -> None:
 
 
 def merge_state(jinx: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
-    """Merges a parsed update block back into the JINX manifest state."""
+    """Merges a parsed update block back into the JINX manifest state.
+
+    Automatically normalizes simplified score formats (verdict/detail)
+    to the full ScoreEntry format before validation.
+    """
+    # If the update contains a nested 'state' key (from the full YAML block
+    # including id/protocol), extract just the state fields for validation.
+    if "state" in update and isinstance(update["state"], dict):
+        # Merge protocol section into jinx top-level so _resolve_min_rounds can read it
+        if "protocol" in update and isinstance(update["protocol"], dict):
+            jinx.setdefault("protocol", {}).update(update["protocol"])
+        update = update["state"]
+
+    # Normalize before validation — handles verdict/detail -> all_pass/requirements
+    update = _normalize_state_update(update)
+
     try:
         validated_block = StateBlock.model_validate(update)
         validated_dict = validated_block.model_dump(exclude_none=True)
@@ -164,6 +266,8 @@ def merge_state(jinx: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
         for entry in s["scores"][:-5]:
             entry.pop("prior_failure", None)
 
-    s["exit_ready"] = validated_block.exit_ready
-    s["deadlock"] = validated_block.deadlock
+    if "exit_ready" in update:
+        s["exit_ready"] = validated_block.exit_ready
+    if "deadlock" in update:
+        s["deadlock"] = validated_block.deadlock
     return jinx

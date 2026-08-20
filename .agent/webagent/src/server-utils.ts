@@ -5,7 +5,6 @@ export function timingSafeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
   const bufB = Buffer.from(b);
   if (bufA.length !== bufB.length) {
-    crypto.timingSafeEqual(bufA, bufA);
     return false;
   }
   return crypto.timingSafeEqual(bufA, bufB);
@@ -58,5 +57,3 @@ export function _resetSessionTracker() {
 }
 
 export { parseDiffText };
-
-export type ParseDiffResult = ReturnType<typeof parseDiffText>;

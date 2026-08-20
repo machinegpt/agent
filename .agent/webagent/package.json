@@ -1,5 +1,5 @@
 {
-  "name": "react-example",
+  "name": "jinx-dashboard",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -21,18 +21,14 @@
     "motion": "^12.23.24",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
-    "react-markdown": "^10.1.0",
-    "vite": "^6.2.3",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.1",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/react-dom": "^19.2.3",
-    "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4.1.14",

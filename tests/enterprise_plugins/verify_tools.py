@@ -1,6 +1,6 @@
 # ==============================================================================
 # AI-Generated Enterprise Verification Plugin
-# Module: jinx.cli
+# Module: jinx.tools
 # Generated At: 2026-08-20T17:22:45Z
 #
 # This file is dynamically managed by the JINX AI Synthesis Engine.
@@ -11,34 +11,34 @@ import sys
 import importlib
 from jinx_test import VerificationPhase, EnterpriseVerificationSuite
 
-class VerifyCliPhase(VerificationPhase):
+class VerifyToolsPhase(VerificationPhase):
     @property
     def name(self) -> str:
-        return "verify_cli"
+        return "verify_tools"
 
     @property
     def title(self) -> str:
-        return "Phase AI: Dynamic Verification of jinx.cli"
+        return "Phase AI: Dynamic Verification of jinx.tools"
 
     def run(self, suite: EnterpriseVerificationSuite) -> bool:
         success = True
-        suite.print_badge("Initiating AI-Synthesized Verification for jinx.cli", True)
+        suite.print_badge("Initiating AI-Synthesized Verification for jinx.tools", True)
         
         # Dynamic import of the target module
         try:
-            target_module = importlib.import_module("jinx.cli")
-            suite.print_badge("Import of jinx.cli: SUCCESS", True)
+            target_module = importlib.import_module("jinx.tools")
+            suite.print_badge("Import of jinx.tools: SUCCESS", True)
         except Exception as e:
-            suite.print_badge("Import of jinx.cli: FAILED (" + str(e) + ")", False)
+            suite.print_badge("Import of jinx.tools: FAILED (" + str(e) + ")", False)
             return False
 
         # --- CLASS VERIFICATIONS ---
         # --- FUNCTION VERIFICATIONS ---
-        # Verify Function main
-        if hasattr(target_module, "main"):
-            suite.print_badge("Function main: PRESENT", True)
+        # Verify Function tool_schema
+        if hasattr(target_module, "tool_schema"):
+            suite.print_badge("Function tool_schema: PRESENT", True)
         else:
-            suite.print_badge("Function main: MISSING", False)
+            suite.print_badge("Function tool_schema: MISSING", False)
             success = False
 
         # ==============================================================================

@@ -62,10 +62,17 @@ it on rounds where you can't fill it out correctly.
 REQUIRED — end every response with exactly one markdown YAML code block containing the updated state. The
 schema below shows the SHAPE of each field, not data to copy — replace every value with this task's real
 current state, and remember `scores`/`facts`/`debt`/`open` must each be the full list, not just new items:
+
+FULL FORMAT (preferred for complex tasks with multiple requirements):
 ```yaml
-task: <string — restate the task as you understand it>
-facts: [<every known scope fact/constraint so far, not just new ones>]
-scores:
+id: JINX
+protocol:
+  loop:
+    min: 2
+state:
+  task: <string — restate the task as you understand it>
+  facts: [<every known scope fact/constraint so far, not just new ones>]
+  scores:
   - round: 1
     approach: <short name for round 1's strategy>
     prior_failure: <what failed before round 1; "none" if this is round 1>
@@ -78,14 +85,12 @@ scores:
     requirements: {<requirement_name>: <true|false>}
     pass_count: <int>
     all_pass: <true|false>
-  # ... one entry per round so far, oldest first, nothing dropped
-debt: [<every shortcut taken so far, not just new ones>]
-open: [<every unresolved issue so far, not just new ones>]
-exit_ready: <true|false — true only once all_pass is true on the latest round AND you are not still improving>
-deadlock: <true|false — true only if 3+ genuinely different approaches failed the same requirement>
+  debt: [<every shortcut taken so far, not just new ones>]
+  open: [<every unresolved issue so far, not just new ones>]
+  exit_ready: <true|false — true only once all_pass is true on the latest round AND you are not still improving>
+  deadlock: <true|false — true only if 3+ genuinely different approaches failed the same requirement>
 ```
 """
-
 
 # ==============================================================================
 # JINX Prompt Templates & Construction Utilities
@@ -111,14 +116,13 @@ TOOL_DEPTH_CRITICAL_MSG: str = (
 
 
 def construct_round_prompt(
-    rnd: int, min_rounds: int, task: str, state_dump: str, missing_state: bool = False
+    rnd: int, min_rounds: int, state_dump: str, missing_state: bool = False
 ) -> str:
     """Constructs the structured user prompt for a specific execution round in the cognitive loop.
 
     Args:
         rnd (int): The current execution round index.
         min_rounds (int): The minimum configured round threshold.
-        task (str): The main task or objective description assigned to JINX.
         state_dump (str): The serialized YAML or JSON string representing the current state block.
         missing_state (bool): If True, prepends the missing state block warning message.
 
@@ -126,4 +130,5 @@ def construct_round_prompt(
         str: The fully-formed, formatted user prompt string for the cognitive loop.
     """
     warning_prefix = MISSING_STATE_WARNING if missing_state else ""
-    return f"{warning_prefix}ROUND {rnd} (at least {min_rounds} rounds required before exit is considered)\nTASK: {task}\nCURRENT STATE:\n{state_dump}"
+    round_label = f"ROUND {rnd} (at least {min_rounds} rounds required before exit is considered)"
+    return f"{warning_prefix}{round_label}\nCURRENT STATE:\n{state_dump}"

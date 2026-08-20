@@ -17,7 +17,7 @@ export default function DiffViewer({ diffs }: DiffViewerProps) {
   if (diffs.length === 0) {
     return (
       <div id="diffs-empty-card" className="bg-[#0c0c0e]/90 border border-white/10 rounded-lg p-8 text-center text-neutral-500 font-mono text-xs uppercase">
-        <GitPullRequest className="w-8 h-8 text-neutral-850 mx-auto mb-2" />
+        <GitPullRequest className="w-8 h-8 text-neutral-800 mx-auto mb-2" />
         {t.diff_viewer.no_diffs}
       </div>
     );

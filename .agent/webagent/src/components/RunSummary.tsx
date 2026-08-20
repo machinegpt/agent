@@ -51,6 +51,43 @@ export default function RunSummary({ session }: RunSummaryProps) {
 
   return (
     <div id="run-summary-container" className="space-y-6">
+      {/* Session Status Banner */}
+      {session.status === "completed" && (
+        <div className="bg-[#4ade80]/5 border border-[#4ade80]/30 rounded-lg p-5 flex items-center gap-4">
+          <div className="w-10 h-10 rounded-full bg-[#4ade80]/20 flex items-center justify-center flex-shrink-0">
+            <CheckCircle2 className="w-6 h-6 text-[#4ade80]" />
+          </div>
+          <div>
+            <h4 className="text-sm font-bold font-mono text-[#4ade80] uppercase tracking-wider">
+              {language === "ru" ? "Задача выполнена" : "Task Completed"}
+            </h4>
+            <p className="text-xs text-neutral-400 mt-0.5">
+              {language === "ru"
+                ? "Все шаги выполнены успешно. Цикл завершён."
+                : "All steps executed successfully. Cognitive loop finished."}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {session.status === "error" && (
+        <div className="bg-red-500/5 border border-red-500/30 rounded-lg p-5 flex items-center gap-4">
+          <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center flex-shrink-0">
+            <AlertCircle className="w-6 h-6 text-red-400" />
+          </div>
+          <div>
+            <h4 className="text-sm font-bold font-mono text-red-400 uppercase tracking-wider">
+              {language === "ru" ? "Ошибка выполнения" : "Execution Error"}
+            </h4>
+            <p className="text-xs text-neutral-400 mt-0.5">
+              {language === "ru"
+                ? "Цикл был прерван из-за ошибки. Проверьте логи для подробностей."
+                : "The cognitive loop was interrupted due to an error. Check logs for details."}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Step Checklist Card */}
       <div id="checklist-card" className="bg-[#0c0c0e]/90 border border-white/10 rounded-lg p-6 shadow-xl">
         <h3 className="text-[11px] font-extrabold uppercase tracking-[0.2em] text-neutral-400 mb-4 flex items-center gap-2">

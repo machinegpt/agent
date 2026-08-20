@@ -103,7 +103,11 @@ export default function CognitiveLoop({ currentStatus }: CognitiveLoopProps) {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h3 className="text-[11px] uppercase tracking-[0.2em] font-extrabold text-neutral-400">{t.cognitive_loop.title}</h3>
-            <p className="text-xs text-neutral-500 font-mono uppercase mt-0.5">{t.cognitive_loop.status}: <span className="text-[#4ade80] font-bold">
+            <p className="text-xs text-neutral-500 font-mono uppercase mt-0.5">{t.cognitive_loop.status}: <span className={`font-bold ${
+              currentStatus === "completed" ? "text-[#4ade80]" :
+              currentStatus === "error" ? "text-red-400" :
+              "text-[#4ade80]"
+            }`}>
               {currentStatus === "perceive" ? t.phases.perceive :
                currentStatus === "analyze" ? t.phases.analyze :
                currentStatus === "plan" ? t.phases.plan :
@@ -125,12 +129,30 @@ export default function CognitiveLoop({ currentStatus }: CognitiveLoopProps) {
 
         {/* Desktop View */}
         <div className="hidden lg:grid grid-cols-7 gap-3 relative items-stretch">
+          {currentStatus === "idle" && (
+            <div className="col-span-7 bg-neutral-950/40 border border-white/5 rounded-xl p-4 flex gap-3.5 items-center">
+              <div className="p-2 bg-neutral-900 text-neutral-500 rounded-lg">
+                <Database className="w-5 h-5 animate-pulse" />
+              </div>
+              <div>
+                <span className="text-[9px] font-mono uppercase tracking-wider text-[#4ade80]/60 font-extrabold">SYSTEM_STATUS // IDLE</span>
+                <h4 className="text-xs font-mono font-bold text-white uppercase mt-0.5">
+                  {language === "ru" ? "Ожидание запуска" : "Waiting for JINX Agent"}
+                </h4>
+                <p className="text-[11px] text-neutral-400 mt-1 leading-relaxed">
+                  {language === "ru"
+                    ? "Запустите локального Python-агента JINX на вашем компьютере для начала трансляции и обработки когнитивных циклов."
+                    : "Initialize the local JINX Python agent to begin streaming telemetry and cognitive decision loops."}
+                </p>
+              </div>
+            </div>
+          )}
           {phases.map((phase, idx) => {
             const Icon = phase.icon;
-            const isCompleted = isErrorState ? idx < phases.length - 1 : currentIndex > idx;
-            const isActive = !isErrorState && currentIndex === idx;
-            const isPending = !isErrorState && currentIndex < idx;
+            const isCompleted = isErrorState ? idx < phases.length - 1 : currentIndex >= idx;
+            const isActive = !isErrorState && currentIndex === idx && currentStatus !== "completed";
             const isError = isErrorState && idx === (phases.length - 1);
+            const isAllDone = currentStatus === "completed" && idx === (phases.length - 1);
 
             let borderClass = "border-white/5 bg-black/40";
             let glowClass = "";
@@ -138,6 +160,9 @@ export default function CognitiveLoop({ currentStatus }: CognitiveLoopProps) {
             if (isActive) {
               borderClass = "border-[#4ade80] bg-[#4ade80]/10";
               glowClass = "shadow-[0_0_15px_rgba(74,222,128,0.15)]";
+            } else if (isAllDone) {
+              borderClass = "border-[#4ade80]/60 bg-[#4ade80]/15";
+              glowClass = "shadow-[0_0_20px_rgba(74,222,128,0.25)]";
             } else if (isCompleted) {
               borderClass = "border-[#4ade80]/30 bg-[#4ade80]/5";
             } else if (isError) {
@@ -222,10 +247,11 @@ export default function CognitiveLoop({ currentStatus }: CognitiveLoopProps) {
           <div className="relative border-l border-white/10 ml-4 pl-5 space-y-4">
             {phases.map((phase, idx) => {
               const Icon = phase.icon;
-              const isCompleted = isErrorState ? idx < phases.length - 1 : currentIndex > idx;
-              const isActive = !isErrorState && currentIndex === idx;
+              const isCompleted = isErrorState ? idx < phases.length - 1 : currentIndex >= idx;
+              const isActive = !isErrorState && currentIndex === idx && currentStatus !== "completed";
               const isError = isErrorState && idx === (phases.length - 1);
               const isIdle = currentStatus === "idle";
+              const isAllDone = currentStatus === "completed" && idx === (phases.length - 1);
 
               let bgClass = "bg-neutral-900 border-neutral-800 text-neutral-500";
               let textClass = "text-neutral-500";
@@ -239,6 +265,12 @@ export default function CognitiveLoop({ currentStatus }: CognitiveLoopProps) {
                 textClass = "text-neutral-200";
                 borderClass = "border-[#4ade80]/30 bg-[#4ade80]/10";
                 glowClass = "shadow-[0_0_15px_rgba(74,222,128,0.1)]";
+              } else if (isAllDone) {
+                bgClass = "bg-[#4ade80]/30 border-[#4ade80] text-[#4ade80] ring-2 ring-[#4ade80]/30";
+                titleClass = "text-[#4ade80] font-bold";
+                textClass = "text-neutral-200";
+                borderClass = "border-[#4ade80]/60 bg-[#4ade80]/15";
+                glowClass = "shadow-[0_0_20px_rgba(74,222,128,0.25)]";
               } else if (isCompleted) {
                 bgClass = "bg-[#4ade80]/20 border-[#4ade80]/40 text-[#4ade80]";
                 titleClass = "text-white font-semibold";
