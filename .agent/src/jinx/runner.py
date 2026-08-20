@@ -28,115 +28,74 @@ from .prompts import SYSTEM_PROMPT, TOOL_DEPTH_CRITICAL_MSG, construct_round_pro
 from .state import merge_state, read_jinx, write_jinx
 from .tools import tool_schema
 
-# Configure package-level logger
 logger = logging.getLogger("jinx.runner")
 
-# Constants defining maximum execution safety boundaries
 HARD_CAP: int = 40
 TOOL_DEPTH_CAP: int = 20
 
 
 class Dumper(yaml.SafeDumper):
-    """Isolated, thread-safe PyYAML dumper class for JINX serialization.
-
-    Ensures that global PyYAML representers are not polluted, protecting external
-    third-party libraries and modules from unexpected serialization side-effects.
-    """
+    """Isolated PyYAML dumper class for JINX serialization."""
     pass
-
-
-# Backward-compatibility aliases
-JinxYamlDumper = Dumper
-JinxEnterpriseYamlDumper = Dumper
 
 
 def str_presenter(dumper: Dumper, data: str) -> Any:
     if '\n' in data:
-        # Format multi-line strings cleanly using literal block scalars (|)
         return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
     return dumper.represent_scalar('tag:yaml.org,2002:str', data)
 
 
-# Register representers strictly and exclusively to our custom dumper class
 Dumper.add_representer(str, str_presenter)
 
 
-# Custom Enterprise Exception Hierarchy
 class JinxError(Exception):
-    """Base exception for all domain-specific errors in the JINX Framework."""
+    """Base exception for all JINX Framework errors."""
     pass
 
 
 class SerializationError(JinxError):
-    """Raised when serialization or deserialization of IPC/state payloads fails."""
+    """Raised when serialization or deserialization fails."""
     pass
 
 
 class IPCError(JinxError):
-    """Raised during IPC file operations or stream communication transactions."""
-    pass
-
-
-class ValidationError(JinxError):
-    """Raised when data schemas fail validation against Pydantic models."""
+    """Raised during IPC file operations or stream communication."""
     pass
 
 
 class Yaml:
-    """Thread-safe YAML serialization engine for JINX operations.
-
-    Consolidates isolated PyYAML configurations, atomic transactional file writes,
-    and safe parsing logic. All output uses block style exclusively (no inline/flow
-    style) for maximum readability and to minimize LLM state-block parsing errors.
-    """
+    """YAML serialization engine with atomic writes for JINX operations."""
 
     @staticmethod
     def dump_to_string(data: Any, width: int = sys.maxsize) -> str:
-        """Serializes structures to YAML strings using our custom isolated dumper.
-
-        Always renders in block style (default_flow_style=False); nested dicts/lists
-        are never collapsed into compact inline `{...}`/`[...]` form.
-        """
+        """Serializes structures to YAML strings using the isolated dumper."""
         try:
             return yaml.dump(
-                data,
-                Dumper=Dumper,
-                allow_unicode=True,
-                default_flow_style=False,
-                sort_keys=False,
-                width=width
+                data, Dumper=Dumper, allow_unicode=True,
+                default_flow_style=False, sort_keys=False, width=width
             )
         except Exception as e:
             raise SerializationError(f"Failed to serialize YAML string: {e}") from e
 
     @staticmethod
     def safe_atomic_write(path: Path, data: Any, width: int = sys.maxsize) -> None:
-        """Writes data structures to files atomically via temporary staging files.
-
-        Always renders in block style (default_flow_style=False) for consistency
-        with dump_to_string.
-        """
+        """Writes data to files atomically via temporary staging files."""
         temp_path = path.with_suffix(path.suffix + ".tmp")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(temp_path, "w", encoding="utf-8") as f:
                 yaml.dump(
-                    data,
-                    f,
-                    Dumper=Dumper,
-                    allow_unicode=True,
-                    default_flow_style=False,
-                    sort_keys=False,
-                    width=width
+                    data, f, Dumper=Dumper, allow_unicode=True,
+                    default_flow_style=False, sort_keys=False, width=width
                 )
             temp_path.replace(path)
         except Exception as e:
-            logger.error("JINX atomic write transaction failed on %s: %s", path, e, exc_info=True)
+            logger.error("Atomic write failed on %s: %s", path, e, exc_info=True)
             try:
                 temp_path.unlink(missing_ok=True)
             except OSError:
                 pass
-            raise IPCError(f"JINX File-IPC write failure on {path.name}: {e}") from e
+            raise IPCError(f"File-IPC write failure on {path.name}: {e}") from e
 
     @staticmethod
     def load_from_file(path: Path) -> Any:
@@ -145,106 +104,42 @@ class Yaml:
             with open(path, "r", encoding="utf-8") as f:
                 return yaml.safe_load(f)
         except Exception as e:
-            raise SerializationError(f"Failed to load or parse YAML file at {path}: {e}") from e
-
-
-# Backward-compatibility alias
-EnterpriseYamlEngine = Yaml
-
-
-def safe_atomic_write_yaml(path: Path, data: Any, width: int = sys.maxsize) -> None:
-    """Writes a python structure to a YAML file atomically to prevent data corruption.
-
-    Delegates to the EnterpriseYamlEngine to maintain backward compatibility.
-    """
-    try:
-        Yaml.safe_atomic_write(path, data, width)
-    except JinxError as e:
-        raise OSError(str(e)) from e
-
+            raise SerializationError(f"Failed to load YAML file at {path}: {e}") from e
 
 
 def parse_state_block(text: str) -> Optional[Dict[str, Any]]:
-    """Extracts and parses the serialized JINX state block from standard markdown code fences.
-
-    It searches for standard markdown YAML or JSON code block fences (e.g., ```yaml,
-    ```yml, or ```json), extracts the raw text inside, and decodes it.
-
-    Args:
-        text (str): The raw text output generated by the LLM.
-
-    Returns:
-        Optional[Dict[str, Any]]: The parsed state dictionary if a valid state
-            block is found and correctly decoded; otherwise, None.
-    """
-    # Parse markdown code blocks (e.g. ```yaml ... ``` or ```json ... ```)
-    # We allow optional leading spaces/indentation before the code block fences.
+    """Extracts and parses the JINX state block from markdown code fences."""
     code_block_pattern = r"[ \t]*```(?:json|yaml|yml)?[ \t]*\r?\n(.*?)\r?\n[ \t]*```"
     code_matches = list(re.finditer(code_block_pattern, text, re.DOTALL))
-    
+
     if code_matches:
         for match in reversed(code_matches):
-            raw = match.group(1)
-            # Remove common leading indentation from all lines so YAML parses correctly
-            raw = textwrap.dedent(raw).strip()
+            raw = textwrap.dedent(match.group(1)).strip()
             try:
-                # yaml.safe_load parses both standard YAML and JSON perfectly
                 data = yaml.safe_load(raw)
                 if isinstance(data, dict):
-                    # A valid JINX state block must contain at least 2 of the expected core state keys
-                    # to prevent matching unrelated configuration files or generic code blocks.
                     state_keys = {"task", "facts", "scores", "debt", "open", "exit_ready", "deadlock"}
                     if len(set(data.keys()) & state_keys) >= 2:
                         return data
             except yaml.YAMLError:
                 continue
 
-    logger.debug("No valid structured markdown state block found in response.")
+    logger.debug("No valid state block found in response.")
     return None
 
+
 def check_exit(scores: List[Dict[str, Any]], min_rounds: int, rnd: int) -> bool:
-    """Evaluates whether the cognitive loop is ready to terminate.
-
-    The LLM may signal exit_ready prematurely (e.g. hallucinating completion).
-    This function validates that exit is genuinely warranted:
-
-    1. There must be at least one score entry.
-    2. The latest score must have achieved all_pass (current round claims success).
-    3. At least one prior score must exist (confirms progression — not a first-round guess).
-    4. If enough history exists, verify convergence: the best pass_count of the
-       last 3 rounds must not exceed the historical peak from earlier rounds.
-       (If still improving, keep going.)
-    5. The `min_rounds` hard floor is dropped — the convergence check alone
-       prevents premature exit when improvement is still happening.
-
-    Args:
-        scores (List[Dict[str, Any]]): The list of historical round evaluations.
-        min_rounds (int): The configured minimum execution round count (unused — convergence handles it).
-        rnd (int): The current active round index.
-
-    Returns:
-        bool: True if exit criteria are fully satisfied; False otherwise.
-    """
-    # Must have at least one score entry
-    if not scores:
+    """Evaluates whether the cognitive loop is ready to terminate."""
+    if not scores or not scores[-1].get("all_pass") or len(scores) < 2:
         return False
 
-    # Latest score must claim all_pass (current round succeeded)
-    if not scores[-1].get("all_pass"):
-        return False
-
-    # Must have at least one prior score to show progression
-    if len(scores) < 2:
-        return False
-
-    # Convergence check: if enough history exists, ensure no active improvement
     if len(scores) >= 4:
         last3_best = max(s.get("pass_count", 0) for s in scores[-3:])
         prior_history = scores[:-3]
         if prior_history:
             prior_best = max((s.get("pass_count", 0) for s in prior_history), default=0)
             if last3_best > prior_best:
-                return False  # Still improving, keep going
+                return False
 
     return True
 
@@ -259,13 +154,7 @@ def _get_val(obj: Any, key: str, default: Any = None) -> Any:
 
 
 def _are_approaches_similar(entry1: Any, entry2: Any) -> bool:
-    """Calculates semantic similarity between two approach graphs or falls back to text-matching.
-
-    Uses combined Jaccard similarity of normalized node IDs (50%) and semantic relationship
-    triples (50%). If the similarity is >= 0.7, the approaches are considered similar.
-    If graph data is missing or completely empty for either entry, gracefully falls back
-    to exact string matching of approach names.
-    """
+    """Calculates semantic similarity between two approach graphs or falls back to text-matching."""
     graph1 = _get_val(entry1, "approach_graph")
     graph2 = _get_val(entry2, "approach_graph")
 
@@ -282,66 +171,38 @@ def _are_approaches_similar(entry1: Any, entry2: Any) -> bool:
     g2 = extract_graph_data(graph2)
 
     if not g1 or not g2:
-        # Fallback to text matching
-        app1 = _get_val(entry1, "approach", "")
-        app2 = _get_val(entry2, "approach", "")
-        return app1 == app2
+        return _get_val(entry1, "approach", "") == _get_val(entry2, "approach", "")
 
     nodes1 = {n.get("id", "").strip().lower() for n in g1.get("nodes", []) if n.get("id")} if isinstance(g1.get("nodes"), list) else set()
     nodes2 = {n.get("id", "").strip().lower() for n in g2.get("nodes", []) if n.get("id")} if isinstance(g2.get("nodes"), list) else set()
 
     edges1 = {
         (e.get("source", "").strip().lower(), e.get("relation", "").strip().lower(), e.get("target", "").strip().lower())
-        for e in g1.get("edges", [])
-        if e.get("source") and e.get("target")
+        for e in g1.get("edges", []) if e.get("source") and e.get("target")
     } if isinstance(g1.get("edges"), list) else set()
 
     edges2 = {
         (e.get("source", "").strip().lower(), e.get("relation", "").strip().lower(), e.get("target", "").strip().lower())
-        for e in g2.get("edges", [])
-        if e.get("source") and e.get("target")
+        for e in g2.get("edges", []) if e.get("source") and e.get("target")
     } if isinstance(g2.get("edges"), list) else set()
 
-    # If either graph has no entities or edges, fall back to raw text matching
     if not nodes1 and not edges1 and not nodes2 and not edges2:
-        app1 = _get_val(entry1, "approach", "")
-        app2 = _get_val(entry2, "approach", "")
-        return app1 == app2
+        return _get_val(entry1, "approach", "") == _get_val(entry2, "approach", "")
 
-    # Calculate Node Jaccard
-    if nodes1 or nodes2:
-        node_sim = len(nodes1.intersection(nodes2)) / len(nodes1.union(nodes2))
-    else:
-        node_sim = None
-
-    # Calculate Edge Jaccard
-    if edges1 or edges2:
-        edge_sim = len(edges1.intersection(edges2)) / len(edges1.union(edges2))
-    else:
-        edge_sim = None
+    node_sim = len(nodes1.intersection(nodes2)) / len(nodes1.union(nodes2)) if (nodes1 or nodes2) else None
+    edge_sim = len(edges1.intersection(edges2)) / len(edges1.union(edges2)) if (edges1 or edges2) else None
 
     if node_sim is not None and edge_sim is not None:
-        combined_sim = 0.5 * node_sim + 0.5 * edge_sim
-    elif node_sim is not None:
-        combined_sim = node_sim
-    elif edge_sim is not None:
-        combined_sim = edge_sim
-    else:
-        combined_sim = 0.0
-
-    return combined_sim >= 0.7
+        return (0.5 * node_sim + 0.5 * edge_sim) >= 0.7
+    if node_sim is not None:
+        return node_sim >= 0.7
+    if edge_sim is not None:
+        return edge_sim >= 0.7
+    return False
 
 
 def _select_representative(cluster: List[Any], entry: Any) -> Any:
-    """Selects the first similar representative of the cluster to compare against the new entry.
-
-    Provides single-linkage behavior to handle transitive approach similarity chains cleanly.
-    Returns the similar member if found, or None.
-    """
-    if not cluster:
-        return None
-
-    # Single-linkage: if any member is similar, let that member be the representative
+    """Selects the first similar representative of the cluster."""
     for member in cluster:
         if _are_approaches_similar(entry, member):
             return member
@@ -349,26 +210,13 @@ def _select_representative(cluster: List[Any], entry: Any) -> Any:
 
 
 def check_deadlock(scores: List[Any], min_rounds: int, rnd: int) -> bool:
-    """Determines if the cognitive loop is stuck in a deadlock of repeated failures.
-
-    A deadlock is recognized if we have passed `min_rounds` and any single functional
-    requirement has failed across three or more unique strategy/approach clusters.
-
-    Args:
-        scores (List[Any]): The list of historical round evaluations.
-        min_rounds (int): The configured minimum execution round count.
-        rnd (int): The current active round index.
-
-    Returns:
-        bool: True if a requirement-level deadlock is detected; False otherwise.
-    """
+    """Determines if the cognitive loop is stuck in a deadlock."""
     if rnd < min_rounds:
         return False
 
     failing_entries_by_req: Dict[str, List[Any]] = {}
     for entry in scores:
-        requirements = _get_val(entry, "requirements") or {}
-        for req, passed in requirements.items():
+        for req, passed in (_get_val(entry, "requirements") or {}).items():
             if not passed:
                 failing_entries_by_req.setdefault(req, []).append(entry)
 
@@ -377,8 +225,7 @@ def check_deadlock(scores: List[Any], min_rounds: int, rnd: int) -> bool:
         for entry in entries:
             matched_cluster = None
             for cluster in clusters:
-                rep = _select_representative(cluster, entry)
-                if rep is not None:
+                if _select_representative(cluster, entry) is not None:
                     matched_cluster = cluster
                     break
             if matched_cluster is not None:
@@ -387,101 +234,61 @@ def check_deadlock(scores: List[Any], min_rounds: int, rnd: int) -> bool:
                 clusters.append([entry])
 
         if len(clusters) >= 3:
-            logger.warning(
-                "Deadlock detected on requirement '%s': failed across %d unique strategy clusters.",
-                req,
-                len(clusters)
-            )
+            logger.warning("Deadlock on '%s': %d unique strategy clusters.", req, len(clusters))
             return True
 
     return False
 
 
-
 def get_tool_result_from_editor(tool_use_id: str, name: str, params: Dict[str, Any]) -> Tuple[str, bool, bool]:
-    """Dispatches tool invocation via JSON-RPC on stdout and awaits the result from stdin.
-
-    Args:
-        tool_use_id (str): The unique transaction/call identifier for the tool.
-        name (str): The name of the tool to be executed.
-        params (Dict[str, Any]): The input parameters for tool execution.
-
-    Returns:
-        Tuple[str, bool, bool]: A tuple containing:
-            - The raw string representation of the tool output returned by the host.
-            - A boolean indicating if the host editor already sliced the content (was_sliced).
-            - A boolean indicating if the invocation encountered an error (is_error).
-    """
-    payload = {
-        "jinx_command": name,
-        "tool_use_id": tool_use_id,
-        "params": params
-    }
-    # Direct print to stdout is our JSON-RPC IPC channel
+    """Dispatches tool invocation via JSON-RPC and awaits result from stdin."""
+    payload = {"jinx_command": name, "tool_use_id": tool_use_id, "params": params}
     try:
         print(json.dumps(payload), flush=True)
     except OSError as e:
-        logger.error("Failed to transmit JSON-RPC tool invocation payload to stdout: %s", e)
-        return f"Error: Failed to transmit payload to stdout: {e}", False, True
+        logger.error("Failed to transmit tool payload: %s", e)
+        return f"Error: Failed to transmit payload: {e}", False, True
 
     try:
         line = sys.stdin.readline()
         if not line:
-            logger.error("Host stdin was closed unexpectedly during tool invocation.")
-            return "Error: Editor disconnected or closed stdin.", False, True
+            return "Error: Editor disconnected.", False, True
         response = json.loads(line)
-        is_error = "error" in response or "error" in response.get("status", "").lower() if isinstance(response.get("status"), str) else "error" in response
+        status = response.get("status", "")
+        is_error = "error" in response or (isinstance(status, str) and "error" in status.lower())
         output = response.get("output") or response.get("content") or response.get("error") or str(response)
         was_sliced = bool(response.get("sliced") or response.get("is_sliced"))
         return str(output), was_sliced, is_error
     except (json.JSONDecodeError, OSError) as e:
-        logger.error("Error receiving or decoding tool result from host stdin: %s", e)
-        return f"Error receiving input from editor: {e}", False, True
+        return f"Error receiving input: {e}", False, True
 
 
 def request_llm_from_editor(
-    system: str,
-    messages: List[Dict[str, Any]],
-    tools: Optional[List[Dict[str, Any]]] = None
+    system: str, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None
 ) -> List[Dict[str, Any]]:
-    """Delegates LLM message generation to the host editor via IPC.
-
-    Args:
-        system (str): The system prompt guidance defining agent behavior.
-        messages (List[Dict[str, Any]]): The chronological conversation thread.
-        tools (Optional[List[Dict[str, Any]]]): Optional tool declarations to pass to the LLM.
-
-    Returns:
-        List[Dict[str, Any]]: The parsed list of block objects returned by the LLM,
-            or an empty list if generation fails or is disconnected.
-    """
+    """Delegates LLM generation to the host editor via IPC."""
     payload = {
         "jinx_command": "llm_generate",
-        "params": {
-            "system": system,
-            "messages": messages,
-            "tools": tools if tools is not None else tool_schema()
-        }
+        "params": {"system": system, "messages": messages, "tools": tools if tools is not None else tool_schema()}
     }
     try:
         print(json.dumps(payload), flush=True)
     except OSError as e:
-        logger.error("Failed to transmit JSON-RPC LLM request payload to stdout: %s", e)
+        logger.error("Failed to transmit LLM request: %s", e)
         return []
 
     try:
         line = sys.stdin.readline()
         if not line:
-            logger.error("Host stdin was closed unexpectedly during LLM generation request.")
             return []
-        response = json.loads(line)
-        return response.get("content") or []
+        data = json.loads(line)
+        content = data.get("content") or []
+        return content if isinstance(content, list) else []
     except (json.JSONDecodeError, OSError) as e:
-        logger.error("Error receiving or decoding LLM response from host stdin: %s", e)
+        logger.error("Error receiving LLM response: %s", e)
         return []
 
 
-# Paths for stateless File-IPC protocol
 AGENT_DIR: Path = Path(__file__).resolve().parent.parent.parent
 REQUEST_PATH: Path = AGENT_DIR / "jinx_request.yaml"
 RESPONSE_PATH: Path = AGENT_DIR / "jinx_response.yaml"
@@ -489,44 +296,56 @@ RUN_STATE_PATH: Path = AGENT_DIR / "jinx_run_state.yaml"
 
 
 def clean_up_ipc_files() -> None:
-    """Removes temporary IPC communication files to reset/clean the session state."""
-    REQUEST_PATH.unlink(missing_ok=True)
-    RESPONSE_PATH.unlink(missing_ok=True)
-    RUN_STATE_PATH.unlink(missing_ok=True)
+    """Removes temporary IPC communication files."""
+    for p in (REQUEST_PATH, RESPONSE_PATH, RUN_STATE_PATH):
+        p.unlink(missing_ok=True)
+
+
+def _resolve_min_rounds(jinx: Dict[str, Any], min_override: Optional[int]) -> int:
+    """Resolves the minimum rounds configuration from override or JINX.yaml."""
+    if min_override is not None:
+        return min_override
+    protocol_config = jinx.get("protocol")
+    if isinstance(protocol_config, dict):
+        loop_config = protocol_config.get("loop")
+        if isinstance(loop_config, dict):
+            configured_min = loop_config.get("min")
+            if isinstance(configured_min, int):
+                return configured_min
+    return 10
+
+
+def _init_new_session(task: str, jinx: Dict[str, Any]) -> None:
+    """Initializes a fresh task session in the JINX state."""
+    if not isinstance(jinx.get("state"), dict):
+        jinx["state"] = {}
+    jinx["state"].update({
+        "task": task, "facts": [], "scores": [], "debt": [],
+        "open": [], "exit_ready": False, "deadlock": False
+    })
+    write_jinx(jinx)
 
 
 def write_llm_request(
-    history: List[Dict[str, Any]],
-    rnd: int,
-    tool_depth: int,
-    min_rounds: int,
-    task: str
+    history: List[Dict[str, Any]], rnd: int, tool_depth: int, min_rounds: int, task: str
 ) -> None:
     """Writes the current prompt/history state and requests LLM generation."""
     request_payload = {
-        "type": "llm_generate",
-        "system": SYSTEM_PROMPT,
-        "messages": history,
-        "tools": tool_schema()
+        "type": "llm_generate", "system": SYSTEM_PROMPT,
+        "messages": history, "tools": tool_schema()
     }
     try:
         Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
     except JinxError as e:
-        logger.error("Failed to write llm_generate request to %s: %s", REQUEST_PATH, e)
         raise IPCError(f"Failed to write request: {e}") from e
 
     run_state = {
-        "rnd": rnd,
-        "tool_depth": tool_depth,
-        "history": history,
-        "waiting_for": "llm_generate",
-        "min_rounds": min_rounds,
-        "task": task
+        "rnd": rnd, "tool_depth": tool_depth, "history": history,
+        "waiting_for": "llm_generate", "min_rounds": min_rounds, "task": task
     }
     try:
         Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
     except JinxError as e:
-        logger.error("Failed to write run state metadata to %s: %s", RUN_STATE_PATH, e)
         raise IPCError(f"Failed to write run state: {e}") from e
 
     print(f"[JINX_WAITING] Requesting LLM completion for Round {rnd}...", flush=True)
@@ -537,285 +356,224 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
     is_resuming = RUN_STATE_PATH.exists() and not task
 
     if not is_resuming:
-        # Initialize a brand-new task session
-        jinx = read_jinx()
-        if not isinstance(jinx.get("state"), dict):
-            jinx["state"] = {}
-
         if not task:
-            logger.error("Cannot start new JINX session without a task description.")
+            logger.error("Cannot start new session without a task description.")
             sys.exit(1)
 
-        jinx["state"]["task"] = task
-        jinx["state"]["facts"] = []
-        jinx["state"]["scores"] = []
-        jinx["state"]["debt"] = []
-        jinx["state"]["open"] = []
-        jinx["state"]["exit_ready"] = False
-        jinx["state"]["deadlock"] = False
-        write_jinx(jinx)
-
-        min_rounds = 10
-        if min_override is not None:
-            min_rounds = min_override
-        else:
-            protocol_config = jinx.get("protocol")
-            if isinstance(protocol_config, dict):
-                loop_config = protocol_config.get("loop")
-                if isinstance(loop_config, dict):
-                    configured_min = loop_config.get("min")
-                    if isinstance(configured_min, int):
-                        min_rounds = configured_min
-
+        jinx = read_jinx()
+        _init_new_session(task, jinx)
+        min_rounds = _resolve_min_rounds(jinx, min_override)
         clean_up_ipc_files()
 
-        rnd = 1
         state_dump = Yaml.dump_to_string(jinx["state"])
-        user_msg = construct_round_prompt(rnd=rnd, min_rounds=min_rounds, task=task, state_dump=state_dump)
-        history = [{"role": "user", "content": user_msg}]
-
-        write_llm_request(history, rnd, 0, min_rounds, task)
+        user_msg = construct_round_prompt(rnd=1, min_rounds=min_rounds, task=task, state_dump=state_dump)
+        write_llm_request([{"role": "user", "content": user_msg}], 1, 0, min_rounds, task)
         return
 
+    # Resume path
+    try:
+        with open(RUN_STATE_PATH, "r", encoding="utf-8") as f:
+            run_state = yaml.safe_load(f) or {}
+    except (yaml.YAMLError, OSError) as e:
+        logger.error("Failed to load run state: %s", e)
+        clean_up_ipc_files()
+        sys.exit(1)
+
+    rnd = run_state["rnd"]
+    tool_depth = run_state["tool_depth"]
+    history = run_state["history"]
+    waiting_for = run_state["waiting_for"]
+    min_rounds = run_state["min_rounds"]
+    task = run_state["task"]
+
+    if not RESPONSE_PATH.exists():
+        logger.error("Awaiting editor response at %s", RESPONSE_PATH)
+        sys.exit(1)
+
+    try:
+        with open(RESPONSE_PATH, "r", encoding="utf-8") as f:
+            response_data = yaml.safe_load(f) or {}
+    except (yaml.YAMLError, OSError) as e:
+        logger.error("Failed to read response YAML: %s", e)
+        sys.exit(1)
+
+    RESPONSE_PATH.unlink(missing_ok=True)
+
+    if waiting_for == "llm_generate":
+        _handle_llm_response(response_data, history, rnd, tool_depth, min_rounds, task, run_state)
+    elif waiting_for == "tool_calls":
+        _handle_tool_response(response_data, history, rnd, tool_depth, min_rounds, task, run_state)
     else:
-        # Resume a previously serialized execution round
-        try:
-            with open(RUN_STATE_PATH, "r", encoding="utf-8") as f:
-                run_state = yaml.safe_load(f) or {}
-        except (yaml.YAMLError, OSError) as e:
-            logger.error("Failed to load JINX run state metadata: %s. Re-initializing...", e)
+        logger.error("Unexpected waiting_for state: '%s'", waiting_for)
+        clean_up_ipc_files()
+        sys.exit(1)
+
+
+def _handle_llm_response(
+    response_data: Dict[str, Any], history: List[Dict[str, Any]],
+    rnd: int, tool_depth: int, min_rounds: int, task: str,
+    run_state: Dict[str, Any]
+) -> None:
+    """Handles the response from an LLM generation request."""
+    raw_content = response_data.get("content") or []
+    if isinstance(raw_content, str):
+        content_blocks = [{"type": "text", "text": raw_content}]
+    elif isinstance(raw_content, list):
+        content_blocks = [
+            b if isinstance(b, dict) else {"type": "text", "text": str(b)}
+            for b in raw_content
+        ]
+    else:
+        content_blocks = [{"type": "text", "text": str(raw_content)}]
+
+    if not content_blocks:
+        content_blocks = [{"type": "text", "text": ""}]
+
+    history.append({"role": "assistant", "content": content_blocks})
+
+    full_text = "".join(
+        block.get("text", "") for block in content_blocks if block.get("type") == "text"
+    )
+
+    tool_calls = [
+        {"id": b.get("id"), "name": b.get("name"), "params": b.get("input") or {}}
+        for b in content_blocks if b.get("type") == "tool_use"
+    ]
+
+    if tool_calls:
+        _write_tool_request(tool_calls, history, rnd, tool_depth + 1, min_rounds, task, run_state)
+        return
+
+    # No tool calls — parse state block
+    update = parse_state_block(full_text)
+    jinx = read_jinx()
+    if update:
+        jinx = merge_state(jinx, update)
+        write_jinx(jinx)
+        scores = jinx["state"].get("scores", [])
+
+        if update.get("exit_ready") and check_exit(scores, min_rounds, rnd):
             clean_up_ipc_files()
-            sys.exit(1)
+            print("[JINX_COMPLETE] Task resolved successfully!", flush=True)
+            return
 
-        rnd = run_state["rnd"]
-        tool_depth = run_state["tool_depth"]
-        history = run_state["history"]
-        waiting_for = run_state["waiting_for"]
-        min_rounds = run_state["min_rounds"]
-        task = run_state["task"]
-
-        if not RESPONSE_PATH.exists():
-            logger.error("Awaiting editor response. Please make sure %s is populated.", RESPONSE_PATH)
-            sys.exit(1)
-
-        try:
-            with open(RESPONSE_PATH, "r", encoding="utf-8") as f:
-                response_data = yaml.safe_load(f) or {}
-        except (yaml.YAMLError, OSError) as e:
-            logger.error("Failed to read/decode editor response YAML from %s: %s", RESPONSE_PATH, e)
-            sys.exit(1)
-
-        # Consume response
-        RESPONSE_PATH.unlink(missing_ok=True)
-
-        if waiting_for == "llm_generate":
-            raw_content = response_data.get("content") or []
-            if isinstance(raw_content, str):
-                content_blocks = [{"type": "text", "text": raw_content}]
-            elif isinstance(raw_content, list):
-                content_blocks = []
-                for b in raw_content:
-                    if isinstance(b, str):
-                        content_blocks.append({"type": "text", "text": b})
-                    elif isinstance(b, dict):
-                        content_blocks.append(b)
-                    else:
-                        content_blocks.append({"type": "text", "text": str(b)})
-            else:
-                content_blocks = [{"type": "text", "text": str(raw_content)}]
-
-            history.append({"role": "assistant", "content": content_blocks})
-
-            full_text = ""
-            for block in content_blocks:
-                if block.get("type") == "text":
-                    full_text += block.get("text", "")
-
-            tool_calls = []
-            for block in content_blocks:
-                if block.get("type") == "tool_use":
-                    tool_calls.append({
-                        "id": block.get("id"),
-                        "name": block.get("name"),
-                        "params": block.get("input") or {}
-                    })
-
-            if tool_calls:
-                # Post tool executions back to editor
-                request_payload = {
-                    "type": "tool_calls",
-                    "calls": tool_calls
-                }
-                try:
-                    Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
-                except JinxError as e:
-                    logger.error("Failed to write tool_calls request: %s", e)
-                    sys.exit(1)
-
-                run_state["tool_depth"] = tool_depth + 1
-                run_state["history"] = history
-                run_state["waiting_for"] = "tool_calls"
-                try:
-                    Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
-                except JinxError as e:
-                    logger.error("Failed to write run state updates: %s", e)
-                    sys.exit(1)
-
-                print(f"[JINX_WAITING] Requesting tool execution for Round {rnd}...", flush=True)
-                return
-            else:
-                # No tool calls made this round, parse/incorporate the updated Jinx state block
-                update = parse_state_block(full_text)
-                jinx = read_jinx()
-                if update:
-                    jinx = merge_state(jinx, update)
-                    write_jinx(jinx)
-
-                    scores = jinx["state"].get("scores", [])
-
-                    if update.get("exit_ready") and check_exit(scores, min_rounds, rnd):
-                        clean_up_ipc_files()
-                        print("[JINX_COMPLETE] Task resolved successfully!", flush=True)
-                        return
-
-                    if update.get("deadlock") or check_deadlock(scores, min_rounds, rnd):
-                        if not update.get("deadlock"):
-                            jinx["state"]["deadlock"] = True
-                            write_jinx(jinx)
-                        clean_up_ipc_files()
-                        print("[JINX_DEADLOCK] Loop aborted due to strategy deadlock.", flush=True)
-                        return
-
-                # Transition to next round
-                rnd += 1
-                if rnd >= HARD_CAP:
-                    clean_up_ipc_files()
-                    logger.error("Cognitive loop exhausted HARD_CAP.")
-                    sys.exit(2)
-
-                jinx = read_jinx()
-                state_data = jinx.get("state") or {}
-                state_dump = Yaml.dump_to_string(state_data)
-                user_msg = construct_round_prompt(
-                    rnd=rnd,
-                    min_rounds=min_rounds,
-                    task=task,
-                    state_dump=state_dump,
-                    missing_state=not update
-                )
-                history.append({"role": "user", "content": user_msg})
-
-                write_llm_request(history, rnd, 0, min_rounds, task)
-                return
-
-        elif waiting_for == "tool_calls":
-            results = response_data.get("results") or []
-            tool_results = []
-            for res in results:
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": res.get("tool_use_id"),
-                    "content": res.get("content") or ""
-                })
-
-            if tool_depth >= TOOL_DEPTH_CAP:
-                logger.warning("Inner tool depth limit reached. Forcing state recovery.")
-                tool_results.append({
-                    "type": "text",
-                    "text": TOOL_DEPTH_CRITICAL_MSG
-                })
-                history.append({"role": "user", "content": tool_results})
-
-                request_payload = {
-                    "type": "llm_generate",
-                    "system": SYSTEM_PROMPT,
-                    "messages": history,
-                    "tools": []
-                }
-                try:
-                    Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
-                except JinxError as e:
-                    logger.error("Failed to write final summary request: %s", e)
-                    sys.exit(1)
-
-                run_state["waiting_for"] = "llm_generate"
-                run_state["history"] = history
-                try:
-                    Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
-                except JinxError as e:
-                    logger.error("Failed to write run state updates: %s", e)
-                    sys.exit(1)
-
-                print(f"[JINX_WAITING] Requesting final summary completion for Round {rnd}...", flush=True)
-                return
-            else:
-                history.append({"role": "user", "content": tool_results})
-                write_llm_request(history, rnd, tool_depth, min_rounds, task)
-                return
-
-        else:
-            logger.error("Unexpected waiting_for state metadata encountered: '%s'. Cleaning up IPC state and exiting.", waiting_for)
+        if update.get("deadlock") or check_deadlock(scores, min_rounds, rnd):
+            if not update.get("deadlock"):
+                jinx["state"]["deadlock"] = True
+                write_jinx(jinx)
             clean_up_ipc_files()
-            sys.exit(1)
+            print("[JINX_DEADLOCK] Loop aborted due to strategy deadlock.", flush=True)
+            return
+
+    # Transition to next round
+    rnd += 1
+    if rnd >= HARD_CAP:
+        clean_up_ipc_files()
+        logger.error("Cognitive loop exhausted HARD_CAP.")
+        sys.exit(2)
+
+    jinx = read_jinx()
+    state_dump = Yaml.dump_to_string(jinx.get("state") or {})
+    user_msg = construct_round_prompt(rnd=rnd, min_rounds=min_rounds, task=task, state_dump=state_dump, missing_state=not update)
+    history.append({"role": "user", "content": user_msg})
+    write_llm_request(history, rnd, 0, min_rounds, task)
+
+
+def _handle_tool_response(
+    response_data: Dict[str, Any], history: List[Dict[str, Any]],
+    rnd: int, tool_depth: int, min_rounds: int, task: str,
+    run_state: Dict[str, Any]
+) -> None:
+    """Handles the response from tool execution."""
+    results = response_data.get("results") or []
+    tool_results = [
+        {"type": "tool_result", "tool_use_id": r.get("tool_use_id"), "content": r.get("content") or ""}
+        for r in results
+    ]
+
+    if tool_depth >= TOOL_DEPTH_CAP:
+        logger.warning("Tool depth limit reached. Forcing state recovery.")
+        tool_results.append({"type": "text", "text": TOOL_DEPTH_CRITICAL_MSG})
+        history.append({"role": "user", "content": tool_results})
+        _write_llm_request_no_tools(history, rnd, run_state)
+        return
+
+    history.append({"role": "user", "content": tool_results})
+    write_llm_request(history, rnd, tool_depth, min_rounds, task)
+
+
+def _write_tool_request(
+    tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
+    rnd: int, tool_depth: int, min_rounds: int, task: str,
+    run_state: Dict[str, Any]
+) -> None:
+    """Writes a tool_calls request and updates run state."""
+    request_payload = {"type": "tool_calls", "calls": tool_calls}
+    try:
+        Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
+    except JinxError as e:
+        logger.error("Failed to write tool_calls request: %s", e)
+        sys.exit(1)
+
+    run_state.update({"tool_depth": tool_depth, "history": history, "waiting_for": "tool_calls"})
+    try:
+        Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
+    except JinxError as e:
+        logger.error("Failed to write run state: %s", e)
+        sys.exit(1)
+
+    print(f"[JINX_WAITING] Requesting tool execution for Round {rnd}...", flush=True)
+
+
+def _write_llm_request_no_tools(
+    history: List[Dict[str, Any]], rnd: int, run_state: Dict[str, Any]
+) -> None:
+    """Writes an LLM request with empty tools list (for final summary)."""
+    request_payload = {
+        "type": "llm_generate", "system": SYSTEM_PROMPT, "messages": history, "tools": []
+    }
+    try:
+        Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
+    except JinxError as e:
+        logger.error("Failed to write final summary request: %s", e)
+        sys.exit(1)
+
+    run_state.update({"waiting_for": "llm_generate", "history": history})
+    try:
+        Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
+    except JinxError as e:
+        logger.error("Failed to write run state: %s", e)
+        sys.exit(1)
+
+    print(f"[JINX_WAITING] Requesting final summary for Round {rnd}...", flush=True)
 
 
 def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file") -> None:
-    """Orchestrates the JINX execution loop across rounds either via JSON-RPC stream or File-based IPC.
-
-    Args:
-        task (Optional[str]): The objective prompt assigned to the agent.
-        min_override (Optional[int]): User override for the minimum cognitive rounds.
-        ipc_mode (str): The IPC protocol ('file' for stateless step-by-step or 'rpc' for duplex stream).
-    """
+    """Orchestrates the JINX execution loop."""
     if ipc_mode == "file":
         run_file_ipc(task, min_override)
         return
 
-    # Original interactive duplex stream JSON-RPC mode fallback
+    # Interactive duplex stream JSON-RPC mode
     jinx = read_jinx()
-    if not isinstance(jinx.get("state"), dict):
-        jinx["state"] = {}
-    jinx["state"]["task"] = task or ""
-    jinx["state"]["facts"] = []
-    jinx["state"]["scores"] = []
-    jinx["state"]["debt"] = []
-    jinx["state"]["open"] = []
-    jinx["state"]["exit_ready"] = False
-    jinx["state"]["deadlock"] = False
-    write_jinx(jinx)
-
-    min_rounds: int = 10
-    if min_override is not None:
-        min_rounds = min_override
-    else:
-        protocol_config = jinx.get("protocol")
-        if isinstance(protocol_config, dict):
-            loop_config = protocol_config.get("loop")
-            if isinstance(loop_config, dict):
-                configured_min = loop_config.get("min")
-                if isinstance(configured_min, int):
-                    min_rounds = configured_min
+    _init_new_session(task or "", jinx)
+    min_rounds = _resolve_min_rounds(jinx, min_override)
 
     rnd: int = 0
     last_round_missing_state: bool = False
 
-    logger.info("Starting JINX cognitive loop (JSON-RPC stream). Task: '%s'. Min rounds: %d", task, min_rounds)
+    logger.info("Starting JINX loop (JSON-RPC). Task: '%s'. Min rounds: %d", task, min_rounds)
 
     while rnd < HARD_CAP:
         rnd += 1
         history: List[Dict[str, Any]] = []
         jinx = read_jinx()
-        state_data = jinx.get("state")
-        if not isinstance(state_data, dict):
-            state_data = {}
+        state_data = jinx.get("state") or {}
         state_dump = Yaml.dump_to_string(state_data)
 
         user_msg = construct_round_prompt(
-            rnd=rnd,
-            min_rounds=min_rounds,
-            task=task,
-            state_dump=state_dump,
-            missing_state=last_round_missing_state
+            rnd=rnd, min_rounds=min_rounds, task=task,
+            state_dump=state_dump, missing_state=last_round_missing_state
         )
         history.append({"role": "user", "content": user_msg})
 
@@ -832,57 +590,13 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
             tool_results: List[Dict[str, Any]] = []
             for block in content_blocks:
                 if block.get("type") == "tool_use":
-                    tool_use_id = block.get("id")
-                    name = block.get("name")
-                    params = block.get("input") or {}
-
-                    result_content, was_sliced, is_error = get_tool_result_from_editor(tool_use_id, name, params)
-
-                    if name == "file_read" and not is_error and not was_sliced:
-                        try:
-                            start_line = params.get("start_line")
-                            end_line = params.get("end_line")
-                            if start_line is not None or end_line is not None:
-                                lines = result_content.splitlines()
-                                if lines:
-                                    s_line = int(start_line) if start_line is not None else 1
-                                    e_line = int(end_line) if end_line is not None else len(lines)
-                                    
-                                    if s_line < 1:
-                                        raise ValueError(f"start_line must be at least 1 (got {start_line})")
-                                    if e_line < 1:
-                                        raise ValueError(f"end_line must be at least 1 (got {end_line})")
-                                    if s_line > e_line:
-                                        raise ValueError(f"start_line ({s_line}) cannot be greater than end_line ({e_line})")
-                                        
-                                    s_line = max(1, s_line)
-                                    if s_line > len(lines):
-                                        s_line = len(lines)
-                                    e_line = max(s_line, e_line)
-                                    if e_line > len(lines):
-                                        e_line = len(lines)
-                                    sliced_lines = lines[s_line - 1:e_line]
-                                    result_content = "\n".join(sliced_lines)
-                                else:
-                                    result_content = ""
-                        except (ValueError, TypeError) as e:
-                            logger.error("Failed to parse start_line/end_line in file_read: %s", e)
-                            result_content = f"Error: Failed to slice file content: {e}"
-
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": result_content
-                    })
+                    tool_results.append(_execute_rpc_tool(block))
 
             if tool_results:
                 tool_depth += 1
                 if tool_depth >= TOOL_DEPTH_CAP:
-                    logger.warning("Inner tool depth limit reached. Forcing final state block recovery.")
-                    tool_results.append({
-                        "type": "text",
-                        "text": TOOL_DEPTH_CRITICAL_MSG
-                    })
+                    logger.warning("Tool depth limit reached in RPC mode.")
+                    tool_results.append({"type": "text", "text": TOOL_DEPTH_CRITICAL_MSG})
                     history.append({"role": "user", "content": tool_results})
                     content_blocks = request_llm_from_editor(SYSTEM_PROMPT, history, tools=[])
                     history.append({"role": "assistant", "content": content_blocks})
@@ -890,7 +604,6 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
                         if block.get("type") == "text":
                             full_text += block.get("text", "")
                     break
-
                 history.append({"role": "user", "content": tool_results})
                 continue
             else:
@@ -901,15 +614,13 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
             last_round_missing_state = False
             jinx = merge_state(jinx, update)
             write_jinx(jinx)
-
             scores = jinx["state"].get("scores", [])
 
             if update.get("exit_ready") and check_exit(scores, min_rounds, rnd):
-                logger.info("Execution complete. Criteria met in round %d.", rnd)
+                logger.info("Execution complete in round %d.", rnd)
                 break
-
             if update.get("deadlock") or check_deadlock(scores, min_rounds, rnd):
-                logger.warning("Cognitive loop ended due to deadlock in round %d.", rnd)
+                logger.warning("Deadlock in round %d.", rnd)
                 if not update.get("deadlock"):
                     jinx["state"]["deadlock"] = True
                     write_jinx(jinx)
@@ -917,5 +628,40 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
         else:
             last_round_missing_state = True
     else:
-        logger.error("Cognitive loop exhausted HARD_CAP (%d rounds) without resolution.", HARD_CAP)
+        logger.error("HARD_CAP (%d rounds) exhausted.", HARD_CAP)
         sys.exit(2)
+
+
+def _execute_rpc_tool(block: Dict[str, Any]) -> Dict[str, Any]:
+    """Executes a single tool call in RPC mode."""
+    tool_use_id = block.get("id")
+    name = block.get("name")
+    params = block.get("input") or {}
+    result_content, was_sliced, is_error = get_tool_result_from_editor(tool_use_id, name, params)
+
+    if name == "file_read" and not is_error and not was_sliced:
+        result_content = _slice_file_content(result_content, params)
+
+    return {"type": "tool_result", "tool_use_id": tool_use_id, "content": result_content}
+
+
+def _slice_file_content(result_content: str, params: Dict[str, Any]) -> str:
+    """Applies line slicing to file_read results when start_line/end_line are specified."""
+    start_line = params.get("start_line")
+    end_line = params.get("end_line")
+    if start_line is None and end_line is None:
+        return result_content
+
+    try:
+        lines = result_content.splitlines()
+        if not lines:
+            return ""
+
+        s_line = max(1, int(start_line)) if start_line is not None else 1
+        e_line = int(end_line) if end_line is not None else len(lines)
+        s_line = min(s_line, len(lines))
+        e_line = max(s_line, min(e_line, len(lines)))
+        return "\n".join(lines[s_line - 1:e_line])
+    except (ValueError, TypeError) as e:
+        logger.error("Failed to parse line slice params: %s", e)
+        return f"Error: Failed to slice file content: {e}"

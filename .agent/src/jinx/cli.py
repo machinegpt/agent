@@ -60,8 +60,7 @@ def main() -> None:
 
     task_str: str = " ".join(args.task).strip()
     
-    agent_dir = Path(__file__).resolve().parent.parent.parent
-    run_state_path = agent_dir / "jinx_run_state.yaml"
+    run_state_path = Path(__file__).resolve().parent.parent.parent / "jinx_run_state.yaml"
     is_resuming = (args.ipc == "file") and run_state_path.exists()
 
     if not task_str and not is_resuming:
