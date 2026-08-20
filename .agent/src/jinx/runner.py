@@ -19,6 +19,8 @@ import logging
 import re
 import sys
 import textwrap
+import atexit
+import signal
 from typing import Any, Dict, List, Optional, Tuple
 
 from pathlib import Path
@@ -107,6 +109,20 @@ class Yaml:
             raise SerializationError(f"Failed to load YAML file at {path}: {e}") from e
 
 
+# Backwards-compatibility aliases / wrappers
+# These keep older import/usage sites working when names changed.
+JinxYamlDumper = Dumper
+JinxEnterpriseYamlDumper = Dumper
+# Historically a ValidationError symbol was exported; map it to the
+# serialization-level error currently raised for YAML issues.
+ValidationError = SerializationError
+EnterpriseYamlEngine = Yaml
+
+def safe_atomic_write_yaml(path: Path, data: Any, width: int = sys.maxsize) -> None:
+    """Compatibility wrapper for older safe_atomic_write_yaml API."""
+    return Yaml.safe_atomic_write(path, data, width)
+
+
 def parse_state_block(text: str) -> Optional[Dict[str, Any]]:
     """Extracts and parses the JINX state block from markdown code fences."""
     code_block_pattern = r"[ \t]*```(?:json|yaml|yml)?[ \t]*\r?\n(.*?)\r?\n[ \t]*```"
@@ -126,6 +142,36 @@ def parse_state_block(text: str) -> Optional[Dict[str, Any]]:
 
     logger.debug("No valid state block found in response.")
     return None
+
+
+def _validate_tool_use_block(block: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Validate a single `tool_use` block and normalize its `input`.
+
+    Returns (id, name, params, error_result). If validation fails, id/name/params
+    are None and error_result contains a `tool_result` dict describing the error.
+    """
+    tool_use_id = block.get("id")
+    name = block.get("name")
+    params = block.get("input") if ("input" in block) else {}
+
+    if not isinstance(tool_use_id, str) or not isinstance(name, str):
+        logger.error("Malformed tool_use block: id=%r name=%r", tool_use_id, name)
+        return None, None, None, {
+            "type": "tool_result", "tool_use_id": tool_use_id or "",
+            "content": "Error: Malformed tool_use block (missing id or name)."
+        }
+
+    if params is None:
+        params = {}
+
+    if not isinstance(params, dict):
+        logger.error("Malformed tool_use block input: %r", params)
+        return None, None, None, {
+            "type": "tool_result", "tool_use_id": tool_use_id,
+            "content": "Error: Malformed tool_use block (input must be an object)."
+        }
+
+    return tool_use_id, name, params, None
 
 
 def check_exit(scores: List[Dict[str, Any]], min_rounds: int, rnd: int) -> bool:
@@ -311,6 +357,33 @@ def clean_up_ipc_files() -> None:
         p.unlink(missing_ok=True)
 
 
+# Register cleanup handlers to ensure IPC files are removed on exit/signals.
+def _signal_cleanup(signum=None, frame=None) -> None:
+    try:
+        logger.info("Signal %s received: cleaning up IPC files.", signum)
+    except Exception:
+        pass
+    try:
+        clean_up_ipc_files()
+    except Exception:
+        pass
+    # On signal, exit with non-zero to indicate external termination.
+    try:
+        sys.exit(1)
+    except SystemExit:
+        raise
+
+
+atexit.register(clean_up_ipc_files)
+for sig in ("SIGINT", "SIGTERM", "SIGHUP"):
+    try:
+        signum = getattr(signal, sig)
+        signal.signal(signum, _signal_cleanup)
+    except (AttributeError, OSError, RuntimeError):
+        # Some signals may not be available on all platforms (e.g., SIGHUP on Windows)
+        continue
+
+
 def _resolve_min_rounds(jinx: Dict[str, Any], min_override: Optional[int]) -> int:
     """Resolves the minimum rounds configuration from override or JINX.yaml."""
     if min_override is not None:
@@ -459,13 +532,22 @@ def _handle_llm_response(
         block.get("text", "") for block in content_blocks if block.get("type") == "text"
     )
 
-    tool_calls = [
-        {"id": b.get("id"), "name": b.get("name"), "params": b.get("input") or {}}
-        for b in content_blocks if b.get("type") == "tool_use"
-    ]
+    tool_blocks = [b for b in content_blocks if b.get("type") == "tool_use"]
+    valid_calls: List[Dict[str, Any]] = []
+    malformed_results: List[Dict[str, Any]] = []
 
-    if tool_calls:
-        _write_tool_request(tool_calls, history, rnd, tool_depth + 1, min_rounds, task, run_state)
+    for b in tool_blocks:
+        tool_use_id, name, params, err = _validate_tool_use_block(b)
+        if err:
+            malformed_results.append(err)
+            continue
+        valid_calls.append({"id": tool_use_id, "name": name, "params": params})
+
+    if malformed_results:
+        history.append({"role": "user", "content": malformed_results})
+
+    if valid_calls:
+        _write_tool_request(valid_calls, history, rnd, tool_depth + 1, min_rounds, task, run_state)
         return
 
     # No tool calls — parse state block
@@ -658,21 +740,9 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
 
 def _execute_rpc_tool(block: Dict[str, Any]) -> Dict[str, Any]:
     """Executes a single tool call in RPC mode."""
-    tool_use_id = block.get("id")
-    name = block.get("name")
-    params = block.get("input") or {}
-    if not isinstance(tool_use_id, str) or not isinstance(name, str):
-        logger.error("Malformed tool_use block: id=%r name=%r", tool_use_id, name)
-        return {
-            "type": "tool_result", "tool_use_id": tool_use_id or "",
-            "content": "Error: Malformed tool_use block (missing id or name)."
-        }
-    if not isinstance(params, dict):
-        logger.error("Malformed tool_use block input: %r", params)
-        return {
-            "type": "tool_result", "tool_use_id": tool_use_id,
-            "content": "Error: Malformed tool_use block (input must be an object)."
-        }
+    tool_use_id, name, params, err = _validate_tool_use_block(block)
+    if err:
+        return err
     result_content, was_sliced, is_error = get_tool_result_from_editor(tool_use_id, name, params)
     if name == "file_read" and not is_error and not was_sliced:
         result_content = _slice_file_content(result_content, params)
