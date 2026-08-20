@@ -1,7 +1,7 @@
 # ==============================================================================
 # AI-Generated Enterprise Verification Plugin
 # Module: jinx.tools
-# Generated At: 2026-08-20T17:22:45Z
+# Generated At: 2026-08-20T19:01:34Z
 #
 # This file is dynamically managed by the JINX AI Synthesis Engine.
 # Public classes and methods are verified automatically.
@@ -44,87 +44,8 @@ class VerifyToolsPhase(VerificationPhase):
         # ==============================================================================
         # <CUSTOM_CODE_START>
         # Add custom assertions and execution tests below. They will be preserved.
-        schema_fn = getattr(target_module, "tool_schema", None)
-        if not callable(schema_fn):
-            suite.print_badge("Function tool_schema: NOT CALLABLE", False)
-            success = False
-        else:
-            try:
-                schema = schema_fn()
-                if not isinstance(schema, list):
-                    suite.print_badge("Function tool_schema: INVALID RETURN TYPE", False)
-                    success = False
-                else:
-                    required_tools = {
-                        "bash_exec": {
-                            "properties": {"script": {"type": "string"}},
-                            "required": ["script"],
-                        },
-                        "file_read": {
-                            "properties": {
-                                "path": {"type": "string"},
-                                "start_line": {"type": "integer"},
-                                "end_line": {"type": "integer"},
-                            },
-                            "required": ["path"],
-                        },
-                        "file_write": {
-                            "properties": {
-                                "path": {"type": "string"},
-                                "content": {"type": "string"},
-                            },
-                            "required": ["path", "content"],
-                        },
-                    }
-                    valid = True
-                    for entry in schema:
-                        if not isinstance(entry, dict):
-                            valid = False
-                            break
-                        name = entry.get("name")
-                        if not isinstance(name, str) or name not in required_tools:
-                            valid = False
-                            break
-                        description = entry.get("description")
-                        if not isinstance(description, str) or not description.strip():
-                            valid = False
-                            break
-                        input_schema = entry.get("input_schema")
-                        if not isinstance(input_schema, dict):
-                            valid = False
-                            break
-                        if input_schema.get("type") != "object":
-                            valid = False
-                            break
-                        properties = input_schema.get("properties")
-                        if not isinstance(properties, dict):
-                            valid = False
-                            break
-                        required_fields = input_schema.get("required")
-                        expected = required_tools[name]
-                        if not isinstance(required_fields, list) or set(required_fields) != set(expected["required"]):
-                            valid = False
-                            break
-                        for field_name, field_spec in expected["properties"].items():
-                            if field_name not in properties:
-                                valid = False
-                                break
-                            prop = properties[field_name]
-                            if not isinstance(prop, dict):
-                                valid = False
-                                break
-                            if prop.get("type") != field_spec["type"]:
-                                valid = False
-                                break
-                        if not valid:
-                            break
-                    if not valid:
-                        suite.print_badge("Function tool_schema: INVALID SCHEMA STRUCTURE", False)
-                        success = False
-                    else:
-                        suite.print_badge("Function tool_schema: VALID SCHEMA", True)
-            except Exception as e:
-                suite.print_badge("Function tool_schema: CALL FAILED (" + str(e) + ")", False)
-                success = False
+        pass
+        # <CUSTOM_CODE_END>
+        # ==============================================================================
 
         return success

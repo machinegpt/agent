@@ -223,24 +223,20 @@ function getLiveSessionData() {
         const hasScores = scores.length > 0;
 
         if (waitingFor === "llm_generate") {
-          if (toolDepth === 0 && rnd === 1 && !hasScores) {
-            status = "perceive";
-          } else if (toolDepth === 0) {
-            status = "plan";
-          } else {
+          if (toolDepth > 0) {
             status = "verify";
+          } else if (rnd === 1 && !hasScores) {
+            status = "perceive";
+          } else {
+            status = "plan";
           }
         } else if (waitingFor === "tool_calls") {
-          if (toolDepth === 0) {
-            status = "execute";
-          } else {
-            status = "commit";
-          }
+          status = toolDepth > 0 ? "commit" : "execute";
         } else {
-          status = "analyze";
+          status = "error";
         }
       } catch (e) {
-        status = "execute";
+        status = "error";
       }
     }
 

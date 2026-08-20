@@ -58,8 +58,9 @@ export default function App() {
   // Initialized to a sentinel so the first poll establishes a baseline without
   // archiving. Reset on unmount so React Strict Mode doesn't trigger spurious archives.
   const prevStatusRef = useRef<string | null>(null);
+  const archivedTerminalKeysRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    return () => { prevStatusRef.current = null; };
+    return () => { prevStatusRef.current = null; archivedTerminalKeysRef.current.clear(); };
   }, []);
 
   const [activeTab, setActiveTab] = useState<"summary" | "thoughts" | "files" | "console" | "diffs">(() => {
@@ -155,6 +156,7 @@ export default function App() {
 
       // Terminal states that should be archived into a dedicated session entry.
       const isTerminal = currentStatus === "completed" || currentStatus === "error";
+      const terminalKey = `${newSession.id}:${currentStatus}`;
 
       // First poll: establish baseline without archiving.
       if (prevStatusRef.current === null) {
@@ -170,12 +172,17 @@ export default function App() {
           return;
         }
       } else if (isTerminal && prevStatusRef.current !== currentStatus) {
+        if (archivedTerminalKeysRef.current.has(terminalKey)) {
+          prevStatusRef.current = currentStatus;
+          return;
+        }
         // Genuine transition to a terminal state — archive as a dedicated
         // session and spin up a fresh live slot.
         const archivedId = `${currentStatus}-${Date.now()}`;
         setSessions((prev) => {
           const archived = { ...newSession, id: archivedId, copyCount: 0 };
           const defaultLive = createDefaultLiveSession();
+          archivedTerminalKeysRef.current.add(terminalKey);
           return [defaultLive, archived, ...prev.filter((s) => s.id !== newSession.id)];
         });
         setActiveSessionId(archivedId);
