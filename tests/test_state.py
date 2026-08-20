@@ -12,6 +12,7 @@ from typing import Any
 
 import yaml
 
+from jinx.runner import Yaml
 from jinx.state import (
     StateManager,
     _resolve_jinx_path,
@@ -165,6 +166,41 @@ class TestMergeState:
         assert result["state"]["scores"][0]["all_pass"] is True
         assert result["state"]["scores"][0]["pass_count"] == 1
         assert result["state"]["scores"][0]["requirements"] == {"task_complete": True}
+
+    def test_simplified_score_non_string_detail_is_coerced_without_error(self) -> None:
+        jinx: dict[str, Any] = {"state": {}}
+        for detail in (["a", "b"], {"reason": "bad"}, 17):
+            update = {"scores": [{"round": 1, "verdict": "pass", "detail": detail}]}
+
+            result = merge_state(jinx, update)
+
+            entry = result["state"]["scores"][0]
+            assert entry["all_pass"] is True
+            assert entry["requirements"] == {"task_complete": True}
+            assert isinstance(entry["approach"], str)
+            assert len(entry["approach"]) <= 80
+
+    def test_simplified_score_falsy_detail_values_are_preserved_as_text(self) -> None:
+        jinx: dict[str, Any] = {"state": {}}
+        for detail in (0, False):
+            update = {"scores": [{"round": 1, "verdict": "pass", "detail": detail}]}
+
+            result = merge_state(jinx, update)
+
+            entry = result["state"]["scores"][0]
+            assert entry["approach"] == str(detail)
+            assert entry["all_pass"] is True
+
+    def test_yaml_dump_preserves_multiline_field_values(self) -> None:
+        payload = {
+            "task": "first line\n\nthird line",
+            "facts": ["alpha", "beta\n\ngamma"],
+        }
+
+        dumped = Yaml.dump_to_string(payload)
+        restored = yaml.safe_load(dumped)
+
+        assert restored == payload
 
     def test_score_history_truncates_prior_failure(self) -> None:
         jinx: dict[str, Any] = {"state": {}}

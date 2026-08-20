@@ -81,16 +81,28 @@ class Yaml:
     def dump_to_string(data: Any, width: int = sys.maxsize) -> str:
         """Serializes structures to YAML strings using the isolated dumper.
 
-        Post-processes output to remove blank lines for compact storage.
+        Keeps blank lines inside block scalars intact; only removes truly empty
+        cosmetic lines that are not part of a multiline scalar value.
         """
         try:
             raw = yaml.dump(
                 data, Dumper=Dumper, allow_unicode=True,
                 default_flow_style=False, sort_keys=False, width=width
             )
-            # Remove all blank lines (empty or whitespace-only) for compact output.
-            lines = raw.split('\n')
-            cleaned = [line for line in lines if line.strip() != '']
+            lines = raw.splitlines()
+            cleaned: List[str] = []
+            in_block_scalar = False
+            for line in lines:
+                if line.startswith(" ") and line.strip() == "" and in_block_scalar:
+                    cleaned.append(line)
+                    continue
+                if re.match(r"^\s*[-?][\s\S]*$", line) or line.strip() == "":
+                    if line.strip() == "":
+                        # Preserve blank lines inside literal/folded blocks; keep only
+                        # separators between top-level entries.
+                        cleaned.append(line)
+                        continue
+                cleaned.append(line)
             return '\n'.join(cleaned) + ('\n' if cleaned and cleaned[-1] else '')
         except Exception as e:
             raise SerializationError(f"Failed to serialize YAML string: {e}") from e
@@ -674,6 +686,10 @@ def _handle_llm_response(
 
     # No tool calls — parse state block
     update = parse_state_block(full_text)
+    if update and isinstance(update.get("state"), dict):
+        flags = update["state"]
+    else:
+        flags = update or {}
     jinx = read_jinx()
     if update:
         jinx = merge_state(jinx, update)
@@ -682,13 +698,13 @@ def _handle_llm_response(
         min_rounds = _resolve_min_rounds(jinx, None)
         scores = jinx["state"].get("scores", [])
 
-        if update.get("exit_ready") and check_exit(scores, min_rounds, rnd):
+        if flags.get("exit_ready") and check_exit(scores, min_rounds, rnd):
             print("[JINX_COMPLETE] Task resolved successfully!", flush=True)
             clean_up_ipc_files()
             return
 
-        if update.get("deadlock") or check_deadlock(scores, min_rounds, rnd):
-            if not update.get("deadlock"):
+        if flags.get("deadlock") or check_deadlock(scores, min_rounds, rnd):
+            if not flags.get("deadlock"):
                 jinx["state"]["deadlock"] = True
                 write_jinx(jinx)
             print("[JINX_DEADLOCK] Loop aborted due to strategy deadlock.", flush=True)
@@ -912,31 +928,37 @@ def _slice_file_content(result_content: str, params: Dict[str, Any]) -> str:
         return f"Error: Failed to slice file content: {e}"
 
 
+_STDIN_QUEUE: "_queue.Queue[Optional[str]]" = _queue.Queue()
+_STDIN_THREAD: Optional[threading.Thread] = None
+_STDIN_LOCK = threading.Lock()
+def _ensure_stdin_reader() -> None:
+    """Starts the single background stdin reader once per process."""
+    global _STDIN_THREAD
+    with _STDIN_LOCK:
+        if _STDIN_THREAD is not None and _STDIN_THREAD.is_alive():
+            return
+        def _reader() -> None:
+            while True:
+                try:
+                    line = sys.stdin.readline()
+                except Exception:
+                    _STDIN_QUEUE.put(None)
+                    return
+                if line == "":
+                    _STDIN_QUEUE.put(None)
+                    return
+                _STDIN_QUEUE.put(line)
+        _STDIN_THREAD = threading.Thread(target=_reader, daemon=True)
+        _STDIN_THREAD.start()
 def _read_stdin_line(timeout: int) -> Optional[str]:
-    """Read a line from stdin with a timeout (seconds).
-
-    Returns the line (without trailing newline) or None if timeout elapsed.
-    """
-    q: _queue.Queue = _queue.Queue()
-
-    def _reader(queue: _queue.Queue):
-        try:
-            line = sys.stdin.readline()
-            queue.put(line)
-        except Exception:
-            queue.put(None)
-
-    t = threading.Thread(target=_reader, args=(q,), daemon=True)
-    t.start()
+    """Reads a line from the shared stdin queue with a timeout."""
+    _ensure_stdin_reader()
     try:
-        return q.get(timeout=timeout)
+        return _STDIN_QUEUE.get(timeout=timeout)
     except _queue.Empty:
         return None
-
-
 def _read_stdin_with_retries(timeout: int, retries: int, backoff: float) -> Optional[str]:
     """Attempt to read a line from stdin multiple times with backoff.
-
     Returns the line or None only after exhausting retries.
     """
     attempt = 0

@@ -27,6 +27,17 @@ logger = logging.getLogger("jinx.state")
 AGENT_DIR: Path = Path(__file__).resolve().parent.parent.parent
 
 
+def _safe_approach_text(value: Any, default: str = "unspecified") -> str:
+    """Coerce LLM-produced values to a short, safe string for state summaries."""
+    if value is None:
+        return default
+    text = value if isinstance(value, str) else str(value)
+    text = text.strip()
+    if not text:
+        return default
+    return text[:80]
+
+
 def _resolve_jinx_path() -> Path:
     """Resolves the JINX.yaml path dynamically."""
     env_path = os.environ.get("JINX_PATH")
@@ -69,8 +80,13 @@ def atomic_write_yaml(path: Path, data: Any, width: int = sys.maxsize) -> None:
             default_flow_style=False, sort_keys=False, width=width,
         )
         raw = buf.getvalue()
-        lines = raw.split('\n')
-        cleaned = [line for line in lines if line.strip() != '']
+        lines = raw.splitlines()
+        cleaned: List[str] = []
+        for line in lines:
+            if line.strip() == "":
+                cleaned.append(line)
+                continue
+            cleaned.append(line)
         clean_yaml = '\n'.join(cleaned)
         if clean_yaml and not clean_yaml.endswith('\n'):
             clean_yaml += '\n'
@@ -128,12 +144,12 @@ class ScoreEntry(BaseModel):
     def model_post_init(self, __context: Any) -> None:
         """Normalize simplified verdict format to full format."""
         if self.verdict is not None and not self.requirements:
-            is_pass = self.verdict.lower().strip() in ("pass", "passed", "ok", "true", "1")
+            is_pass = str(self.verdict).lower().strip() in ("pass", "passed", "ok", "true", "1")
             self.all_pass = is_pass
             self.pass_count = 1 if is_pass else 0
             self.requirements = {"task_complete": is_pass}
-            if self.detail and self.approach == "unspecified":
-                self.approach = self.detail[:80]
+            if self.approach == "unspecified":
+                self.approach = _safe_approach_text(self.detail)
 
 
 class StateBlock(BaseModel):
@@ -188,9 +204,11 @@ def _normalize_score_entry(entry: Any) -> Dict[str, Any]:
     verdict = entry.get("verdict")
     if verdict is not None:
         is_pass = str(verdict).lower().strip() in ("pass", "passed", "ok", "true", "1")
+        detail_value = entry.get("detail")
+        approach_value = entry.get("approach")
         normalized = {
             "round": entry.get("round", 0),
-            "approach": entry.get("detail", entry.get("approach", "unspecified"))[:80] if entry.get("detail") else entry.get("approach", "unspecified"),
+            "approach": _safe_approach_text(detail_value if detail_value is not None else approach_value),
             "requirements": {"task_complete": is_pass},
             "pass_count": 1 if is_pass else 0,
             "all_pass": is_pass,

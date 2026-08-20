@@ -44,8 +44,25 @@ class VerifyToolsPhase(VerificationPhase):
         # ==============================================================================
         # <CUSTOM_CODE_START>
         # Add custom assertions and execution tests below. They will be preserved.
-        pass
-        # <CUSTOM_CODE_END>
-        # ==============================================================================
-
-        return success
+        schema_fn = getattr(target_module, "tool_schema", None)
+        if not callable(schema_fn):
+            suite.print_badge("Function tool_schema: NOT CALLABLE", False)
+            success = False
+        else:
+            try:
+                schema = schema_fn()
+                if not isinstance(schema, list):
+                    suite.print_badge("Function tool_schema: INVALID RETURN TYPE", False)
+                    success = False
+                else:
+                    tool_names = {item.get("name") for item in schema if isinstance(item, dict)}
+                    required = {"bash_exec", "file_read", "file_write"}
+                    missing = sorted(required - tool_names)
+                    if missing:
+                        suite.print_badge(f"Function tool_schema: MISSING TOOLS {missing}", False)
+                        success = False
+                    else:
+                        suite.print_badge("Function tool_schema: VALID SCHEMA", True)
+            except Exception as e:
+                suite.print_badge("Function tool_schema: CALL FAILED (" + str(e) + ")", False)
+                success = False

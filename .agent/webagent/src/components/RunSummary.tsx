@@ -53,7 +53,7 @@ export default function RunSummary({ session }: RunSummaryProps) {
     <div id="run-summary-container" className="space-y-6">
       {/* Session Status Banner */}
       {session.status === "completed" && (
-        <div className="bg-[#4ade80]/5 border border-[#4ade80]/30 rounded-lg p-5 flex items-center gap-4">
+        <div role="status" className="bg-[#4ade80]/5 border border-[#4ade80]/30 rounded-lg p-5 flex items-center gap-4">
           <div className="w-10 h-10 rounded-full bg-[#4ade80]/20 flex items-center justify-center flex-shrink-0">
             <CheckCircle2 className="w-6 h-6 text-[#4ade80]" />
           </div>
@@ -71,7 +71,7 @@ export default function RunSummary({ session }: RunSummaryProps) {
       )}
 
       {session.status === "error" && (
-        <div className="bg-red-500/5 border border-red-500/30 rounded-lg p-5 flex items-center gap-4">
+        <div role="alert" className="bg-red-500/5 border border-red-500/30 rounded-lg p-5 flex items-center gap-4">
           <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center flex-shrink-0">
             <AlertCircle className="w-6 h-6 text-red-400" />
           </div>

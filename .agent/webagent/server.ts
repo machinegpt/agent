@@ -66,9 +66,7 @@ function findAgentDir(): string | null {
       continue;
     }
     if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
-      if (AGENT_MARKERS.some((m) => fs.existsSync(path.join(resolved, m)))) {
-        return resolved;
-      }
+      return resolved;
     }
   }
 
@@ -156,6 +154,15 @@ function getLiveSessionData() {
     };
   }
 
+  const jinxYamlPath = path.join(agentDir, "JINX.yaml");
+  if (!fs.existsSync(jinxYamlPath)) {
+    return {
+      exists: false,
+      message: "No JINX.yaml found in the detected .agent folder.",
+      searchedPaths: [agentDir],
+    };
+  }
+
   const files: Record<string, string> = {};
 
   // Read top-level .agent files
@@ -182,7 +189,6 @@ function getLiveSessionData() {
   }
 
   // Check for JINX-native agent first
-  const jinxYamlPath = path.join(agentDir, "JINX.yaml");
   const jinxRunStatePath = path.join(agentDir, "jinx_run_state.yaml");
 
   if (fs.existsSync(jinxYamlPath)) {
