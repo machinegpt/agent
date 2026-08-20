@@ -130,6 +130,8 @@ def parse_state_block(text: str) -> Optional[Dict[str, Any]]:
 
 def check_exit(scores: List[Dict[str, Any]], min_rounds: int, rnd: int) -> bool:
     """Evaluates whether the cognitive loop is ready to terminate."""
+    if rnd < min_rounds:
+        return False
     if not scores or not scores[-1].get("all_pass") or len(scores) < 2:
         return False
 
@@ -173,25 +175,33 @@ def _are_approaches_similar(entry1: Any, entry2: Any) -> bool:
     if not g1 or not g2:
         return _get_val(entry1, "approach", "") == _get_val(entry2, "approach", "")
 
-    nodes1 = {n.get("id", "").strip().lower() for n in g1.get("nodes", []) if n.get("id")} if isinstance(g1.get("nodes"), list) else set()
-    nodes2 = {n.get("id", "").strip().lower() for n in g2.get("nodes", []) if n.get("id")} if isinstance(g2.get("nodes"), list) else set()
-
-    edges1 = {
-        (e.get("source", "").strip().lower(), e.get("relation", "").strip().lower(), e.get("target", "").strip().lower())
-        for e in g1.get("edges", []) if e.get("source") and e.get("target")
-    } if isinstance(g1.get("edges"), list) else set()
-
-    edges2 = {
-        (e.get("source", "").strip().lower(), e.get("relation", "").strip().lower(), e.get("target", "").strip().lower())
-        for e in g2.get("edges", []) if e.get("source") and e.get("target")
-    } if isinstance(g2.get("edges"), list) else set()
-
+    def node_ids(g: Dict[str, Any]) -> set:
+        raw = g.get("nodes")
+        if not isinstance(raw, list):
+            return set()
+        return {
+            str(n.get("id", "")).strip().lower()
+            for n in raw if isinstance(n, dict) and n.get("id")
+        }
+    def edge_keys(g: Dict[str, Any]) -> set:
+        raw = g.get("edges")
+        if not isinstance(raw, list):
+            return set()
+        return {
+            (
+                str(e.get("source", "")).strip().lower(),
+                str(e.get("relation", "")).strip().lower(),
+                str(e.get("target", "")).strip().lower(),
+            )
+            for e in raw
+            if isinstance(e, dict) and e.get("source") and e.get("target")
+        }
+    nodes1, nodes2 = node_ids(g1), node_ids(g2)
+    edges1, edges2 = edge_keys(g1), edge_keys(g2)
     if not nodes1 and not edges1 and not nodes2 and not edges2:
         return _get_val(entry1, "approach", "") == _get_val(entry2, "approach", "")
-
     node_sim = len(nodes1.intersection(nodes2)) / len(nodes1.union(nodes2)) if (nodes1 or nodes2) else None
     edge_sim = len(edges1.intersection(edges2)) / len(edges1.union(edges2)) if (edges1 or edges2) else None
-
     if node_sim is not None and edge_sim is not None:
         return (0.5 * node_sim + 0.5 * edge_sim) >= 0.7
     if node_sim is not None:
@@ -379,6 +389,12 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
         clean_up_ipc_files()
         sys.exit(1)
 
+    required_keys = ("rnd", "tool_depth", "history", "waiting_for", "min_rounds", "task")
+    missing = [k for k in required_keys if k not in run_state]
+    if missing:
+        logger.error("Run state is incomplete. Missing keys: %s", ", ".join(missing))
+        clean_up_ipc_files()
+        sys.exit(1)
     rnd = run_state["rnd"]
     tool_depth = run_state["tool_depth"]
     history = run_state["history"]
@@ -637,11 +653,15 @@ def _execute_rpc_tool(block: Dict[str, Any]) -> Dict[str, Any]:
     tool_use_id = block.get("id")
     name = block.get("name")
     params = block.get("input") or {}
+    if not isinstance(tool_use_id, str) or not isinstance(name, str):
+        logger.error("Malformed tool_use block: id=%r name=%r", tool_use_id, name)
+        return {
+            "type": "tool_result", "tool_use_id": tool_use_id or "",
+            "content": "Error: Malformed tool_use block (missing id or name)."
+        }
     result_content, was_sliced, is_error = get_tool_result_from_editor(tool_use_id, name, params)
-
     if name == "file_read" and not is_error and not was_sliced:
         result_content = _slice_file_content(result_content, params)
-
     return {"type": "tool_result", "tool_use_id": tool_use_id, "content": result_content}
 
 

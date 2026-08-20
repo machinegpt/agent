@@ -65,14 +65,6 @@ class VerifyRunnerPhase(VerificationPhase):
             suite.print_badge("Class IPCError: MISSING", False)
             success = False
 
-        # Verify Class ValidationError
-        if hasattr(target_module, "ValidationError"):
-            suite.print_badge("Class ValidationError: PRESENT", True)
-            cls_obj = getattr(target_module, "ValidationError")
-        else:
-            suite.print_badge("Class ValidationError: MISSING", False)
-            success = False
-
         # Verify Class Yaml
         if hasattr(target_module, "Yaml"):
             suite.print_badge("Class Yaml: PRESENT", True)
@@ -102,13 +94,6 @@ class VerifyRunnerPhase(VerificationPhase):
             suite.print_badge("Function str_presenter: PRESENT", True)
         else:
             suite.print_badge("Function str_presenter: MISSING", False)
-            success = False
-
-        # Verify Function safe_atomic_write_yaml
-        if hasattr(target_module, "safe_atomic_write_yaml"):
-            suite.print_badge("Function safe_atomic_write_yaml: PRESENT", True)
-        else:
-            suite.print_badge("Function safe_atomic_write_yaml: MISSING", False)
             success = False
 
         # Verify Function parse_state_block

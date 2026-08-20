@@ -107,9 +107,9 @@ class StateManager:
             with open(jinx_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f)
                 return data if isinstance(data, dict) else {}
-        except Exception as e:
+        except (yaml.YAMLError, OSError) as e:
             logger.error("Failed to read JINX.yaml at %s: %s", jinx_path, e)
-            return {}
+            raise OSError(f"State read failure on {jinx_path.name}: {e}") from e
 
     @classmethod
     def persist_state(cls, data: Dict[str, Any]) -> None:
