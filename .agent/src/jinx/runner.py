@@ -415,12 +415,20 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
 
     RESPONSE_PATH.unlink(missing_ok=True)
 
-    if waiting_for == "llm_generate":
-        _handle_llm_response(response_data, history, rnd, tool_depth, min_rounds, task, run_state)
-    elif waiting_for == "tool_calls":
-        _handle_tool_response(response_data, history, rnd, tool_depth, min_rounds, task, run_state)
-    else:
-        logger.error("Unexpected waiting_for state: '%s'", waiting_for)
+    try:
+        if waiting_for == "llm_generate":
+            _handle_llm_response(response_data, history, rnd, tool_depth, min_rounds, task, run_state)
+        elif waiting_for == "tool_calls":
+            _handle_tool_response(response_data, history, rnd, tool_depth, min_rounds, task, run_state)
+        else:
+            logger.error("Unexpected waiting_for state: '%s'", waiting_for)
+            clean_up_ipc_files()
+            sys.exit(1)
+    except OSError as e:
+        # Handle persistence failures (e.g. write_jinx -> StateManager.persist_state)
+        logger.error("File-IPC persistence error while handling response: %s", e, exc_info=True)
+        # Ensure temporary IPC artifacts are removed so a stale RUN_STATE_PATH
+        # cannot block future runs when the response file has already been removed.
         clean_up_ipc_files()
         sys.exit(1)
 
@@ -658,6 +666,12 @@ def _execute_rpc_tool(block: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "type": "tool_result", "tool_use_id": tool_use_id or "",
             "content": "Error: Malformed tool_use block (missing id or name)."
+        }
+    if not isinstance(params, dict):
+        logger.error("Malformed tool_use block input: %r", params)
+        return {
+            "type": "tool_result", "tool_use_id": tool_use_id,
+            "content": "Error: Malformed tool_use block (input must be an object)."
         }
     result_content, was_sliced, is_error = get_tool_result_from_editor(tool_use_id, name, params)
     if name == "file_read" and not is_error and not was_sliced:
