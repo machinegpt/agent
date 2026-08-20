@@ -510,12 +510,24 @@ def compact_history_for_request(
 
 
 def write_llm_request(
-    history: List[Dict[str, Any]], rnd: int, tool_depth: int, min_rounds: int
+    history: List[Dict[str, Any]], rnd: int, tool_depth: int, min_rounds: int,
+    retry: bool = False
 ) -> None:
     """Writes the current prompt/history state and requests LLM generation."""
+    # Include persisted processed tool_use ids and an optional retry indicator
+    processed_ids: List[str] = []
+    try:
+        if RUN_STATE_PATH.exists():
+            existing = Yaml.load_from_file(RUN_STATE_PATH)
+            if isinstance(existing, dict):
+                processed_ids = existing.get("processed_tool_use_ids", []) or []
+    except Exception:
+        processed_ids = []
+
     request_payload = {
         "type": "llm_generate", "system": SYSTEM_PROMPT,
-        "messages": compact_history_for_request(history), "tools": tool_schema()
+        "messages": compact_history_for_request(history), "tools": tool_schema(),
+        "processed_tool_use_ids": processed_ids, "retry": bool(retry)
     }
     try:
         Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
@@ -589,9 +601,9 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
             if waiting_for == "tool_calls":
                 tool_calls = _extract_last_tool_calls(history)
                 if tool_calls:
-                    _write_tool_request(tool_calls, history, rnd, tool_depth, min_rounds, run_state)
+                    _write_tool_request(tool_calls, history, rnd, tool_depth, min_rounds, run_state, retry=True)
                     return
-            write_llm_request(history, rnd, tool_depth, min_rounds)
+            write_llm_request(history, rnd, tool_depth, min_rounds, retry=True)
             return
         logger.error("Awaiting editor response at %s", RESPONSE_PATH)
         sys.exit(1)
@@ -755,6 +767,22 @@ def _handle_tool_response(
         return
 
     history.append({"role": "user", "content": tool_results})
+
+    # Persist processed tool_use ids so stale-run retries can be recognized by the editor
+    try:
+        processed = run_state.get("processed_tool_use_ids", []) or []
+        for r in results:
+            tid = r.get("tool_use_id")
+            if isinstance(tid, str) and tid not in processed:
+                processed.append(tid)
+        run_state["processed_tool_use_ids"] = processed
+        try:
+            Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
+        except JinxError:
+            logger.warning("Failed to persist processed_tool_use_ids to run state.")
+    except Exception:
+        logger.debug("Unable to update processed_tool_use_ids in run_state.", exc_info=True)
+
     try:
         write_llm_request(history, rnd, tool_depth, min_rounds)
     except (IPCError, OSError, JinxError) as e:
@@ -765,10 +793,20 @@ def _handle_tool_response(
 
 def _write_tool_request(
     tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
-    rnd: int, tool_depth: int, min_rounds: int, run_state: Dict[str, Any]
+    rnd: int, tool_depth: int, min_rounds: int, run_state: Dict[str, Any],
+    retry: bool = False
 ) -> None:
     """Writes a tool_calls request and updates run state."""
-    request_payload = {"type": "tool_calls", "calls": tool_calls}
+    # Include existing processed tool_use ids and an optional retry marker so the
+    # editor can detect already-executed bash/file-write calls and return stored
+    # results instead of executing them again.
+    processed_ids: List[str] = []
+    try:
+        processed_ids = run_state.get("processed_tool_use_ids", []) or []
+    except Exception:
+        processed_ids = []
+
+    request_payload = {"type": "tool_calls", "calls": tool_calls, "processed_tool_use_ids": processed_ids, "retry": bool(retry)}
     try:
         Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
     except JinxError as e:

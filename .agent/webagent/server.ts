@@ -71,6 +71,9 @@ function findAgentDir(): string | null {
 
     const basename = path.basename(resolved);
     const hasAgentMarker = AGENT_MARKERS.some((m) => fs.existsSync(path.join(resolved, m)));
+    // Only accept directories that either are named `.agent` or that contain
+    // the expected JINX marker files. Do NOT accept the parent directory
+    // fallback unless its real basename is `.agent` or it contains markers.
     if (basename === ".agent" || hasAgentMarker) {
       return resolved;
     }

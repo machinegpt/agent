@@ -34,9 +34,69 @@ class VerifyToolsPhase(VerificationPhase):
 
         # --- CLASS VERIFICATIONS ---
         # --- FUNCTION VERIFICATIONS ---
-        # Verify Function tool_schema
+        # Verify Function tool_schema and validate schema entries thoroughly
         if hasattr(target_module, "tool_schema"):
-            suite.print_badge("Function tool_schema: PRESENT", True)
+            try:
+                schema = target_module.tool_schema()
+                suite.print_badge("Function tool_schema: PRESENT", True)
+            except Exception as e:
+                suite.print_badge(f"Function tool_schema: RAISED ({e})", False)
+                schema = None
+                success = False
+
+            # If we got a schema, validate structure without throwing further
+            if isinstance(schema, list):
+                for entry in schema:
+                    if not isinstance(entry, dict):
+                        suite.print_badge("tool_schema: entry is not a dict", False)
+                        success = False
+                        break
+
+                    name = entry.get("name")
+                    if not isinstance(name, str) or not name:
+                        suite.print_badge("tool_schema: entry missing valid 'name'", False)
+                        success = False
+
+                    if not isinstance(entry.get("description"), str):
+                        suite.print_badge(f"tool_schema: '{name}' missing description", False)
+                        success = False
+
+                    ins = entry.get("input_schema")
+                    if not isinstance(ins, dict):
+                        suite.print_badge(f"tool_schema: '{name}' input_schema is invalid or missing", False)
+                        success = False
+                        continue
+
+                    if ins.get("type") != "object":
+                        suite.print_badge(f"tool_schema: '{name}' input_schema.type must be 'object'", False)
+                        success = False
+
+                    props = ins.get("properties")
+                    if not isinstance(props, dict):
+                        suite.print_badge(f"tool_schema: '{name}' input_schema.properties must be a dict", False)
+                        success = False
+
+                    req = ins.get("required", [])
+                    if not isinstance(req, list):
+                        suite.print_badge(f"tool_schema: '{name}' input_schema.required must be a list", False)
+                        success = False
+
+                    # Tool-specific mandatory parameter checks
+                    if name == "bash_exec":
+                        if "script" not in props or "script" not in req:
+                            suite.print_badge("tool_schema: 'bash_exec' must require 'script'", False)
+                            success = False
+                    elif name == "file_read":
+                        if "path" not in props or "path" not in req:
+                            suite.print_badge("tool_schema: 'file_read' must require 'path'", False)
+                            success = False
+                    elif name == "file_write":
+                        if ("path" not in props or "content" not in props) or ("path" not in req or "content" not in req):
+                            suite.print_badge("tool_schema: 'file_write' must require 'path' and 'content'", False)
+                            success = False
+            else:
+                suite.print_badge("Function tool_schema returned non-list", False)
+                success = False
         else:
             suite.print_badge("Function tool_schema: MISSING", False)
             success = False
