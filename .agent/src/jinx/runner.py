@@ -450,7 +450,12 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
 
         state_dump = Yaml.dump_to_string(jinx["state"])
         user_msg = construct_round_prompt(rnd=1, min_rounds=min_rounds, task=task, state_dump=state_dump)
-        write_llm_request([{"role": "user", "content": user_msg}], 1, 0, min_rounds, task)
+        try:
+            write_llm_request([{"role": "user", "content": user_msg}], 1, 0, min_rounds, task)
+        except (IPCError, OSError, JinxError) as e:
+            logger.error("Failed to write initial LLM request: %s", e, exc_info=True)
+            clean_up_ipc_files()
+            sys.exit(1)
         return
 
     # Resume path
@@ -490,9 +495,19 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
 
     try:
         if waiting_for == "llm_generate":
-            _handle_llm_response(response_data, history, rnd, tool_depth, min_rounds, task, run_state)
+            try:
+                _handle_llm_response(response_data, history, rnd, tool_depth, min_rounds, task, run_state)
+            except (IPCError, OSError, JinxError) as e:
+                logger.error("IPC failure while handling LLM response: %s", e, exc_info=True)
+                clean_up_ipc_files()
+                sys.exit(1)
         elif waiting_for == "tool_calls":
-            _handle_tool_response(response_data, history, rnd, tool_depth, min_rounds, task, run_state)
+            try:
+                _handle_tool_response(response_data, history, rnd, tool_depth, min_rounds, task, run_state)
+            except (IPCError, OSError, JinxError) as e:
+                logger.error("IPC failure while handling tool response: %s", e, exc_info=True)
+                clean_up_ipc_files()
+                sys.exit(1)
         else:
             logger.error("Unexpected waiting_for state: '%s'", waiting_for)
             clean_up_ipc_files()
@@ -547,7 +562,12 @@ def _handle_llm_response(
         history.append({"role": "user", "content": malformed_results})
 
     if valid_calls:
-        _write_tool_request(valid_calls, history, rnd, tool_depth + 1, min_rounds, task, run_state)
+        try:
+            _write_tool_request(valid_calls, history, rnd, tool_depth + 1, min_rounds, task, run_state)
+        except (IPCError, OSError, JinxError) as e:
+            logger.error("IPC failure while writing tool_calls request: %s", e, exc_info=True)
+            clean_up_ipc_files()
+            sys.exit(1)
         return
 
     # No tool calls — parse state block
@@ -582,7 +602,12 @@ def _handle_llm_response(
     state_dump = Yaml.dump_to_string(jinx.get("state") or {})
     user_msg = construct_round_prompt(rnd=rnd, min_rounds=min_rounds, task=task, state_dump=state_dump, missing_state=not update)
     history.append({"role": "user", "content": user_msg})
-    write_llm_request(history, rnd, 0, min_rounds, task)
+    try:
+        write_llm_request(history, rnd, 0, min_rounds, task)
+    except (IPCError, OSError, JinxError) as e:
+        logger.error("IPC failure while writing next LLM request: %s", e, exc_info=True)
+        clean_up_ipc_files()
+        sys.exit(1)
 
 
 def _handle_tool_response(
@@ -601,11 +626,21 @@ def _handle_tool_response(
         logger.warning("Tool depth limit reached. Forcing state recovery.")
         tool_results.append({"type": "text", "text": TOOL_DEPTH_CRITICAL_MSG})
         history.append({"role": "user", "content": tool_results})
-        _write_llm_request_no_tools(history, rnd, run_state)
+        try:
+            _write_llm_request_no_tools(history, rnd, run_state)
+        except (IPCError, OSError, JinxError) as e:
+            logger.error("IPC failure while writing final summary request: %s", e, exc_info=True)
+            clean_up_ipc_files()
+            sys.exit(1)
         return
 
     history.append({"role": "user", "content": tool_results})
-    write_llm_request(history, rnd, tool_depth, min_rounds, task)
+    try:
+        write_llm_request(history, rnd, tool_depth, min_rounds, task)
+    except (IPCError, OSError, JinxError) as e:
+        logger.error("IPC failure while writing LLM request after tool response: %s", e, exc_info=True)
+        clean_up_ipc_files()
+        sys.exit(1)
 
 
 def _write_tool_request(
@@ -618,15 +653,14 @@ def _write_tool_request(
     try:
         Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
     except JinxError as e:
-        logger.error("Failed to write tool_calls request: %s", e)
-        sys.exit(1)
+        # Propagate as IPCError so callers can clean up IPC files.
+        raise IPCError(f"Failed to write tool_calls request: {e}") from e
 
     run_state.update({"tool_depth": tool_depth, "history": history, "waiting_for": "tool_calls"})
     try:
         Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
     except JinxError as e:
-        logger.error("Failed to write run state: %s", e)
-        sys.exit(1)
+        raise IPCError(f"Failed to write run state: {e}") from e
 
     print(f"[JINX_WAITING] Requesting tool execution for Round {rnd}...", flush=True)
 
@@ -641,15 +675,13 @@ def _write_llm_request_no_tools(
     try:
         Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
     except JinxError as e:
-        logger.error("Failed to write final summary request: %s", e)
-        sys.exit(1)
+        raise IPCError(f"Failed to write final summary request: {e}") from e
 
     run_state.update({"waiting_for": "llm_generate", "history": history})
     try:
         Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
     except JinxError as e:
-        logger.error("Failed to write run state: %s", e)
-        sys.exit(1)
+        raise IPCError(f"Failed to write run state: {e}") from e
 
     print(f"[JINX_WAITING] Requesting final summary for Round {rnd}...", flush=True)
 
