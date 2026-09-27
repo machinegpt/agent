@@ -59,6 +59,29 @@ def self_patch_preflight():
             # for the rest of the run. Clearing it here would disarm the gate
             # before the first tool call ever happened.
             return
+        # Same protection re-check the runner does: `file_write` is not the only
+        # way into the source tree, and a brake weakened via `bash_exec` would
+        # otherwise be adopted here as the new baseline.
+        violations = mod.protection_violations()
+        if violations:
+            restored = mod.restore_baseline()
+            detail = "; ".join(
+                "%s: %s" % (name, ", ".join(reasons))
+                for name, reasons in sorted(violations.items())
+            )
+            _record_feedback(
+                "[JINX SELF-PATCH REFUSED] The previous round changed protected "
+                "brake logic (%s). It was rolled back automatically and NOT "
+                "verified: these functions are what stop a self-patch from "
+                "removing its own safety checks, so no test result can justify "
+                "changing them. Improve something else, or ask a human." % detail
+            )
+            print(
+                "[JINX SELF-PATCH] Refused and rolled back: %s"
+                % ", ".join(restored or sorted(violations)),
+                file=sys.stderr,
+            )
+            return
         result = mod.verify(src_path.parent.parent)
         if result["ok"]:
             print("[JINX SELF-PATCH] Verified: %s" % ", ".join(changed), file=sys.stderr)
@@ -82,9 +105,15 @@ def self_patch_preflight():
         )
     )
     print(message, file=sys.stderr)
+    _record_feedback(message)
 
-    # Hand the failure to the next prompt. pyyaml is an external dependency, not
-    # part of the package, so this still works with the source tree broken.
+
+def _record_feedback(message):
+    """Hands a preflight verdict to the next prompt via the run state.
+
+    pyyaml is an external dependency, not part of the package, so this still
+    works when the source tree itself is too broken to import JINX.
+    """
     try:
         import yaml
         run_state_path = Path(__file__).resolve().parent / "jinx_run_state.yaml"

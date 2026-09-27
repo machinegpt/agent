@@ -72,6 +72,13 @@ LESSONS_BUDGET_CHARS: int = int(os.environ.get("JINX_LESSONS_BUDGET_CHARS", "120
 
 VALID_KINDS = ("rule", "skill", "antipattern")
 
+# Header of the injected block. A module constant because its length is charged
+# against LESSONS_BUDGET_CHARS, so the budget boundary has to be computable.
+LEARNED_RULES_HEADER = (
+    "LEARNED RULES (durable, carried over from earlier sessions; "
+    "verified rules float up, rules that kept failing are no longer shown):"
+)
+
 
 def _normalize(text: str) -> str:
     """Case/punctuation/whitespace-insensitive key for near-duplicate detection.
@@ -242,7 +249,11 @@ def render_lessons(
     ranked = sorted(candidates, key=_score, reverse=True)
     lines: List[str] = []
     applied: List[str] = []
-    used = 0
+    # The header is text the model reads, so it is charged against the same
+    # budget as the rules. Counting only the rules and trimming the finished
+    # string afterwards meant the last line could be cut off while its key stayed
+    # in `applied` — crediting the model for a rule it never saw.
+    body_len = 0
     for lesson in ranked:
         if len(lines) >= limit:
             break
@@ -250,25 +261,23 @@ def render_lessons(
             _coerce_kind(lesson.get("kind")), "-"
         )
         entry = "%s %s" % (marker, lesson["text"])
-        # +1 for the newline that will join this line to the block.
-        if used + len(entry) + 1 > budget:
+        # The finished block is header + "\n" + "\n".join(lines): one newline
+        # after the header, one between each pair of rules, and none at the end.
+        projected = (
+            len(LEARNED_RULES_HEADER) + 1 + body_len + len(entry) + len(lines)
+        )
+        if projected > budget:
             continue
         lines.append(entry)
         applied.append(_normalize(lesson["text"]))
-        used += len(entry) + 1
+        body_len += len(entry)
 
     if not lines:
+        # A budget too small for even one rule is not an error; it just means
+        # nothing can honestly be shown.
         return {"text": "", "applied": []}
 
-    body = "\n".join(lines)
-    header = (
-        "LEARNED RULES (durable, carried over from earlier sessions; "
-        "verified rules float up, rules that kept failing are no longer shown):"
-    )
-    text = "%s\n%s" % (header, body)
-    if len(text) > budget + 120:
-        text = text[: budget + 120].rsplit("\n", 1)[0]
-    return {"text": text, "applied": applied}
+    return {"text": "%s\n%s" % (LEARNED_RULES_HEADER, "\n".join(lines)), "applied": applied}
 
 
 def load_ledger() -> Dict[str, Any]:

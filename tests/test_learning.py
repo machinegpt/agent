@@ -127,8 +127,38 @@ class TestLessonLedgerStaysBounded:
         long_rule = "x" * 500
         stored = add_lessons([], [long_rule + " %d" % i for i in range(20)])
         rendered = render_lessons(stored, limit=100, budget=600)
-        assert len(rendered["text"]) <= 600 + 120
+        assert len(rendered["text"]) <= 600, "the budget is a hard cap, not a hint"
         assert len(rendered["applied"]) < 20, "the budget must actually drop entries"
+
+    def test_the_budget_covers_the_header_too(self) -> None:
+        # The header is text the model reads, so it has to come out of the same
+        # budget. Measuring only the rules let the finished block overshoot.
+        stored = add_lessons([], ["y" * 40])
+        # The rendered block is exactly header + newline + one line, with no
+        # trailing newline, so this is the smallest budget that still fits it.
+        exact = len(learning.LEARNED_RULES_HEADER) + 1 + len("- " + "y" * 40)
+        assert len(render_lessons(stored, limit=10, budget=exact)["text"]) == exact
+        assert len(render_lessons(stored, limit=10, budget=exact - 1)["applied"]) == 0, \
+            "one character short and the rule must not be claimed as shown"
+
+    def test_applied_matches_the_text_exactly(self) -> None:
+        # The old code trimmed the finished string, which could cut the last
+        # rule off the text while its key stayed in `applied` — the ledger would
+        # then credit the model for a rule it was never shown.
+        long_rule = "z" * 300
+        stored = add_lessons([], [long_rule + " %d" % i for i in range(10)])
+        rendered = render_lessons(stored, limit=100, budget=700)
+        body = rendered["text"].split("\n", 1)[1].splitlines()
+        assert len(body) == len(rendered["applied"]), \
+            "every applied key must correspond to a line the model can see"
+        for key, line in zip(rendered["applied"], body):
+            assert key in line
+
+    def test_a_budget_too_small_for_the_header_shows_nothing(self) -> None:
+        stored = add_lessons([], ["always validate the parse"])
+        rendered = render_lessons(stored, limit=10, budget=20)
+        assert rendered == {"text": "", "applied": []}, \
+            "an honest empty block beats a truncated one"
 
     def test_render_is_empty_for_an_empty_ledger(self) -> None:
         assert render_lessons([]) == {"text": "", "applied": []}
@@ -469,6 +499,251 @@ class TestBrakeProtection:
         assert sp.is_protected_change("state.py", reordered) != []
 
 
+class TestNestedSourcePaths:
+    """Snapshots are keyed by path relative to SRC_DIR, not by basename.
+
+    `rglob` implies subpackages, and the moment a nested module shares a filename
+    with a top-level one, basename keys collide: one file silently overwrites the
+    other in the snapshot, and `restore` then writes the survivor's contents to
+    the source root. The rollback would land in the wrong place while the
+    original stayed broken.
+    """
+
+    @pytest.fixture()
+    def nested(self, tmp_path, monkeypatch):
+        src = tmp_path / "src" / "jinx"
+        (src / "sub").mkdir(parents=True)
+        (src / "state.py").write_text("ROOT = 1\n", encoding="utf-8")
+        (src / "sub" / "state.py").write_text("NESTED = 1\n", encoding="utf-8")
+        monkeypatch.setattr(selfpatch, "SRC_DIR", src)
+        monkeypatch.setattr(selfpatch, "BASELINE_DIR", tmp_path / "baseline")
+        return src, tmp_path / "baseline"
+
+    def test_both_files_survive_the_snapshot(self, nested) -> None:
+        src, _ = nested
+        snap = selfpatch.snapshot()
+        assert snap == {"state.py": "ROOT = 1\n", "sub/state.py": "NESTED = 1\n"}, \
+            "colliding basenames must not overwrite each other"
+
+    def test_a_nested_file_is_restored_where_it_belongs(self, nested) -> None:
+        src, base = nested
+        assert capture_baseline() is True
+        (src / "sub" / "state.py").write_text("NESTED = 999\n", encoding="utf-8")
+        (src / "state.py").write_text("ROOT = 999\n", encoding="utf-8")
+
+        restored = restore_baseline()
+
+        assert sorted(restored) == ["state.py", "sub/state.py"]
+        assert (src / "state.py").read_text(encoding="utf-8") == "ROOT = 1\n"
+        assert (src / "sub" / "state.py").read_text(encoding="utf-8") == "NESTED = 1\n"
+        assert not (src / "state.py").with_suffix(".tmp").exists()
+
+    def test_a_nested_change_is_detected(self, nested) -> None:
+        src, _ = nested
+        capture_baseline()
+        assert baseline_changed() == []
+        (src / "sub" / "state.py").write_text("NESTED = 2\n", encoding="utf-8")
+        assert baseline_changed() == ["sub/state.py"], \
+            "a change in a subpackage must be compared against the right baseline"
+
+    def test_a_nested_file_added_later_is_reverted(self, nested) -> None:
+        src, _ = nested
+        capture_baseline()
+        (src / "sub" / "sneaky.py").write_text("X = 1\n", encoding="utf-8")
+        assert baseline_changed() == ["sub/sneaky.py"]
+        restore_baseline()
+        assert not (src / "sub" / "sneaky.py").exists(), \
+            "a file the model added must be removed, not left behind"
+
+    def test_a_new_nested_directory_is_created_on_restore(self, nested) -> None:
+        src, _ = nested
+        capture_baseline()
+        (src / "sub" / "state.py").unlink()
+        (src / "sub").rmdir()
+        assert restore_baseline() == ["sub/state.py"]
+        assert (src / "sub" / "state.py").read_text(encoding="utf-8") == "NESTED = 1\n"
+
+
+class TestOnDiskProtectionRecheck:
+    """`guard_tool_call` only sees file_write; the gate must re-check the disk.
+
+    The source tree is equally reachable through `bash_exec`, so a `sed -i` or a
+    throwaway Python script never passes the guard. A brake weakened that way
+    still passes verification when the suite stays green, and would then be
+    adopted as the new baseline — the gate would have blessed the one edit it
+    exists to prevent.
+    """
+
+    def test_a_brake_weakened_on_disk_is_detected(self, sandbox_src) -> None:
+        original = (sandbox_src[0] / "state.py").read_text(encoding="utf-8")
+        capture_baseline()
+        assert selfpatch.protection_violations() == {}
+
+        # Simulate bash_exec rewriting the file: the guard never saw this.
+        (sandbox_src[0] / "state.py").write_text(
+            original.replace("def merge_state():", "def merge_state():  # weakened"),
+            encoding="utf-8",
+        )
+        assert selfpatch.baseline_changed() == ["state.py"], "the diff must be seen"
+        assert selfpatch.protection_violations(), "and it must be recognised as a brake edit"
+
+    def test_an_ordinary_change_on_disk_is_not_flagged(self, sandbox_src) -> None:
+        src, _ = sandbox_src
+        original = (src / "state.py").read_text(encoding="utf-8")
+        capture_baseline()
+        (src / "state.py").write_text(
+            original + "\n\ndef helper():\n    return 1\n", encoding="utf-8"
+        )
+        assert selfpatch.protection_violations() == {}, \
+            "improving the rest of a protected file must stay possible"
+
+    def test_a_trailing_comment_is_not_a_brake_edit(self, sandbox_src) -> None:
+        # Extracting a definition up to the next top-level line used to swallow
+        # whatever followed it, so a note added after the brake looked like a
+        # change to the brake itself.
+        src, _ = sandbox_src
+        original = (src / "state.py").read_text(encoding="utf-8")
+        capture_baseline()
+        (src / "state.py").write_text(original + "\n\n# a note\n", encoding="utf-8")
+        assert selfpatch.protection_violations() == {}
+
+    def test_a_protected_file_edited_on_disk_is_detected(self, sandbox_src) -> None:
+        src, _ = sandbox_src
+        (src / "selfpatch.py").write_text("ALLOW_PROTECTED = True\n", encoding="utf-8")
+        capture_baseline()
+        (src / "selfpatch.py").write_text("ALLOW_PROTECTED = True  # disarmed\n",
+                                         encoding="utf-8")
+        assert any("selfpatch.py" in name for name in selfpatch.protection_violations())
+
+    def test_untouched_protected_files_do_not_block_an_ordinary_edit(self, sandbox_src) -> None:
+        """A real baseline always contains the protected files themselves.
+
+        If those are compared unconditionally, every self-patch is reported as a
+        violation and the gate refuses all of them.
+        """
+        src, _ = sandbox_src
+        for name in selfpatch.PROTECTED_FILES:
+            (src / name).write_text("# protected, untouched\n", encoding="utf-8")
+        capture_baseline()
+        assert selfpatch.protection_violations() == {}
+        (src / "tools.py").write_text("# an ordinary improvement\n", encoding="utf-8")
+        assert selfpatch.protection_violations() == {}
+        (src / list(selfpatch.PROTECTED_FILES)[0]).write_text(
+            "# protected, now changed\n", encoding="utf-8")
+        assert selfpatch.protection_violations()
+
+    def test_the_override_still_wins(self, sandbox_src, monkeypatch) -> None:
+        src, _ = sandbox_src
+        original = (src / "state.py").read_text(encoding="utf-8")
+        capture_baseline()
+        (src / "state.py").write_text(original + "\n\ndef merge_state():\n    return None\n",
+                                      encoding="utf-8")
+        assert selfpatch.protection_violations()
+        monkeypatch.setattr(selfpatch, "ALLOW_PROTECTED", True)
+        assert selfpatch.protection_violations() == {}
+
+
+class TestGateFeedbackDelivery:
+    """The gate returns its verdict; the caller places it after the tool results."""
+
+    def test_the_gate_returns_the_message_instead_of_stashing_it(self, sandbox_src,
+                                                                 monkeypatch) -> None:
+        import jinx.runner as runner
+
+        src, _ = sandbox_src
+        capture_baseline()
+        (src / "tools.py").write_text("broken(", encoding="utf-8")
+        monkeypatch.setattr(
+            selfpatch, "verify",
+            lambda *a, **k: {"ok": False, "summary": "pytest FAIL",
+                             "checks": [{"name": "pytest", "tail": "SyntaxError"}]},
+        )
+        run_state = {"history": []}
+        message = runner._enforce_self_patch_gate(run_state)
+
+        assert message and "SELF-PATCH REVERTED" in message
+        assert run_state.get("history") == [], \
+            "history must not be mutated behind the caller's back"
+        assert "self_patch_feedback" not in run_state, \
+            "a second delivery channel would show the model the same text twice"
+
+    def test_a_clean_round_returns_none(self, sandbox_src, monkeypatch) -> None:
+        import jinx.runner as runner
+
+        capture_baseline()
+        monkeypatch.setattr(
+            selfpatch, "verify",
+            lambda *a, **k: pytest.fail("verify must not run when nothing changed"),
+        )
+        assert runner._enforce_self_patch_gate({"history": []}) is None
+
+
+class TestRefusedSelfPatchConsumesToolDepth:
+    """A refused tool call is still a turn, so it must count against the cap.
+
+    The refusal path re-issued the LLM request with the *same* tool_depth. A model
+    that kept re-proposing the same forbidden write therefore never reached
+    TOOL_DEPTH_CAP and looped indefinitely, which is the opposite of what the cap
+    is for.
+    """
+
+    def _respond_with_a_forbidden_write(self, monkeypatch, tool_use_id):
+        """Drives _handle_llm_response with one protected file_write."""
+        import jinx.runner as runner
+
+        monkeypatch.setattr(runner, "write_jinx", lambda j: None)
+        monkeypatch.setattr(runner, "_enforce_self_patch_gate", lambda rs: None)
+        real = selfpatch.is_protected_change
+        monkeypatch.setattr(
+            selfpatch, "is_protected_change",
+            lambda p, t: ["state.py::brake"] if p.endswith("state.py") else real(p, t),
+        )
+        history = []
+        response = {"content": [
+            {"type": "text", "text": "editing the brake"},
+            {"type": "tool_use", "id": tool_use_id, "name": "file_write",
+             "input": {"path": str(selfpatch.SRC_DIR / "state.py"),
+                       "content": "X = 1\n"}},
+        ]}
+        return runner, history, response
+
+    def test_the_depth_advances_when_every_call_is_refused(self, tmp_path,
+                                                          monkeypatch) -> None:
+        import yaml
+
+        request = tmp_path / "jinx_request.yaml"
+        monkeypatch.setattr("jinx.runner.REQUEST_PATH", request)
+        monkeypatch.setattr("jinx.runner.RUN_STATE_PATH", tmp_path / "state.yaml")
+        runner, history, response = self._respond_with_a_forbidden_write(
+            monkeypatch, "call-1"
+        )
+        runner._handle_llm_response(response, history, rnd=1, tool_depth=3, min_rounds=1,
+                                    run_state={})
+        persisted = yaml.safe_load((tmp_path / "state.yaml").read_text(encoding="utf-8"))
+        assert persisted["tool_depth"] == 4, \
+            "a refused call must still advance tool_depth"
+
+    def test_the_cap_is_enforced_on_the_refusal_path(self, tmp_path, monkeypatch) -> None:
+        import yaml
+
+        request = tmp_path / "jinx_request.yaml"
+        monkeypatch.setattr("jinx.runner.REQUEST_PATH", request)
+        monkeypatch.setattr("jinx.runner.RUN_STATE_PATH", tmp_path / "state.yaml")
+        runner_, history, response = self._respond_with_a_forbidden_write(
+            monkeypatch, "call-2"
+        )
+        runner_._handle_llm_response(response, history, rnd=1, tool_depth=19, min_rounds=1,
+                                     run_state={})
+
+        persisted = yaml.safe_load((tmp_path / "state.yaml").read_text(encoding="utf-8"))
+        assert persisted["tool_depth"] == 20, "the updated depth must be recorded"
+        written = yaml.safe_load(request.read_text(encoding="utf-8"))
+        assert written.get("tools") == [], \
+            "the cap must force the no-tools recovery path"
+        assert "TOOL" in str(written.get("messages", "")).upper() or \
+            written.get("type") == "llm_generate"
+
+
 # ==============================================================================
 # Snapshot / verify / revert
 # ==============================================================================
@@ -523,12 +798,53 @@ class TestSelfPatchRevertsBrokenEdits:
         restore_baseline()
         assert (src / "state.py").read_text(encoding="utf-8") == original
 
-    def test_the_baseline_is_cleared_after_a_revert(self, sandbox_src) -> None:
+    def test_the_baseline_survives_a_revert(self, sandbox_src) -> None:
+        # Clearing the baseline here used to disarm the gate for the rest of the
+        # run: baseline_changed() reports nothing without one, and a new one is
+        # only captured when a new session starts, so the second bad self-patch
+        # in the same run went completely unchecked.
         src, base = sandbox_src
         capture_baseline()
         (src / "tools.py").write_text("broken(", encoding="utf-8")
         restore_baseline()
-        assert not base.exists(), "a stale baseline would silently re-revert later work"
+        assert base.exists(), "the recovery copy must outlive a revert"
+        assert baseline_changed() == [], \
+            "after a successful revert the source already matches the baseline"
+
+    def test_a_second_bad_patch_in_the_same_run_is_still_caught(self, sandbox_src) -> None:
+        src, _ = sandbox_src
+        original = (src / "tools.py").read_text(encoding="utf-8")
+        capture_baseline()
+        for content in ("broken_one(", "broken_two("):
+            (src / "tools.py").write_text(content, encoding="utf-8")
+            assert baseline_changed() == ["tools.py"], \
+                "the gate must still fire on a later patch in the same run"
+            restore_baseline()
+        assert (src / "tools.py").read_text(encoding="utf-8") == original
+
+    def test_a_failed_restore_keeps_the_baseline(self, sandbox_src, monkeypatch) -> None:
+        # If the write fails, the baseline is the only remaining copy of the
+        # working source. Deleting it there would make the damage permanent.
+        src, base = sandbox_src
+        capture_baseline()
+        (src / "tools.py").write_text("broken(", encoding="utf-8")
+
+        real_write_text = Path.write_text
+        state = {"fail": True}
+
+        def flaky(self, *a, **k):
+            if state["fail"]:
+                raise OSError("disk is read-only")
+            return real_write_text(self, *a, **k)
+
+        monkeypatch.setattr(Path, "write_text", flaky)
+        assert restore_baseline() == [], "the write should have failed"
+        assert base.exists(), "a failed restore must not destroy the recovery copy"
+
+        state["fail"] = False
+        assert restore_baseline() == ["tools.py"], "the baseline must still work"
+        assert (src / "tools.py").read_text(encoding="utf-8") == \
+            "def tool_schema():\n    return []\n"
 
     def test_an_unchanged_round_keeps_the_baseline(self, sandbox_src) -> None:
         # The baseline is the reference for the whole run, not a one-shot

@@ -116,7 +116,16 @@ def _protected_blocks(text: str, pattern: str) -> Tuple[str, ...]:
     for match in re.finditer(pattern, text, re.MULTILINE):
         rest = text[match.start():]
         end = re.search(r"\n(?=[^\s#])", rest)
-        blocks.append(rest[:end.start()] if end else rest)
+        block = rest[:end.start()] if end else rest
+        # Drop trailing blank lines and comment-only lines. Without this, adding
+        # an unrelated function or a note *after* a protected definition changed
+        # that definition's extracted text, so an ordinary improvement elsewhere
+        # in the file was reported as an attack on the brake. Neither trailing
+        # blank lines nor trailing comments can change behaviour.
+        body = block.splitlines()
+        while body and (not body[-1].strip() or body[-1].lstrip().startswith("#")):
+            body.pop()
+        blocks.append("\n".join(body))
     return tuple(blocks)
 
 
@@ -137,14 +146,19 @@ def _read_existing(relative_path: Path) -> Optional[str]:
     return None
 
 
-def _violations(path: Path, new_text: str) -> List[str]:
-    """Returns the protected constructs ``new_text`` would add or alter."""
+def _violations_against(name: str, new_text: str, old_text: Optional[str]) -> List[str]:
+    """Returns the protected constructs ``new_text`` would add or alter.
+
+    ``old_text`` is the trusted prior content, or None for a file that did not
+    exist. Taking it as an argument rather than reading it is what lets the same
+    comparison run against a candidate tool call *and* against what is actually
+    sitting on disk, where the only prior version available is the baseline.
+    """
     if ALLOW_PROTECTED:
         return []
     found: List[str] = []
-    if path.name in PROTECTED_FILES:
-        found.append("%s (protected file)" % path.name)
-    old_text = _read_existing(path)
+    if name in PROTECTED_FILES:
+        found.append("%s (protected file)" % name)
     # Removal is only meaningful for a whole-file rewrite. A short fragment is
     # not a document that had a brake deleted from it; treating it as one would
     # make every small, legitimate write look like an attack on all four brakes.
@@ -152,7 +166,7 @@ def _violations(path: Path, new_text: str) -> List[str]:
         0.5 * len(old_text.splitlines())
     )
     for filename, pattern in PROTECTED_SYMBOLS:
-        if path.name != filename:
+        if name != filename:
             continue
         new_blocks = _protected_blocks(new_text, pattern)
         if old_text is None:
@@ -173,6 +187,52 @@ def _violations(path: Path, new_text: str) -> List[str]:
                 found.append("%s::%s (removed)" % (filename, pattern))
             continue
         found.append("%s::%s" % (filename, pattern))
+    return found
+
+
+def _violations(path: Path, new_text: str) -> List[str]:
+    """Pre-dispatch check for a candidate write."""
+    return _violations_against(path.name, new_text, _read_existing(path))
+
+
+def protection_violations() -> Dict[str, List[str]]:
+    """Protected constructs altered on disk relative to the baseline.
+
+    ``guard_tool_call`` only sees ``file_write``, but the source tree is also
+    reachable through ``bash_exec`` — a ``sed -i`` or a small Python script never
+    goes near the guard. A brake weakened that way would still pass verification
+    if the test suite stayed green, and would then be adopted as the new baseline.
+    This re-runs the same comparison against the baseline, which is the last
+    trusted copy, so the bypass is caught before the edit is blessed.
+    """
+    if ALLOW_PROTECTED:
+        return {}
+    base = _baseline_files()
+    current = snapshot()
+    found: Dict[str, List[str]] = {}
+    for name, path in base.items():
+        new_text = current.get(name)
+        old_text = path.read_text(encoding="utf-8", errors="replace")
+        if new_text is not None and new_text == old_text:
+            # Byte-identical to the trusted baseline, so this file cannot have
+            # altered a brake. This skip is load-bearing: the protected files are
+            # themselves part of every baseline, so comparing them unconditionally
+            # would report them as violations on every single self-patch and
+            # refuse all of them.
+            continue
+        if new_text is None:
+            # A protected file that was deleted outright.
+            violations = _violations_against(name, "", old_text)
+        else:
+            violations = _violations_against(name, new_text, old_text)
+        if violations:
+            found[name] = violations
+    for name, text in current.items():
+        if name in base:
+            continue
+        violations = _violations_against(name, text, None)
+        if violations:
+            found[name] = violations
     return found
 
 
@@ -206,8 +266,12 @@ def snapshot() -> Dict[str, str]:
         if "__pycache__" in path.parts:
             continue
         try:
-            snap[path.name] = path.read_text(encoding="utf-8")
-        except OSError as e:
+            # Keyed by path relative to SRC_DIR, not by basename: two modules
+            # with the same filename in different subpackages would otherwise
+            # collide, and the loser of that collision would be written back to
+            # the source root on restore.
+            snap[path.relative_to(SRC_DIR).as_posix()] = path.read_text(encoding="utf-8")
+        except (OSError, ValueError) as e:
             logger.warning("Could not snapshot %s: %s", path, e)
     return snap
 
@@ -227,13 +291,19 @@ def changed_files(snap: Dict[str, str]) -> List[str]:
 
 
 def restore(snap: Dict[str, str]) -> List[str]:
-    """Reverts the framework source to the snapshot. Returns files restored."""
+    """Reverts the framework source to the snapshot. Returns files restored.
+
+    Keys are paths relative to SRC_DIR, so nested modules are written back where
+    they came from rather than flattened into the source root.
+    """
     restored: List[str] = []
     current = snapshot()
     for name, text in snap.items():
         if current.get(name) != text:
+            target = SRC_DIR / name
             try:
-                (SRC_DIR / name).write_text(text, encoding="utf-8")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text, encoding="utf-8")
                 restored.append(name)
             except OSError as e:
                 logger.error("Could not restore %s: %s", name, e)
@@ -265,10 +335,16 @@ BASELINE_DIR: Path = Path(
 
 
 def _baseline_files() -> Dict[str, Path]:
+    """Baseline files keyed by their path relative to the baseline directory.
+
+    Relative keys, for the same reason ``snapshot`` uses them: a basename key
+    collides across subpackages and would compare the wrong file against the
+    wrong baseline.
+    """
     if not BASELINE_DIR.exists():
         return {}
     return {
-        p.name: p
+        p.relative_to(BASELINE_DIR).as_posix(): p
         for p in sorted(BASELINE_DIR.rglob("*.py"))
         if "__pycache__" not in p.parts
     }
@@ -311,16 +387,24 @@ def baseline_changed() -> List[str]:
 
 
 def restore_baseline() -> List[str]:
-    """Restores the framework source from the on-disk baseline."""
+    """Restores the framework source from the on-disk baseline.
+
+    The baseline is deliberately KEPT afterwards. A previous version cleared it
+    here, which disarmed the gate for the rest of the run: ``baseline_changed``
+    returns nothing without a baseline, and a new one is only captured when a new
+    session starts, so the second bad self-patch in the same run would go
+    unchecked. A successful restore leaves the source equal to the baseline, so
+    keeping it cannot trigger a spurious re-revert, and if the restore itself
+    only partly succeeded the baseline is the only remaining copy of the working
+    source -- dropping it there would make the damage permanent.
+    """
     snap = {
         name: path.read_text(encoding="utf-8")
         for name, path in _baseline_files().items()
     }
     if not snap:
         return []
-    restored = restore(snap)
-    clear_baseline()
-    return restored
+    return restore(snap)
 
 
 def clear_baseline() -> None:

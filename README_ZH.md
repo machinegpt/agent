@@ -504,7 +504,7 @@ JINX 运行时由以下位于 `.agent/` 目录下的 Python 组件构成（核�
   允许 JINX 修改自己的代码，同时不允许它拆掉自己的安全闸。`file_write` 接受的是裸字符串路径，因此模型一直都能重写 `.agent/src/jinx/*.py`——事实上本仓库自身的发布工作正是这样完成的。此前没有任何机制检查结果是否还能工作，本模块补上了这一环：
   * **校验与回滚** — `capture_baseline` 复制源码树，`baseline_changed` 比对差异，`restore_baseline` 执行回滚。任何改动了框架源码的轮次之后，`verify` 都会运行 `pytest` **以及** 完整的 `jinx_test` 套件；任一失败即撤销该修改，并把失败输出回灌到下一轮提示词中。一次失败的尝试只损失一轮，而不是整次运行。基线覆盖整个运行，而非单轮：运行开始时采集，某个轮次没有改动时保留，已验证的修改被采纳后重新采集。正常结束时清除；出错退出时**刻意保留**——正是它让下一次启动能够修复损坏。
   * **启动前预检** — 同一检查会在 `.agent/jinx.py` 中、在导入 JINX 之前再运行一次，并按路径直接加载 `selfpatch.py`。否则，留下语法错误的自修改会让框架根本无法启动，而本该捕捉该问题的闸门也根本无法运行。磁盘上没有基线时无从比较，此时损坏的代码树会明确报错，而不是被悄悄覆盖。
-  * **闸门保护** — `guard_tool_call` 拒绝任何会重定义 `merge_state`、`StateBlock`、`atomic_write_yaml`、`_resolve_jinx_path`、`check_exit`、`check_deadlock`、`_resolve_min_rounds`、`_handle_llm_response` 或 `SYSTEM_PROMPT` 的写入，并将 `selfpatch.py` 与 `learning.py` 整体列为禁区。拒绝发生在**派发之前**而非事后撤销，模型因此会知道自己被拒绝，而不会误以为校验机制坏了。保护比较这些定义的*函数体*与磁盘上的实际内容，而不仅仅检查名字是否存在，因此只要闸门本身逐字节未变，就可以整体重写受保护的文件。削弱、改写或删除闸门都会被拒绝；而 `bash_exec` 会完全绕过这项检查——这也正是下面「校验与回滚」这一步不可省略的原因。
+  * **闸门保护** — `guard_tool_call` 拒绝任何会重定义 `merge_state`、`StateBlock`、`atomic_write_yaml`、`_resolve_jinx_path`、`check_exit`、`check_deadlock`、`_resolve_min_rounds`、`_handle_llm_response` 或 `SYSTEM_PROMPT` 的写入，并将 `selfpatch.py` 与 `learning.py` 整体列为禁区。拒绝发生在**派发之前**而非事后撤销，模型因此会知道自己被拒绝，而不会误以为校验机制坏了。保护比较这些定义的*函数体*与磁盘上的实际内容，而不仅仅检查名字是否存在，因此只要闸门本身逐字节未变，就可以整体重写受保护的文件。削弱、改写、删除闸门都会被拒绝，更隐蔽的做法同样会被识破：在文件末尾追加一个在导入时覆盖受保护定义的第二份定义，或是通过 `bash_exec` 动手——它根本不经过这道检查。因此在真正校验之前，机制会对磁盘上的文件与 baseline 重新做一次同样的比较；一旦发现闸门被这样动过，就直接回滚而不运行测试：一次通过的测试无法成为修改「决定测试是否通过的那段代码」的理由。
 * **`prompts.py`**（提示词模板）：
   包含 `SYSTEM_PROMPT`、当某轮遗漏状态块时注入的 `MISSING_STATE_WARNING`、恢复指令 `TOOL_DEPTH_CRITICAL_MSG`，以及 `construct_round_prompt()`。
 

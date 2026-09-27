@@ -511,29 +511,53 @@ def _close_lesson_bookkeeping(
         run_state.pop("applied_lessons", None)
 
 
-def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> None:
-    """Verifies and, if necessary, reverts edits the model made to framework source.
+def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> Optional[str]:
+    """Verifies or reverts self-edits. Returns feedback for the model, or None.
 
-    Called after tool results come back. The model has always been able to write
-    into .agent/src — that is how this repository's own release work happens —
-    but nothing used to check whether the result still worked. This is the
-    missing check: a broken self-edit is undone and reported, so a failed attempt
-    costs one round instead of the whole run.
+    Returning the message rather than pushing it into ``history`` and a carried
+    ``self_patch_feedback`` field keeps a single delivery path: the caller
+    appends it once, after the tool results, so the model reads it in the order
+    the protocol requires and cannot receive it twice.
     """
     if not selfpatch.SELF_PATCH_ENABLED:
-        return
+        return None
     if not selfpatch.BASELINE_DIR.exists():
-        return
+        return None
     try:
         changed = selfpatch.baseline_changed()
     except Exception as e:
         logger.error("Self-patch diff failed: %s", e, exc_info=True)
-        return
+        return None
     if not changed:
         # Keep the baseline: it is the reference for the whole run, not a
         # one-shot checkpoint. Clearing it on an unchanged round would disarm
         # the gate before any tool call had a chance to break something.
-        return
+        return None
+
+    # Re-check protection against the baseline before verifying. `guard_tool_call`
+    # only ever sees `file_write`, so a brake weakened through `bash_exec` would
+    # otherwise sail through a green test suite and be adopted as the baseline.
+    try:
+        violations = selfpatch.protection_violations()
+    except Exception as e:
+        logger.error("Self-patch protection check failed: %s", e, exc_info=True)
+        violations = {}
+    if violations:
+        restored = selfpatch.restore_baseline()
+        detail = "; ".join(
+            "%s: %s" % (name, ", ".join(reasons))
+            for name, reasons in sorted(violations.items())
+        )
+        message = (
+            "SELF-PATCH REFUSED: your edit to JINX's own source changed protected "
+            "brake logic (%s). It was rolled back automatically and NOT verified: "
+            "these functions are what stop a self-patch from removing its own "
+            "safety checks, so no test result can justify changing them. Improve "
+            "something else, or ask a human.\nFiles rolled back: %s"
+            % (detail, ", ".join(restored) or "none")
+        )
+        logger.warning("Self-patch protection gate reverted %d file(s)", len(restored))
+        return message
 
     result = selfpatch.verify(AGENT_DIR.parent)
     if result["ok"]:
@@ -541,7 +565,7 @@ def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> None:
         # Adopt the verified edit as the new reference so the same diff is not
         # re-verified on every later round.
         selfpatch.capture_baseline()
-        return
+        return None
 
     restored = selfpatch.restore_baseline()
     message = (
@@ -557,11 +581,7 @@ def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> None:
         )
     )
     logger.warning("Self-patch gate reverted %d file(s)", len(restored))
-    history = run_state.get("history")
-    if isinstance(history, list):
-        history.append({"role": "user", "content": message})
-    run_state["self_patch_feedback"] = message
-    logger.info("Self-patch feedback queued for the next prompt.")
+    return message
 
 
 def _finish_run() -> None:
@@ -1011,8 +1031,32 @@ def _handle_llm_response(
         # state-block parse it did not intend.
         history.append({"role": "user", "content": refused_results})
         if not valid_calls:
+            # Every call was refused, but the loop still advanced: the model spent
+            # a turn. Counting it against the depth cap is what stops a model that
+            # keeps re-proposing the same forbidden write from spinning forever
+            # without ever reaching the cap that would break it out.
+            next_depth = tool_depth + 1
+            if next_depth >= TOOL_DEPTH_CAP:
+                logger.warning(
+                    "Tool depth limit reached while refusing self-patches. "
+                    "Forcing state recovery."
+                )
+                run_state["tool_depth"] = next_depth
+                history.append({
+                    "role": "user",
+                    "content": [{"type": "text", "text": TOOL_DEPTH_CRITICAL_MSG}],
+                })
+                try:
+                    _write_llm_request_no_tools(history, rnd, run_state)
+                except (IPCError, OSError, JinxError) as e:
+                    logger.error(
+                        "IPC failure after refusing a self-patch: %s", e, exc_info=True
+                    )
+                    clean_up_ipc_files()
+                    sys.exit(1)
+                return
             try:
-                write_llm_request(history, rnd, tool_depth, min_rounds)
+                write_llm_request(history, rnd, next_depth, min_rounds)
             except (IPCError, OSError, JinxError) as e:
                 logger.error("IPC failure after refusing a self-patch: %s", e, exc_info=True)
                 clean_up_ipc_files()
@@ -1121,7 +1165,12 @@ def _handle_tool_response(
     # The model may edit JINX's own source. That is allowed and sometimes the
     # right move, but it must not be allowed to leave a broken framework behind,
     # so verify-and-revert runs before the results are handed back for a new turn.
-    _enforce_self_patch_gate(run_state)
+    feedback = _enforce_self_patch_gate(run_state)
+    if feedback:
+        # Appended after the tool results, not before: the protocol requires every
+        # tool_result first, and the model should read the verdict as a
+        # conclusion on those results rather than as an instruction preceding them.
+        tool_results.append({"type": "text", "text": feedback})
 
     if tool_depth >= TOOL_DEPTH_CAP:
         logger.warning("Tool depth limit reached. Forcing state recovery.")
