@@ -30,12 +30,13 @@ You cannot finish on round 1 even if everything passes — at least 2 rounds of 
 STATE PERSISTENCE — READ CAREFULLY, THIS IS WHERE MOST FAILURES HAPPEN:
 Your state lives in JINX.yaml on disk. You MUST return an updated state block at the end of every response.
 
-- `scores` is your COMPLETE history, not just this round. Each round you must re-send EVERY prior round's
-  entry PLUS the new one appended. Sending only the current round's entry PERMANENTLY DELETES all earlier
-  rounds from disk — deadlock detection and exit criteria depend entirely on that full history.
-- `facts`, `debt`, and `open` follow the same rule: each is replaced wholesale by whatever you send. If you
-  have nothing new to add, repeat the full existing list from CURRENT STATE rather than omitting it or
-  sending a partial one.
+- `scores` is merged by round number, so you only need to send THIS round's entry. Any entry whose `round`
+  already exists replaces it; rounds you omit are preserved on disk. Deadlock detection and exit criteria
+  still see the complete history — they read it from disk, not from what you re-send. Re-sending older
+  rounds is still accepted and simply overwrites them, so never rely on it to keep history alive.
+- `facts`, `debt`, and `open` are different: each is REPLACED by whatever you send, so send the full list
+  from CURRENT STATE each round, not just new items. Near-duplicates are collapsed automatically and
+  `facts` is capped (oldest dropped first), so there is no benefit to padding it with restatements.
 - `requirements` keys (e.g. `req_name` below) must be the exact same strings every round for the same
   requirement. Renaming a requirement between rounds breaks deadlock clustering, which matches failures by
   literal key name.
@@ -61,7 +62,7 @@ it on rounds where you can't fill it out correctly.
 
 REQUIRED — end every response with exactly one markdown YAML code block containing the updated state. The
 schema below shows the SHAPE of each field, not data to copy — replace every value with this task's real
-current state, and remember `scores`/`facts`/`debt`/`open` must each be the full list, not just new items:
+current state. Send only this round's `scores` entry; send `facts`/`debt`/`open` as the full list:
 
 FULL FORMAT (preferred for complex tasks with multiple requirements):
 ```yaml
@@ -100,8 +101,8 @@ MISSING_STATE_WARNING: str = (
     "WARNING: You did not output the REQUIRED markdown YAML state block (```yaml ... ```) at the end of your last response!\n"
     "You MUST output the updated state block with your final evaluation (including 'exit_ready: true' if the task is finished) "
     "so that JINX can parse it, update the state, and terminate cleanly. Do not skip this block!\n"
-    "Use CURRENT STATE below as your starting point — re-send the FULL 'scores' history (every prior round "
-    "plus this one), not just the latest entry, or earlier rounds will be permanently lost.\n\n"
+    "Use CURRENT STATE below as your starting point — send this round's 'scores' entry (the runner merges it "
+    "with the history already on disk by round number, so omitted rounds are kept).\n\n"
 )
 
 TOOL_DEPTH_CRITICAL_MSG: str = (
@@ -110,8 +111,8 @@ TOOL_DEPTH_CRITICAL_MSG: str = (
     "and the exact, complete markdown YAML code block (```yaml ... ```) to persist your progress and avoid state loss.\n"
     "Being cut off here does NOT mean the task is done — only set 'exit_ready: true' if the requirements "
     "genuinely all passed. Otherwise set it false and describe what's left in 'open', so the next round can "
-    "continue from an honest state. Re-send the FULL 'scores' history (every prior round plus this one), "
-    "not just a summary of this round — this is the same rule as every other round."
+    "continue from an honest state. Send this round's 'scores' entry only — it is merged with the history "
+    "on disk by round number, so the earlier rounds are preserved without you re-sending them."
 )
 
 

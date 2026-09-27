@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.2.3--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.2.4--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-File_Based_IPC_State_Machine-0D9488?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-ReEntrant_Single_Step_Process-059669?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -157,7 +157,7 @@ waiting_for: llm_generate      # llm_generate | tool_calls
 min_rounds: 10
 updated_at: 1758901234.5       # epoch seconds, written on every state change
 processed_tool_use_ids: [call_00, call_01]   # optional, see below
-history:                       # full message list across the whole session
+history:                       # bounded window of recent messages
   - {role: user, content: "ROUND 7 ..."}
   - {role: assistant, content: [{type: text, text: "..."}]}
 ```
@@ -172,7 +172,16 @@ fresh `llm_generate` request rewrites the run state without the field. Hosts sho
 the request's `processed_tool_use_ids` as the authoritative signal, and only use the run-state copy to
 recover context for a stale retry.
 
-`history` is persisted in full so the loop survives process boundaries, but only the **last 6 messages** are shipped in each `llm_generate` request (`compact_history_for_request`) to keep prompt size bounded.
+`history` is a **bounded window**, not the whole transcript. The loop survives process boundaries
+because each round reloads this window, and the window is advanced past a leading `tool_result` block
+and trimmed of a trailing dangling `tool_use` block so the model never receives an orphan tool result
+(`compact_history_for_request`). Two independent sizes apply: the run state keeps the newest
+`JINX_HISTORY_PERSIST_WINDOW` messages (default **8**), while each `llm_generate` request ships only the
+newest `JINX_HISTORY_WINDOW` (default **6**). Nothing ever reads the discarded messages back — exit and
+deadlock detection read the score history in `JINX.yaml`, and tool dispatch only needs the most recent
+calls — so the run state stays a fixed size instead of growing with every round. When a window is
+truncated, the prompt carries a one-line note saying how many messages were elided, so the model does
+not mistake the window for the whole session.
 
 #### Stale-Wait Recovery
 
@@ -453,7 +462,13 @@ scores:
     detail: "RS256 key loading still fails on rotated keys"   # → approach
 ```
 
-Both are auto-normalized to the full schema (`requirements: {task_complete: <bool>}`, `pass_count`, `all_pass`, `approach`) before Pydantic validation, so a terse model reply can never be rejected. `round` defaults to `0` and `approach` to `"unspecified"`; `task`, `facts`, `scores`, `debt`, and `open` are replaced wholesale by whatever the model sends, while `None`-valued keys are ignored so partial updates preserve the rest of the manifest.
+Both are auto-normalized to the full schema (`requirements: {task_complete: <bool>}`, `pass_count`, `all_pass`, `approach`) before Pydantic validation, so a terse model reply can never be rejected. `round` defaults to `0` and `approach` to `"unspecified"`; `task`, `facts`, `debt`, and `open` are replaced wholesale by whatever the model sends, while `None`-valued keys are ignored so partial updates preserve the rest of the manifest.
+
+`scores` is the exception: it is **merged by round number** rather than replaced (`merge_scores`). An entry whose `round` already exists replaces that stored entry, and rounds absent from the reply are preserved on disk. The model therefore only has to send the current round, while a full re-send remains valid and simply overwrites in place. Merged order is ascending by `round`, and entries without an integer `round` are keyed positionally so they survive the round trip. This removes the previous failure mode where a reply that omitted a round silently deleted it, and it is what lets the prompt stop demanding a full history echo every round.
+
+Two working lists are kept bounded on write. Near-duplicate entries in `facts`, `debt`, and `open` collapse into one — comparison ignores case, punctuation, and whitespace, so `"Doesn't work."` and `"doesnt work"` are the same fact — and `facts` is capped at `JINX_FACTS_CAP` (default **60**) with the oldest entries dropped first, because that list is re-sent every round and is otherwise the dominant per-round cost. Facts stay *replaced* rather than accumulated, so the model can still retract a belief it has since disproved.
+
+When a state block fails validation the previous state is kept and the reason is appended to the next round's prompt instead of being logged and discarded. A rejected block now tells the model that its block was rejected, what the validation error was, and the usual causes (an unquoted `:` or `#` inside a scalar, a tab used for indentation, a key nested one level too deep) — silent rejection previously looked identical to a model that had simply done nothing.
 
 ---
 
@@ -492,6 +507,10 @@ The JINX runtime is comprised of the following Python components located in `.ag
 | `JINX_IPC_RETRIES` | `3` | `--ipc rpc` | Read attempts before raising `IPCError` |
 | `JINX_IPC_BACKOFF` | `1.0` | `--ipc rpc` | Seconds between read attempts |
 | `JINX_BACKGROUND_WAIT_TIMEOUT` | `30` | `--ipc file` | Seconds before an unanswered run is considered stale |
+| `JINX_HISTORY_WINDOW` | `6` | both | Messages shipped in each `llm_generate` request |
+| `JINX_HISTORY_PERSIST_WINDOW` | `8` | both | Messages retained in `jinx_run_state.yaml` |
+| `JINX_FACTS_CAP` | `60` | both | Max `facts` entries kept; oldest dropped first |
+| `JINX_KEEP_IPC_ON_SIGNAL` | *(unset)* | both | Set to `1` to keep IPC files on Ctrl+C for inspection |
 
 ---
 
@@ -645,7 +664,7 @@ During execution, the developer does not need to actively manage the loop. Progr
    * **`debt`**: Lists any trade-offs or shortcuts documented by the agent.
    * **`open`**: Lists unresolved items carried into the next round.
 2. **Run State Auditing**:
-   `.agent/jinx_run_state.yaml` exposes `rnd`, `tool_depth`, `waiting_for`, and the full message history, which is ideal for tracing exactly what the model was told and what it did.
+   `.agent/jinx_run_state.yaml` exposes `rnd`, `tool_depth`, `waiting_for`, and the recent message window, which is ideal for tracing exactly what the model was last told and what it did. For the complete record of what was attempted, read the `scores` history in `JINX.yaml` — that is lossless and unbounded by design, and it is the authoritative audit trail.
 3. **Standard Output / Error Logs**:
    The host surfaces JINX's stdout progress markers and the `stderr` log stream (`[jinx.cli]`, `[jinx.runner]`, `[jinx.state]`) in a native UI tab.
 

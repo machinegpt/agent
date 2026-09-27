@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.2.3--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.2.4--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-File_Based_IPC_State_Machine-0D9488?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-ReEntrant_Single_Step_Process-059669?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -157,7 +157,7 @@ waiting_for: llm_generate      # llm_generate | tool_calls
 min_rounds: 10
 updated_at: 1758901234.5       # epoch 秒，每次状态变更都会更新
 processed_tool_use_ids: [call_00, call_01]   # 可选字段，详见下文
-history:                       # 整个会话的完整消息列表
+history:                       # 最近消息的有界窗口
   - {role: user, content: "ROUND 7 ..."}
   - {role: assistant, content: [{type: text, text: "..."}]}
 ```
@@ -171,7 +171,7 @@ history:                       # 整个会话的完整消息列表
 字段的情况下重写运行状态。因此宿主应把请求中的 `processed_tool_use_ids` 视为权威来源，而运行状态中
 的副本仅用于在等待超时时重新下发请求的场景下恢复上下文。
 
-`history` 会完整持久化，使循环能够跨越进程边界，但每个 `llm_generate` 请求中只发送 **最近 6 条消息**（`compact_history_for_request`），以限制提示词体积。
+`history` 是一个**有界窗口**，而不是完整记录。循环能够跨越进程边界，是因为每一轮都会重新加载这个窗口；窗口会跳过开头的 `tool_result` 块，并裁掉结尾悬空的 `tool_use` 块，因此模型绝不会收到孤立的工具结果（`compact_history_for_request`）。这里有两个彼此独立的尺寸：run state 保留最新的 `JINX_HISTORY_PERSIST_WINDOW` 条消息（默认 **8**），而每个 `llm_generate` 请求只发送最新的 `JINX_HISTORY_WINDOW` 条（默认 **6**）。被丢弃的消息永远不会被回读——退出判定与死锁检测读取的是 `JINX.yaml` 中的评分历史，而工具调度只需要最近的调用——因此 run state 大小固定，不再随轮数增长。窗口被截断时，提示词中会附上一行说明，告知有多少条消息被省略，避免模型把窗口误认为整个会话。
 
 #### 等待超时后的恢复机制
 
@@ -452,7 +452,13 @@ scores:
     detail: "RS256 key loading still fails on rotated keys"   # → approach
 ```
 
-两者都会在 Pydantic 校验之前自动归一化为完整结构（`requirements: {task_complete: <bool>}`、`pass_count`、`all_pass`、`approach`），因此模型过于简略的回复也绝不会被拒绝。`round` 默认为 `0`，`approach` 默认为 `"unspecified"`；`task`、`facts`、`scores`、`debt`、`open` 会被模型所发送的内容整体替换，而值为 `None` 的键则被忽略，使局部更新能够保留清单的其余部分。
+两者都会在 Pydantic 校验之前自动归一化为完整结构（`requirements: {task_complete: <bool>}`、`pass_count`、`all_pass`、`approach`），因此模型过于简略的回复也绝不会被拒绝。`round` 默认为 `0`，`approach` 默认为 `"unspecified"`；`task`、`facts`、`debt`、`open` 会被模型所发送的内容整体替换，而值为 `None` 的键则被忽略，使局部更新能够保留清单的其余部分。
+
+例外是 `scores`：它**按轮号合并**而非整体替换（`merge_scores`）。已存在 `round` 的条目会覆盖该条目，而回复中缺失的轮次会保留在磁盘上。因此模型只需发送当前轮次；完整重发依然有效，只会在原处覆盖。合并后按 `round` 升序排列，没有整数 `round` 的条目按位置编键，不会在保存与读取中丢失。这消除了此前「回复漏掉某轮就静默删除该轮」的缺陷，也正是提示词得以不再要求每轮回显全部历史的原因。
+
+两个工作列表在写入时会被限长。`facts`、`debt`、`open` 中含义相近的重复项会合并为一条——比较时忽略大小写、标点与空白，因此 `"Doesn't work."` 与 `"doesnt work"` 视为同一条事实——而 `facts` 上限为 `JINX_FACTS_CAP`（默认 **60**），超出时优先丢弃最旧的条目，因为该列表每轮都要重发，否则会成为最主要的每轮开销。`facts` 仍然是*替换*而非累加，这样模型才能撤回后来被证伪的判断。
+
+当状态块校验失败时，先前的状态会被保留，拒绝原因会追加到下一轮的提示词中，而不再只是写进日志后丢弃。被拒绝的块现在会告知模型其块已被拒绝、具体的校验错误是什么，以及常见原因（标量值中未加引号的 `:` 或 `#`、用制表符缩进、键多嵌套了一层）——此前的静默拒绝与「模型什么都没做」在表现上完全无法区分。
 
 ---
 
@@ -491,6 +497,10 @@ JINX 运行时由以下位于 `.agent/` 目录下的 Python 组件构成（核�
 | `JINX_IPC_RETRIES` | `3` | `--ipc rpc` | 抛出 `IPCError` 前的读取尝试次数 |
 | `JINX_IPC_BACKOFF` | `1.0` | `--ipc rpc` | 两次读取尝试之间的间隔秒数 |
 | `JINX_BACKGROUND_WAIT_TIMEOUT` | `30` | `--ipc file` | 未响应运行被判定为过期的秒数 |
+| `JINX_HISTORY_WINDOW` | `6` | 两者 | 每个 `llm_generate` 请求发送的消息条数 |
+| `JINX_HISTORY_PERSIST_WINDOW` | `8` | 两者 | `jinx_run_state.yaml` 中保留的消息条数 |
+| `JINX_FACTS_CAP` | `60` | 两者 | `facts` 保留的最大条目数，优先丢弃最旧的 |
+| `JINX_KEEP_IPC_ON_SIGNAL` | *(未设置)* | 两者 | 设为 `1` 时在 Ctrl+C 后保留 IPC 文件以便排查 |
 
 ---
 
@@ -643,7 +653,7 @@ if __name__ == "__main__":
    * **`debt`**：列出已记录的权衡取舍或临时方案。
    * **`open`**：列出结转到下一轮的未解决事项。
 2. **运行状态审计**：
-   `.agent/jinx_run_state.yaml` 暴露 `rnd`、`tool_depth`、`waiting_for` 以及完整消息历史，非常适合用于追溯究竟向模型传达了什么、以及模型做了什么。
+   `.agent/jinx_run_state.yaml` 暴露 `rnd`、`tool_depth`、`waiting_for` 以及最近的消息窗口，非常适合用于追溯最后究竟向模型传达了什么、以及模型做了什么。所有尝试的完整记录位于 `JINX.yaml` 中的 `scores` 历史：它无损且按设计不受长度限制，是权威的审计线索。
 3. **标准输出／错误日志**：
    宿主将 JINX 的 stdout 进度标记与 stderr 日志流（`[jinx.cli]`、`[jinx.runner]`、`[jinx.state]`）呈现到原生 UI 标签页中。
 

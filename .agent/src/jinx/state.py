@@ -26,6 +26,11 @@ logger = logging.getLogger("jinx.state")
 
 AGENT_DIR: Path = Path(__file__).resolve().parent.parent.parent
 
+# Hard ceiling on how many prose facts are carried in the state block. Facts are
+# re-sent every round, so an uncapped list is the dominant per-round cost once a
+# task runs long. Oldest entries are dropped first.
+FACTS_CAP: int = int(os.environ.get("JINX_FACTS_CAP", "60"))
+
 
 def _safe_approach_text(value: Any, default: str = "unspecified") -> str:
     """Coerce LLM-produced values to a short, safe string for state summaries."""
@@ -68,7 +73,9 @@ def atomic_write_yaml(path: Path, data: Any, width: int = sys.maxsize) -> None:
     ``StateManager.persist_state`` and runner's ``Yaml.safe_atomic_write``
     delegate here to avoid duplicating the temp-file-replace pattern.
 
-    Post-processes YAML to remove blank lines for compact output.
+    The write goes to ``<path>.tmp`` and is then moved into place with
+    ``Path.replace``, so a reader never observes a half-written file and a crash
+    mid-write cannot corrupt the previous contents.
     """
     temp_path = path.with_suffix(path.suffix + ".tmp")
     try:
@@ -79,15 +86,7 @@ def atomic_write_yaml(path: Path, data: Any, width: int = sys.maxsize) -> None:
             data, buf, allow_unicode=True,
             default_flow_style=False, sort_keys=False, width=width,
         )
-        raw = buf.getvalue()
-        lines = raw.splitlines()
-        cleaned: List[str] = []
-        for line in lines:
-            if line.strip() == "":
-                cleaned.append(line)
-                continue
-            cleaned.append(line)
-        clean_yaml = '\n'.join(cleaned)
+        clean_yaml = buf.getvalue()
         if clean_yaml and not clean_yaml.endswith('\n'):
             clean_yaml += '\n'
         with open(temp_path, "w", encoding="utf-8") as f:
@@ -238,6 +237,82 @@ def _normalize_state_update(update: Dict[str, Any]) -> Dict[str, Any]:
     return clean_update
 
 
+def merge_scores(
+    existing: List[Dict[str, Any]], incoming: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Merge score entries by round number instead of replacing the whole list.
+
+    The model is asked to re-send its full score history, but it is no longer
+    required to: any entry whose ``round`` already exists replaces that stored
+    entry, and rounds missing from ``incoming`` are preserved. That makes a
+    delta-only reply safe and removes the silent-data-loss mode where omitting a
+    round permanently deleted it from disk.
+
+    Entries lacking an integer ``round`` are keyed positionally so they survive
+    round-trips without colliding with numbered entries. Order is ascending by
+    round, which keeps the persisted history stable for humans and diffs.
+    """
+    merged: Dict[Any, Dict[str, Any]] = {}
+    anon = 0
+    for entry in list(existing or []) + list(incoming or []):
+        if not isinstance(entry, dict):
+            continue
+        rnd = entry.get("round")
+        if isinstance(rnd, int) and not isinstance(rnd, bool):
+            key: Any = rnd
+        else:
+            key = ("anon", anon)
+            anon += 1
+        merged[key] = entry
+
+    numbered = sorted((k, v) for k, v in merged.items() if isinstance(k, int))
+    unnumbered = [v for k, v in merged.items() if not isinstance(k, int)]
+    return [v for _, v in numbered] + unnumbered
+
+
+def normalize_text_list(items: List[str], cap: int = 0) -> List[str]:
+    """Deduplicate a prose list, preserving order, then apply an optional cap.
+
+    ``facts``, ``debt`` and ``open`` are curated working memory: the model sends
+    the list it wants to keep, so they are replaced rather than accumulated —
+    otherwise a wrong belief could never be retracted. What this fixes is the
+    growth problem, not the ownership problem: near-duplicate entries collapse to
+    one, and ``facts`` (re-sent every round, so the dominant per-round cost in a
+    long task) is capped, oldest dropped first.
+
+    Duplicate detection ignores case, punctuation and whitespace, so
+    "Doesn't work." and "doesnt work" collapse into a single entry.
+    """
+    out: List[str] = []
+    seen = set()
+    for raw in items or []:
+        if not isinstance(raw, str):
+            raw = str(raw)
+        text = raw.strip()
+        if not text:
+            continue
+        norm = _normalize_fact(text)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        out.append(text)
+    if cap and len(out) > cap:
+        logger.debug("text list cap %d dropped %d oldest entries", cap, len(out) - cap)
+        out = out[-cap:]
+    return out
+
+
+def _normalize_fact(text: str) -> str:
+    """Normalizes a fact for near-duplicate detection.
+
+    Case, punctuation and whitespace are ignored, so "Doesn't work." and
+    "doesnt work" collapse to one entry.
+    """
+    lowered = text.lower()
+    stripped = "".join(ch for ch in lowered if ch.isalnum() or ch.isspace())
+    return " ".join(stripped.split())
+
+
 def read_jinx() -> Dict[str, Any]:
     """Reads and parses the JINX state manifest file."""
     return StateManager.load_state()
@@ -251,11 +326,20 @@ def write_jinx(data: Dict[str, Any]) -> None:
     StateManager.persist_state(data)
 
 
-def merge_state(jinx: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
+def merge_state(
+    jinx: Dict[str, Any], update: Dict[str, Any],
+    diagnostics: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """Merges a parsed update block back into the JINX manifest state.
 
     Automatically normalizes simplified score formats (verdict/detail)
     to the full ScoreEntry format before validation.
+
+    Scores are merged by round number and prose lists are unioned rather than
+    replaced, so a reply that carries only the current round cannot destroy
+    history. When validation fails the previous state is kept AND the reason is
+    appended to ``diagnostics`` so the caller can tell the model why its block was
+    dropped — previously the rejection was logged and then invisible.
     """
     # If the update contains a nested 'state' key (from the full YAML block
     # including id/protocol), extract just the state fields for validation.
@@ -273,16 +357,46 @@ def merge_state(jinx: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
         validated_dict = validated_block.model_dump(exclude_none=True)
     except Exception as e:
         logger.error("State validation failed: %s. Rejecting update.", e)
+        if diagnostics is not None:
+            diagnostics.append(
+                "Your previous state block was REJECTED and discarded; the state on "
+                "disk is unchanged. Reason: %s: %s. Re-send a corrected block. Common "
+                "causes: an unquoted ':' or '#' inside a scalar value, a tab used for "
+                "indentation, or a key nested one level too deep."
+                % (type(e).__name__, str(e).splitlines()[0][:200])
+            )
         return jinx
 
     s: Dict[str, Any] = jinx.setdefault("state", {})
-    for key in ("task", "facts", "scores", "debt", "open"):
+
+    for key in ("task",):
         if key in update and key in validated_dict:
             s[key] = validated_dict[key]
 
+    if "scores" in update and "scores" in validated_dict:
+        merged = merge_scores(s.get("scores") or [], validated_dict["scores"])
+        s["scores"] = merged
+        if diagnostics is not None:
+            stored = len(s.get("scores") or [])
+            sent = len(validated_dict["scores"] or [])
+            if stored > sent:
+                diagnostics.append(
+                    "State accepted. Score history merged by round: %d entr%s on "
+                    "disk, %d sent this round — %d preserved from earlier rounds. "
+                    "You may send only the current round's entry from now on."
+                    % (stored, "y" if stored == 1 else "ies", sent, stored - sent)
+                )
+
+    # facts/debt/open are curated working memory: the model's list wins, but
+    # duplicates collapse and facts are capped so the per-round cost stays flat.
+    for key, cap in (("facts", FACTS_CAP), ("debt", 0), ("open", 0)):
+        if key in update and key in validated_dict:
+            s[key] = normalize_text_list(validated_dict[key] or [], cap=cap)
+
     if "scores" in s and isinstance(s["scores"], list) and len(s["scores"]) > 5:
         for entry in s["scores"][:-5]:
-            entry.pop("prior_failure", None)
+            if isinstance(entry, dict):
+                entry.pop("prior_failure", None)
 
     if "exit_ready" in update:
         s["exit_ready"] = validated_block.exit_ready

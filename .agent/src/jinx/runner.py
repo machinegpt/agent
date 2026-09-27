@@ -81,29 +81,18 @@ class Yaml:
     def dump_to_string(data: Any, width: int = sys.maxsize) -> str:
         """Serializes structures to YAML strings using the isolated dumper.
 
-        Keeps blank lines inside block scalars intact; only removes truly empty
-        cosmetic lines that are not part of a multiline scalar value.
+        Blank lines are preserved verbatim: they occur inside literal block
+        scalars (``str_presenter`` renders multi-line strings with ``style='|'``)
+        where removing them would change the value, so no blank-line rewriting
+        is attempted. Compaction of the state block happens upstream in
+        ``state.merge_scores`` / ``state.merge_text_list``, where it is lossless.
         """
         try:
             raw = yaml.dump(
                 data, Dumper=Dumper, allow_unicode=True,
                 default_flow_style=False, sort_keys=False, width=width
             )
-            lines = raw.splitlines()
-            cleaned: List[str] = []
-            in_block_scalar = False
-            for line in lines:
-                if line.startswith(" ") and line.strip() == "" and in_block_scalar:
-                    cleaned.append(line)
-                    continue
-                if re.match(r"^\s*[-?][\s\S]*$", line) or line.strip() == "":
-                    if line.strip() == "":
-                        # Preserve blank lines inside literal/folded blocks; keep only
-                        # separators between top-level entries.
-                        cleaned.append(line)
-                        continue
-                cleaned.append(line)
-            return '\n'.join(cleaned) + ('\n' if cleaned and cleaned[-1] else '')
+            return raw if raw.endswith('\n') or not raw else raw + '\n'
         except Exception as e:
             raise SerializationError(f"Failed to serialize YAML string: {e}") from e
 
@@ -417,10 +406,24 @@ def _signal_cleanup(signum=None, frame=None) -> None:
         logger.info("Signal %s received: cleaning up IPC files.", signum)
     except Exception:
         pass
-    try:
-        clean_up_ipc_files()
-    except Exception:
-        pass
+    # Escape hatch: keep the IPC files so a run interrupted mid-round can be
+    # inspected or resumed. Deleting them on Ctrl+C destroys the only record of
+    # what the model was last told, which is usually exactly what you need when
+    # a loop is misbehaving. Set JINX_KEEP_IPC_ON_SIGNAL=1 to preserve them.
+    keep = os.environ.get("JINX_KEEP_IPC_ON_SIGNAL", "").strip().lower() in ("1", "true", "yes", "on")
+    if keep:
+        try:
+            logger.warning(
+                "JINX_KEEP_IPC_ON_SIGNAL set: preserving IPC files (request/run-state) "
+                "for inspection."
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            clean_up_ipc_files()
+        except Exception:
+            pass
     # Use os._exit to avoid sys.exit raising SystemExit inside a signal handler,
     # which can cause recursion if the handler itself was invoked during cleanup.
     try:
@@ -510,20 +513,97 @@ def _extract_last_tool_calls(history: List[Dict[str, Any]]) -> List[Dict[str, An
     return []
 
 
+HISTORY_WINDOW: int = int(os.getenv("JINX_HISTORY_WINDOW", "6"))
+HISTORY_PERSIST_WINDOW: int = int(os.getenv("JINX_HISTORY_PERSIST_WINDOW", "8"))
+
+
+def _has_orphan_tool_result(msg: Dict[str, Any]) -> bool:
+    """True when the message is a tool_result with no preceding tool_use.
+
+    A history window can slice between a ``tool_use`` and its ``tool_result``.
+    Sending an orphan ``tool_result`` to a chat-completions style API is a hard
+    error, so the window is nudged forward until it starts on a safe message.
+    """
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(b, dict) and b.get("type") == "tool_result"
+        for b in content
+    )
+
+
+def _has_unanswered_tool_use(msg: Dict[str, Any]) -> bool:
+    """True when the message requests tools, i.e. its results come later."""
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(b, dict) and b.get("type") == "tool_use"
+        for b in content
+    )
+
+
 def compact_history_for_request(
-    history: List[Dict[str, Any]], max_messages: int = 6
+    history: List[Dict[str, Any]], max_messages: Optional[int] = None
 ) -> List[Dict[str, Any]]:
-    """Keeps the most recent exchange while trimming stale repeated context."""
-    if len(history) <= max_messages:
-        return history
-    return history[-max_messages:]
+    """Keeps only the most recent exchange, dropping orphaned tool blocks.
+
+    The window is advanced past a leading ``tool_result`` block so the model
+    never receives a result whose request is not in the window. This bounds both
+    what is sent and what is persisted, which is what keeps the run-state file
+    from growing without limit across a long task.
+    """
+    limit = HISTORY_WINDOW if max_messages is None else max_messages
+    if limit <= 0 or len(history) <= limit:
+        window = list(history)
+    else:
+        window = list(history[-limit:])
+    idx = 0
+    while idx < len(window) - 1 and _has_orphan_tool_result(window[idx]):
+        idx += 1
+    # Never leave a trailing tool_use whose results were trimmed away.
+    while window and _has_unanswered_tool_use(window[-1]):
+        window = window[:-1]
+    return window[idx:]
+
+
+def summarize_dropped_history(
+    dropped: List[Dict[str, Any]], kept: List[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """Builds a one-message digest of history that fell outside the window.
+
+    Nothing is lost: the full record still lives in ``JINX.yaml`` via the score
+    history, and this note tells the model how much earlier context was elided so
+    it does not assume the window is the whole session.
+    """
+    if not dropped:
+        return None
+    rounds = [d for d in dropped if isinstance(d, dict)]
+    tool_msgs = sum(1 for d in rounds if _has_unanswered_tool_use(d) or _has_orphan_tool_result(d))
+    return {
+        "role": "user",
+        "content": (
+            "[context note] %d earlier message(s) from this session were elided from "
+            "the history window to bound prompt size; %d of them involved tool "
+            "traffic. Their substance is preserved in the score history in CURRENT "
+            "STATE (see 'scores'). Do not assume this window is the whole session."
+            % (len(rounds), tool_msgs)
+        ),
+    }
 
 
 def write_llm_request(
     history: List[Dict[str, Any]], rnd: int, tool_depth: int, min_rounds: int,
     retry: bool = False
 ) -> None:
-    """Writes the current prompt/history state and requests LLM generation."""
+    """Writes the current prompt/history state and requests LLM generation.
+
+    Only the bounded history window is both sent and persisted. The full
+    transcript is not written to disk, because nothing ever reads it back: the
+    request uses the window, exit and deadlock detection read the score history
+    in ``JINX.yaml``, and tool dispatch only needs the most recent calls.
+    """
     # Include persisted processed tool_use ids and an optional retry indicator
     processed_ids: List[str] = []
     try:
@@ -534,6 +614,7 @@ def write_llm_request(
     except Exception:
         processed_ids = []
 
+    window = compact_history_for_request(history, HISTORY_PERSIST_WINDOW)
     request_payload = {
         "type": "llm_generate", "system": SYSTEM_PROMPT,
         "messages": compact_history_for_request(history), "tools": tool_schema(),
@@ -545,7 +626,7 @@ def write_llm_request(
         raise IPCError(f"Failed to write request: {e}") from e
 
     run_state = {
-        "rnd": rnd, "tool_depth": tool_depth, "history": history,
+        "rnd": rnd, "tool_depth": tool_depth, "history": window,
         "waiting_for": "llm_generate", "min_rounds": min_rounds,
         "updated_at": time.time()
     }
@@ -713,8 +794,9 @@ def _handle_llm_response(
     else:
         flags = update or {}
     jinx = read_jinx()
+    diagnostics: List[str] = []
     if update:
-        jinx = merge_state(jinx, update)
+        jinx = merge_state(jinx, update, diagnostics=diagnostics)
         write_jinx(jinx)
         # Re-resolve min_rounds so protocol changes from LLM take effect mid-session
         min_rounds = _resolve_min_rounds(jinx, None)
@@ -743,6 +825,8 @@ def _handle_llm_response(
     jinx = read_jinx()
     state_dump = Yaml.dump_to_string(jinx.get("state") or {})
     user_msg = construct_round_prompt(rnd=rnd, min_rounds=min_rounds, state_dump=state_dump, missing_state=not update)
+    if diagnostics:
+        user_msg = user_msg + "\n" + "\n".join(diagnostics) + "\n"
     history.append({"role": "user", "content": user_msg})
     try:
         write_llm_request(history, rnd, 0, min_rounds)
