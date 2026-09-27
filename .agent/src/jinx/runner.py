@@ -578,7 +578,11 @@ def summarize_dropped_history(
 ) -> Optional[Dict[str, Any]]:
     """Builds a one-message digest of history that fell outside the window.
 
-    Nothing is lost: the full record still lives in ``JINX.yaml`` via the score
+    ``kept`` is the window the model actually receives, so ``dropped`` should be
+    measured against that same window — otherwise the count describes what was
+    written to disk rather than what the model was shown.
+
+    Nothing is lost: the durable record lives in ``JINX.yaml`` via the score
     history, and this note tells the model how much earlier context was elided so
     it does not assume the window is the whole session.
     """
@@ -665,10 +669,14 @@ def write_llm_request(
     persist_window = compact_history_for_request(history, HISTORY_PERSIST_WINDOW)
     send_window = compact_history_for_request(history)
 
-    kept = {id(m) for m in persist_window}
+    # The notice describes what the MODEL was not shown, so the baseline must be
+    # the send window. The persist window is deliberately larger, so measuring
+    # against it would silently omit the messages that live in the gap between the
+    # two and under-report the elided count on every round.
+    kept = {id(m) for m in send_window}
     dropped = [m for m in history if id(m) not in kept]
     messages = list(send_window)
-    notice = summarize_dropped_history(dropped, persist_window)
+    notice = summarize_dropped_history(dropped, send_window)
     if notice:
         messages.insert(0, notice)
 

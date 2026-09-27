@@ -373,6 +373,36 @@ class TestHistoryCompactionNotice:
         assert notice is not None
         assert "2 earlier message" in notice["content"]
 
+    def test_notice_counts_every_message_the_model_did_not_see(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The notice describes the sent window, not the larger persisted one.
+
+        The persist window is deliberately wider than the send window, so
+        measuring against it hides the messages living in the gap and
+        under-reports the elided count on every round.
+        """
+        request = tmp_path / "jinx_request.yaml"
+        run_state = tmp_path / "jinx_run_state.yaml"
+        monkeypatch.setattr("jinx.runner.REQUEST_PATH", request)
+        monkeypatch.setattr("jinx.runner.RUN_STATE_PATH", run_state)
+
+        history = [{"role": "user", "content": "m%d" % i} for i in range(20)]
+        write_llm_request(history, 1, 0, 2)
+
+        payload = yaml.safe_load(request.read_text(encoding="utf-8"))
+        sent = [m for m in payload["messages"] if "elided" not in str(m.get("content", ""))]
+        persisted = yaml.safe_load(run_state.read_text(encoding="utf-8"))["history"]
+
+        notice = payload["messages"][0]["content"]
+        reported = int(notice.split("]")[1].split("earlier")[0].strip())
+        assert reported == len(history) - len(sent), (
+            "notice must count every message omitted from the request; "
+            "persist window is %d but send window is %d"
+            % (len(persisted), len(sent))
+        )
+        assert len(persisted) > len(sent), "the persist window must still be wider"
+
     def test_write_llm_request_prepends_the_notice(self, tmp_path, monkeypatch) -> None:
         request = tmp_path / "jinx_request.yaml"
         run_state = tmp_path / "jinx_run_state.yaml"
