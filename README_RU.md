@@ -3,8 +3,8 @@
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
   <img src="https://img.shields.io/badge/version-1.2.3--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
-  <img src="https://img.shields.io/badge/architecture-Process_Isolated_IPC-0D9488?style=for-the-badge" alt="Architecture Badge" />
-  <img src="https://img.shields.io/badge/integration-Subprocess_Standard_Streams-059669?style=for-the-badge" alt="Integration Badge" />
+  <img src="https://img.shields.io/badge/architecture-File_Based_IPC_State_Machine-0D9488?style=for-the-badge" alt="Architecture Badge" />
+  <img src="https://img.shields.io/badge/integration-ReEntrant_Single_Step_Process-059669?style=for-the-badge" alt="Integration Badge" />
 </p>
 
 <h1 align="center">JINX — Спецификация Среды Выполнения Суверенного Корпоративного Агента</h1>
@@ -17,7 +17,28 @@
 
 ## 1. Базовая архитектура и межпроцессное взаимодействие (IPC)
 
-JINX представляет собой среду выполнения агента, спроектированную для запуска внутри хост-окружения (такого как IDE, консольный текстовый редактор или корпоративный оркестратор). Среда выполнения JINX функционирует без автономного сетевого доступа или встроенных интеграций с внешними сервисами; все запросы на вызов моделей, манипуляции с файлами и выполнение консольных команд делегируются хост-редактору через стандартный ввод (`stdin`) и стандартный вывод (`stdout`) с использованием структурированных пакетов обмена данными в формате JSON-RPC.
+JINX представляет собой среду выполнения агента, спроектированную для запуска внутри хост-окружения (такого как IDE, консольный текстовый редактор или корпоративный оркестратор). Среда выполнения JINX функционирует без автономного сетевого доступа или встроенных интеграций с внешними сервисами; все запросы на вызов моделей, манипуляции с файлами и выполнение консольных команд делегируются хост-редактору.
+
+Среда выполнения предоставляет **два транспорта IPC**, выбираемых флагом `--ipc`:
+
+| Транспорт | Флаг | Статус | Механизм |
+| :--- | :--- | :--- | :--- |
+| **Файловая конечная машина** | `--ipc file` *(по умолчанию)* | Основной | YAML-файлы запроса/ответа/состояния внутри `.agent/` |
+| **Дуплексный поток JSON-RPC** | `--ipc rpc` | Устаревший / встраиваемые хосты | Разделенные переводами строки JSON через `stdout` / `stdin` |
+
+### 1.1. File-IPC (по умолчанию)
+
+Каждый запуск `python .agent/jinx.py` выполняет **ровно один переход** конечного автомата и затем завершается. Весь цикл восстанавливается повторным вызовом точки входа хостом без аргумента задачи. Вся непрерывность хранится на диске, поэтому среда выполнения переживает перезапуски редактора, сбои и любые коды возврата процесса.
+
+Транспорт состоит из трёх файлов, все пути вычисляются относительно каталога `.agent/`:
+
+| Файл | Кто пишет | Назначение |
+| :--- | :--- | :--- |
+| `.agent/jinx_request.yaml` | JINX | Действие, которое JINX просит выполнить хост |
+| `.agent/jinx_response.yaml` | Хост | Результат этого действия |
+| `.agent/jinx_run_state.yaml` | JINX | Счётчик раундов, глубина инструментов, история сообщений и указатель `waiting_for` |
+
+В `stdout` попадают только читаемые маркеры прогресса (`[JINX_WAITING]`, `[JINX_COMPLETE]`, `[JINX_DEADLOCK]`); вся структурированная диагностика уходит в `stderr` через логгеры `jinx.cli` / `jinx.runner`.
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
@@ -26,148 +47,203 @@ flowchart LR
     classDef state fill:#21262d,stroke:#30363d,stroke-width:2px,color:#e6edf3;
     classDef yaml fill:#161b22,stroke:#30363d,stroke-width:2px,color:#c9d1d9;
 
-    subgraph JINX["Среда Выполнения JINX (Дочерний процесс)"]
+    subgraph JINX["JINX Agent Runtime (дочерний процесс, один переход за запуск)"]
         direction TB
-        SM["Стейт-машина и Протокол<br/>(runner.py)"]:::state
-        DB[("Локальное Состояние<br/>(.agent/JINX.yaml)")]:::yaml
+        SM["Стейт-машина и Протокол<br/>(runner.py — run_file_ipc)"]:::state
+        DB[("Когнитивное Состояние<br/>(.agent/JINX.yaml)")]:::yaml
         SM <-->|"Чтение / Запись Состояния"| DB
     end
     style JINX fill:#0d1117,stroke:#30363d,color:#e6edf3
 
-    subgraph HOST["Хост-IDE / CLI-Редактор (Родительский процесс)"]
+    subgraph IPC["File-IPC Канал (.agent/)"]
+        direction TB
+        REQ["jinx_request.yaml"]:::yaml
+        RSP["jinx_response.yaml"]:::yaml
+        RUN["jinx_run_state.yaml"]:::yaml
+    end
+    style IPC fill:#0d1117,stroke:#30363d,color:#e6edf3
+
+    subgraph HOST["Хост-IDE / CLI-Редактор (родительский процесс)"]
         direction TB
         EXE["Движок Выполнения Инструментов<br/>(bash_exec / операции с файлами)"]:::sub
         LLM["Внешний Шлюз LLM<br/>(API-ключи и Инференс)"]:::sub
     end
     style HOST fill:#0d1117,stroke:#30363d,color:#e6edf3
 
-    SM ==>|"stdout (Пакеты JSON-RPC)<br/>jinx_command: llm_generate | bash_exec | file_read | file_write"| HOST
-    HOST ==>|"stdin (Ответные Пакеты)<br/>{content: ...} | {output: ...}"| SM
+    SM ==>|"запись запроса + run state"| REQ
+    RUN -.->|"указатель для возобновления"| SM
+    RSP ==>|"запись результата"| SM
+    REQ ==> HOST
+    HOST ==>|"выполнить, затем записать ответ"| RSP
 ```
 
-### Спецификация взаимодействия по протоколу JSON-RPC
+#### Контракт запроса — `type: llm_generate`
 
-При выполнении действия JINX выводит структурированный объект JSON в `stdout`, завершающийся символом новой строки. Хост-среда считывает этот объект из потока процесса, выполняет запрашиваемое действие и возвращает ответ в виде JSON-строки в `stdin` JINX, также завершающийся символом новой строки.
+```yaml
+type: llm_generate
+system: "You are JINX, a single-agent cognitive loop..."   # prompts.SYSTEM_PROMPT
+messages:                                                   # усечённая история, см. ниже
+  - role: user
+    content: "ROUND 1 (at least 10 rounds required before exit is considered)\nCURRENT STATE:\n..."
+tools:                                                      # tools.tool_schema(); [] при восстановлении по лимиту глубины
+  - name: bash_exec
+    description: Execute a bash or shell script in the environment.
+    input_schema:
+      type: object
+      properties:
+        script: {type: string, description: The script to execute}
+      required: [script]
+  - name: file_read
+    description: Read the contents of a file.
+    input_schema:
+      type: object
+      properties:
+        path: {type: string, description: Path to the file}
+        start_line: {type: integer, description: Optional 1-indexed starting line to read (inclusive)}
+        end_line: {type: integer, description: Optional 1-indexed ending line to read (inclusive)}
+      required: [path]
+  - name: file_write
+    description: Write or overwrite a file with new content.
+    input_schema:
+      type: object
+      properties:
+        path: {type: string, description: Path to the file}
+        content: {type: string, description: The full content to write}
+      required: [path, content]
+processed_tool_use_ids: [call_00, call_01]   # уже выполненные вызовы, для дедупликации на стороне редактора
+retry: false                                  # true при перевыдаче после устаревшего ожидания
+```
 
-#### 1. Запрос генерации LLM (`llm_generate`)
-JINX делегирует выполнение вызова LLM хосту.
-* **Пакет, отправляемый в `stdout`**:
+**Ожидаемый ответ хоста:**
+
+```yaml
+content:
+  - type: text
+    text: "Analyzing codebase structure."
+  - type: tool_use
+    id: call_123
+    name: bash_exec
+    input: {script: pytest tests/test_state.py}
+```
+
+Поле `content` допускается передать и как обычную строку — JINX нормализует её в один блок `text`. Любой блок `tool_use`, в котором отсутствуют `id`/`name` либо `input` не является объектом, отклоняется и возвращается модели как ошибка в `tool_result`, вместо аварийного завершения раунда.
+
+#### Контракт запроса — `type: tool_calls`
+
+```yaml
+type: tool_calls
+calls:
+  - id: call_123
+    name: bash_exec
+    params: {script: pytest tests/test_state.py}
+processed_tool_use_ids: []
+retry: false
+```
+
+**Ожидаемый ответ хоста:**
+
+```yaml
+results:
+  - tool_use_id: call_123
+    content: "59 passed in 0.14s"
+```
+
+#### Контракт состояния запуска — `jinx_run_state.yaml`
+
+```yaml
+rnd: 7
+tool_depth: 2
+waiting_for: llm_generate      # llm_generate | tool_calls
+min_rounds: 10
+updated_at: 1758901234.5       # epoch-секунды, обновляется при каждом изменении состояния
+processed_tool_use_ids: [call_00, call_01]   # необязательное поле, см. ниже
+history:                       # полный список сообщений за всю сессию
+  - {role: user, content: "ROUND 7 ..."}
+  - {role: assistant, content: [{type: text, text: "..."}]}
+```
+
+При возобновлении раннер требует ровно пять ключей — `rnd`, `tool_depth`, `history`, `waiting_for` и
+`min_rounds` — и считает состояние некорректным при их отсутствии. Поле `updated_at` проставляется
+при каждой записи и управляет определением устаревшего ожидания.
+
+Поле `processed_tool_use_ids` **необязательное и временное**. Раннер дописывает в него каждый
+выполненный `tool_use_id` после обработки ответа с результатами инструментов и читает его обратно при
+формировании следующего запроса, однако новый запрос `llm_generate` перезаписывает состояние запуска
+без этого поля. Поэтому хосту следует считать `processed_tool_use_ids` в запросе источником истины, а
+копию в состоянии запуска использовать только для восстановления контекста при повторной выдаче
+устаревшего запроса.
+
+Поле `history` сохраняется целиком, поэтому цикл переживает границы процессов, но в каждый запрос `llm_generate` отправляются только **последние 6 сообщений** (`compact_history_for_request`), чтобы размер промпта оставался ограниченным.
+
+#### Восстановление после устаревшего ожидания
+
+Если `jinx_run_state.yaml` существует, а `jinx_response.yaml` — нет, значит хост не ответил. Тогда JINX вызывает `_is_run_state_stale()`: запуск считается устаревшим только когда **и** `updated_at`, **и** время изменения `jinx_run_state.yaml` / `jinx_request.yaml` старше `JINX_BACKGROUND_WAIT_TIMEOUT` (по умолчанию `30` с). Устаревший запуск перевыдаёт тот же запрос с `retry: true` и расширенным списком `processed_tool_use_ids`, чтобы хост вернул сохранённые результаты, а не повторил побочные эффекты; неустаревший запуск завершается с кодом `1` и ждёт повтора хоста.
+
+#### Очистка и сигналы
+
+`SIGINT`, `SIGTERM` и `SIGHUP` перехватываются на этапе импорта; обработчик удаляет все три IPC-файла и завершает процесс через `os._exit(1)`. Нормальные выходы вызывают `clean_up_ipc_files()` на каждом пути успеха, дедлока и жёсткого лимита, поэтому устаревшее состояние запуска не может заблокировать следующую сессию.
+
+### 1.2. Дуплексный поток JSON-RPC (`--ipc rpc`)
+
+Устаревший транспорт сохранён для хостов, предпочитающих один долгоживущий дочерний процесс с перенаправленными потоками. JINX печатает по одному JSON-объекту на строку в запрос и читает по одному JSON-объекту в ответ.
+
+#### `llm_generate`
+* **Отправляется в `stdout`**:
 ```json
 {
   "jinx_command": "llm_generate",
   "params": {
-    "system": "Системные инструкции, определяющие когнитивные границы.",
-    "messages": [{"role": "user", "content": "Контекст конкретного раунда выполнения."}],
-    "tools": [
-      {
-        "name": "bash_exec",
-        "description": "Execute a bash or shell script in the environment.",
-        "input_schema": {
-          "type": "object",
-          "properties": {
-            "script": {"type": "string", "description": "The script to execute"}
-          },
-          "required": ["script"]
-        }
-      },
-      {
-        "name": "file_read",
-        "description": "Read the contents of a file.",
-        "input_schema": {
-          "type": "object",
-          "properties": {
-            "path": {"type": "string", "description": "Path to the file"}
-          },
-          "required": ["path"]
-        }
-      },
-      {
-        "name": "file_write",
-        "description": "Write or overwrite a file with new content.",
-        "input_schema": {
-          "type": "object",
-          "properties": {
-            "path": {"type": "string", "description": "Path to the file"},
-            "content": {"type": "string", "description": "The full content to write"}
-          },
-          "required": ["path", "content"]
-        }
-      }
-    ]
+    "system": "System instructions defining the cognitive boundaries.",
+    "messages": [{"role": "user", "content": "Round-specific context."}],
+    "tools": [{"name": "bash_exec", "input_schema": {"type": "object"}}]
   }
 }
 ```
-* **Ожидаемый ответ хоста на `stdin`**:
+* **Ожидаемый ответ в `stdin`**:
 ```json
 {
   "content": [
-    {"type": "text", "text": "Анализ структуры кодовой базы."},
-    {"type": "tool_use", "id": "call_123", "name": "bash_exec", "input": {"script": "pytest tests/test_core.py"}}
+    {"type": "text", "text": "Analyzing codebase structure."},
+    {"type": "tool_use", "id": "call_123", "name": "bash_exec", "input": {"script": "pytest tests/test_state.py"}}
   ]
 }
 ```
 
-#### 2. Запуск команд консоли (`bash_exec`)
-JINX запрашивает у хоста выполнение команды в консоли.
-* **Пакет, отправляемый в `stdout`**:
+#### `bash_exec`
+* **Отправляется в `stdout`**:
 ```json
-{
-  "jinx_command": "bash_exec",
-  "tool_use_id": "call_123",
-  "params": {
-    "script": "pytest tests/test_core.py"
-  }
-}
+{"jinx_command": "bash_exec", "tool_use_id": "call_123", "params": {"script": "pytest tests/test_state.py"}}
 ```
-* **Ожидаемый ответ хоста на `stdin`**:
+* **Ожидаемый ответ в `stdin`**:
 ```json
-{
-  "output": "=== 1 passed in 0.05s ==="
-}
+{"output": "=== 1 passed in 0.05s ==="}
 ```
 
-#### 3. Операции с файлами (`file_read` и `file_write`)
-JINX делегирует чтение и запись файлов хосту.
-* **Пакет, отправляемый в `stdout` (чтение)**:
+#### `file_read` / `file_write`
+* **Отправляется в `stdout` (чтение)**:
 ```json
-{
-  "jinx_command": "file_read",
-  "tool_use_id": "call_124",
-  "params": {
-    "path": "src/core.py"
-  }
-}
+{"jinx_command": "file_read", "tool_use_id": "call_124", "params": {"path": "src/core.py", "start_line": 1, "end_line": 80}}
 ```
-* **Ожидаемый ответ хоста на `stdin` (чтение)**:
+* **Ожидаемый ответ в `stdin` (чтение)**:
 ```json
-{
-  "content": "def run():\n    pass"
-}
+{"content": "def run():\n    pass", "sliced": false}
+```
+* **Отправляется в `stdout` (запись)**:
+```json
+{"jinx_command": "file_write", "tool_use_id": "call_125", "params": {"path": "src/core.py", "content": "def run():\n    return True"}}
+```
+* **Ожидаемый ответ в `stdin` (запись)**:
+```json
+{"output": "Success"}
 ```
 
-* **Пакет, отправляемый в `stdout` (запись)**:
-```json
-{
-  "jinx_command": "file_write",
-  "tool_use_id": "call_125",
-  "params": {
-    "path": "src/core.py",
-    "content": "def run():\n    return True"
-  }
-}
-```
-* **Ожидаемый ответ хоста на `stdin` (запись)**:
-```json
-{
-  "output": "Success"
-}
-```
+Ответ считается ошибочным, если содержит ключ `error` либо строку `status` с подстрокой `error`. Необязательный булев флаг `sliced` / `is_sliced` сообщает JINX, что хост уже применил окно `start_line` / `end_line`; если он отсутствует или равен false, JINX выполняет нарезку самостоятельно. Чтение потока обслуживает единственный фоновый поток-читатель `stdin`, сбрасывающий данные в общую очередь, поэтому таймауты не рассинхронизируют поток.
 
 ---
 
 ## 2. Протокол выполнения когнитивного цикла
 
-Работа JINX управляется итерационным циклом, выполняемым по четко разграниченным фазам. Параметры состояния сохраняются между итерациями в файле `JINX.yaml`.
+Работа JINX управляется итерационным циклом, выполняемым по чётко разграниченным фазам. Параметры состояния сохраняются между итерациями в файле `JINX.yaml`.
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
@@ -207,19 +283,22 @@ flowchart LR
 ### Фазы выполнения
 
 1. **Фаза I: Определение границ задачи и сбор данных**
-   Прежде чем инициировать изменения файлов, JINX анализирует свойства рабочего пространства и фиксирует границы целевой задачи. Подтвержденный контекст записывается непосредственно в список `state.facts` конфигурационного манифеста `JINX.yaml`.
+   Прежде чем инициировать изменения файлов, JINX анализирует свойства рабочего пространства и фиксирует границы целевой задачи. Подтверждённый контекст записывается непосредственно в список `state.facts` конфигурационного манифеста `JINX.yaml`.
 
 2. **Фаза II: Генерация гипотез и дивергенция**
-   В случае неудачи предыдущего раунда JINX регистрирует причины сбоя в блоке `state.scores`. В последующих раундах JINX оценивает альтернативные технические стратегии. Повторение идентичных подходов без изменений заблокировано правилами протокола.
+   В случае неудачи предыдущего раунда JINX регистрирует причины сбоя в блоке `state.scores`. В последующих раундах JINX оценивает альтернативные технические стратегии, опционально описывая каждую из них как граф знаний `approach_graph`, чтобы обнаружение дедлока отличало действительно различные стратегии от чисто косметических переформулировок. Повторение идентичных подходов без изменений заблокировано правилами протокола.
 
 3. **Фаза III: Верификация граничных условий (Разрушающее тестирование / Breaker Test)**
    Для каждой технической стратегии должен выполняться этап граничного тестирования ("Breaker Test"). Реализация подлежит обязательной валидации на пограничных случаях, некорректных входных данных или пределах производительности. Критерии оценки структурированы в бинарной схеме (true/false) в блоке `state.scores[].requirements`.
 
 4. **Фаза IV: Конвергенция и многокритериальный выход**
    После каждого раунда JINX обновляет метрики выполнения и проверяет условия выхода или дедлока:
-   * **Условие выхода**: Проверяется, когда индекс раунда `round` больше или равен минимально заданному ограничению (`loop.min`), а параметр `exit_ready` установлен в значение `true`. Выход происходит, если последняя реализация удовлетворяет всем основным требованиям, и за последние 3 последовательных раунда не было получено более высокой оценки выполнения.
-   * **Условие дедлока**: Активируется, если количество раундов превышает или равно значению `loop.min` и одно и то же требование падает на 3 независимых подходах. Также активируется при явном установлении флага `deadlock` в значение `true` внутри исполняемой среды.
-   * **Жесткий лимит**: Общее количество итерационных раундов ограничено значением 40 (`HARD_CAP`), по достижении которого выполнение принудительно завершается для предотвращения избыточного расхода токенов.
+   * **Условие выхода** (`check_exit`): текущий раунд должен быть `>= loop.min`, должна существовать как минимум 2 записи в `scores`, а **последняя** запись обязана иметь `all_pass: true`. Как только записей становится 4 или больше, лучший `pass_count` последних 3 раундов не должен превышать лучший `pass_count` всего, что было раньше — всё ещё улучшающийся цикл выходить не вправе.
+   * **Условие дедлока** (`check_deadlock`): раунд должен быть `>= loop.min`, и по некоторому требованию должен набраться провал как минимум в **3 семантически различных кластерах стратегий**. Также дедлок может быть объявлен моделью через `deadlock: true`.
+   * **Жёсткий лимит**: количество итерационных раундов ограничено значением 40 (`HARD_CAP`); по его достижении процесс завершается со статусом `2`, предотвращая неограниченный расход токенов.
+   * **Лимит глубины инструментов**: в рамках одного раунда допускается не более 20 последовательных вызовов инструментов (`TOOL_DEPTH_CAP`). При превышении JINX внедряет восстановительную инструкцию и выполняет один финальный `llm_generate` с `tools: []`, требуя блок состояния вместо усечения.
+
+   `loop.min` определяется из `protocol.loop.min` в `JINX.yaml` (по умолчанию **10**) либо из переопределения `--min`, и пересчитывается после каждого успешного merge, поэтому изменение протокола, выданное моделью, вступает в силу прямо в середине сессии.
 
 ### Блок-схема когнитивного цикла / Cognitive Control Flow
 
@@ -230,80 +309,90 @@ flowchart TD
     classDef process fill:#21262d,stroke:#30363d,stroke-width:2px,color:#c9d1d9;
     classDef decision fill:#161b22,stroke:#30363d,stroke-width:2px,color:#c9d1d9;
     classDef success fill:#1f3b23,stroke:#56d364,stroke-width:2px,color:#85e89d;
-    classDef danger fill:#442326,stroke:#f85149,stroke-width:2px,color:#ff7b72;
+    classDef danger fill:#442326,stroke:#f85149,color:#ff7b72;
 
     A["Текст ответа LLM"]:::start --> B["parse_state_block()"]:::process
-    B --> C{"Поиск блоков кода ```yaml/json/yml<br/>(в обратном порядке)"}:::decision
-    C -->|"Блок найден"| D{"≥ 2 ключей состояния<br/>в словаре?"}:::decision
+    B --> C{"Сканирование огороженных блоков json/yaml/yml<br/>(начиная с последнего)"}:::decision
+    C -->|"Кандидат является словарём"| D{"Есть маппинг 'state:'<br/>ИЛИ сильный маркер?<br/>(scores, facts, debt,<br/>exit_ready, deadlock)"}:::decision
     D -->|"Да"| E["Возврат словаря обновления (update)"]:::process
     D -->|"Нет"| C
-    C -->|"Совпадений нет"| F["Возврат None<br/>(состояние не изменилось)"]:::danger
+    C -->|"Ничего не распознано"| F["Возврат None<br/>(состояние не изменено)"]:::danger
 
     E --> G["merge_state(jinx, update)"]:::process
-    G --> H{"StateBlock.model_validate(update)<br/>Успешно?"}:::decision
+    G --> H{"Нормализация verdict/detail,<br/>удаление null,<br/>StateBlock.model_validate()"}:::decision
     H -->|"Нет (Ошибка валидации)"| I["Отклонение обновления,<br/>возврат старого jinx"]:::danger
     H -->|"Да (ОК)"| J["model_dump(exclude_none=True)<br/>→ validated_dict"]:::process
     J --> K{"Ключ присутствует в update<br/>И в validated_dict?"}:::decision
     K -->|"Да"| L["s[key] = validated_dict[key]"]:::process
     K -->|"Нет (null или отсутствует)"| M["Сохранение текущего s[key]"]:::process
-    L --> N["Очистка prior_failure<br/>из старых оценок"]:::process
+    L --> N["Очистка prior_failure<br/>из scores[:-5] при >5 записях"]:::process
     M --> N
     N --> O["write_jinx(jinx)"]:::process
 
     O --> P["check_exit()"]:::process
     O --> Q["check_deadlock()"]:::process
-    Q --> R["_are_approaches_similar()<br/>Сходство Jaccard ≥ 0.7"]:::process
-    R --> S{"≥ 3 уникальных<br/>кластеров на требование?"}:::decision
-    S -->|"Да"| T["Дедлок → остановка"]:::danger
-    S -->|"Нет"| U["Продолжение цикла"]:::success
+    Q --> R["_are_approaches_similar()<br/>0.5*Жаккар узлов + 0.5*Жаккар рёбер >= 0.7"]:::process
+    R --> S{"≥ 3 различных<br/>кластера на требование?"}:::decision
+    S -->|"Да"| T["Дедлок → очистка + выход"]:::danger
+    S -->|"Нет"| U["rnd += 1, следующий запрос"]:::success
 ```
+
+Ключи `task` и `open` намеренно **исключены** из множества сильных маркеров: это распространённые английские слова, и трактовка их как признака состояния заставила бы парсер перехватывать посторонние YAML-примеры из рассуждений модели.
 
 ### Диаграмма последовательности выполнения / Sequence Flow Diagram
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "actorBkg": "#21262d", "actorBorder": "#30363d", "actorTextColor": "#c9d1d9", "actorLineColor": "#30363d", "signalColor": "#8b949e", "signalTextColor": "#c9d1d9", "noteBkgColor": "#161b22", "noteBorderColor": "#30363d", "noteTextColor": "#c9d1d9", "labelBoxBkgColor": "#21262d", "labelBoxBorderColor": "#30363d", "labelTextColor": "#c9d1d9", "loopTextColor": "#c9d1d9", "activationBkgColor": "#21262d", "activationBorderColor": "#30363d"}}}%%
 sequenceDiagram
-    participant CLI as cli.py (main)
-    participant Runner as runner.py (run)
-    participant State as state.py
-    participant Host as Host Editor (stdin/stdout)
+    participant Host as Host Editor (Agent Runtime)
+    participant CLI as cli.py
+    participant Runner as runner.py (run_file_ipc)
+    participant State as state.py / JINX.yaml
+    participant IPC as .agent/jinx_*.yaml
 
-    CLI->>Runner: run(task, min_override)
-    Runner->>State: read_jinx()
-    State-->>Runner: jinx dict
-    Runner->>State: write_jinx(jinx) [init state]
+    Host->>CLI: python .agent/jinx.py "[task]"
+    CLI->>Runner: run(task, min_override, ipc_mode=file)
+    Runner->>State: read_jinx() then _init_new_session(task)
+    Runner->>IPC: write request (llm_generate) + run_state (rnd=1, depth=0)
+    Runner-->>Host: stdout [JINX_WAITING], exit 0
 
-    loop "Outer: rnd < HARD_CAP (40)"
-        Runner->>State: read_jinx()
-        State-->>Runner: current state
+    loop Host повторно вызывает точку входа без аргумента задачи
+        Host->>CLI: python .agent/jinx.py
+        CLI->>Runner: run(None, ...) — ветка возобновления
+        Runner->>IPC: read jinx_run_state.yaml (rnd, tool_depth, waiting_for, history)
 
-        loop "Inner: tool_depth < TOOL_DEPTH_CAP (20)"
-            Runner->>Host: stdout JSON-RPC (llm_generate)
-            Host-->>Runner: stdin content_blocks
-            alt If tool_use detected
-                loop For each tool_use
-                    Runner->>Host: stdout JSON-RPC (tool call)
-                    Host-->>Runner: stdin tool result
-                end
-                alt If tool_depth >= TOOL_DEPTH_CAP (20)
-                    Note over Runner: Depth Cap Fired (Safety Recovery)
-                    Runner->>Host: stdout JSON-RPC (llm_generate with tools=[])
-                    Host-->>Runner: stdin content_blocks + state block
-                    Note over Runner: Break Inner Loop
-                end
-            else No tool_use
-                Note over Runner: Break Inner Loop
+        alt jinx_response.yaml отсутствует
+            Runner->>Runner: _is_run_state_stale()?
+            alt устарело более JINX_BACKGROUND_WAIT_TIMEOUT
+                Runner->>IPC: перевыдать тот же запрос с retry=true
+            else ещё в пределах окна
+                Runner-->>Host: exit 1 — ожидание редактора
             end
-        end
-
-        Runner->>Runner: parse_state_block (last match)
-        Runner->>State: merge_state + write_jinx
-        alt exit_ready + check_exit
-            Runner->>CLI: return (success)
-        else deadlock detected or deadlock state
-            Runner->>CLI: return (deadlock)
-        else HARD_CAP exhausted
-            Runner->>CLI: sys.exit(2)
+        else ответ присутствует
+            Runner->>IPC: read + unlink jinx_response.yaml
+            alt waiting_for = llm_generate
+                Runner->>Runner: разделить text / tool_use / некорректные блоки
+                alt присутствуют блоки tool_use
+                    Runner->>IPC: write request (tool_calls, tool_depth+1)
+                else чистый текстовый ответ
+                    Runner->>State: merge_state + write_jinx
+                    alt exit_ready и check_exit()
+                        Runner-->>Host: [JINX_COMPLETE], очистка, exit 0
+                    else флаг deadlock или check_deadlock()
+                        Runner-->>Host: [JINX_DEADLOCK], очистка, exit 0
+                    else rnd + 1 >= HARD_CAP (40)
+                        Runner-->>Host: очистка, exit 2
+                    else продолжение
+                        Runner->>IPC: следующий запрос (llm_generate)
+                    end
+                end
+            else waiting_for = tool_calls
+                alt tool_depth >= TOOL_DEPTH_CAP (20)
+                    Runner->>IPC: запрос llm_generate с tools=[]
+                else ниже порога
+                    Runner->>IPC: следующий запрос llm_generate
+                end
+            end
         end
     end
 ```
@@ -334,11 +423,38 @@ state:
         unit_tests: false
       pass_count: 1
       all_pass: false
+      approach_graph:            # необязательно — включает семантическую кластеризацию дедлоков
+        nodes:
+          - {id: "jwt_signer.py", type: file}
+          - {id: "pytest", type: tool}
+        edges:
+          - {source: "pytest", target: "jwt_signer.py", relation: tests}
   debt: []
   open: []
   exit_ready: false
   deadlock: false
 ```
+
+### Разрешение пути
+
+Файл `JINX.yaml` определяется трёхуровневым поиском (`_resolve_jinx_path`):
+
+1. Переменная окружения `JINX_PATH`, если она установлена.
+2. Файл `.agent/JINX.yaml` рядом с установленным пакетом (раскладка для разработки).
+3. Подъём вверх от текущей рабочей директории в поисках `<dir>/.agent/JINX.yaml` с запасным вариантом `<cwd>/.agent/JINX.yaml`.
+
+### Форматы записей оценок
+
+`ScoreEntry` принимает две формы. **Полная** форма несёт `requirements`, `pass_count` и `all_pass`. **Упрощённая** форма несёт только вердикт и свободный текст:
+
+```yaml
+scores:
+  - round: 2
+    verdict: fail        # pass | passed | ok | true | 1  → all_pass: true
+    detail: "RS256 key loading still fails on rotated keys"   # → approach
+```
+
+Обе формы автоматически нормализуются в полную схему (`requirements: {task_complete: <bool>}`, `pass_count`, `all_pass`, `approach`) до валидации через Pydantic, поэтому краткий ответ модели никогда не будет отклонён. `round` по умолчанию равен `0`, а `approach` — `"unspecified"`; ключи `task`, `facts`, `scores`, `debt` и `open` заменяются целиком тем, что прислала модель, тогда как ключи со значением `None` игнорируются, и частичное обновление сохраняет остальной манифест.
 
 ---
 
@@ -347,138 +463,215 @@ state:
 Среда выполнения JINX состоит из следующих Python-компонентов, расположенных в директории `.agent/` (при этом основные пакетные модули находятся в `.agent/src/jinx/`):
 
 * **`jinx.py`** (Входной скрипт запуска, расположен в `.agent/`):
-  Служит единой точкой входа для выполнения. Настраивает пути импорта Python и делегирует обработку параметров командной строки парсеру. Включает автоматический загрузчик зависимостей, который проверяет наличие и автоматически устанавливает строго ограниченные версии зависимостей (`pydantic>=2.0.0`, `pyyaml>=6.0`) в текущее окружение, если они отсутствуют.
+  Служит единой точкой входа для выполнения. Он добавляет `.agent/src` в `sys.path`, чтобы `import jinx` разрешался без глобальной установки, а затем делегирует обработку командной строки парсеру. Включает автоматический загрузчик зависимостей, который проверяет наличие и автоматически устанавливает строго ограниченные версии зависимостей (`pydantic>=2.0.0`, `pyyaml>=6.0`) через `sys.executable -m pip`, завершаясь с кодом `1` и подсказкой ручной установки при неудаче.
 * **`cli.py`** (Обработчик аргументов):
-  Производит разбор входящих параметров с использованием библиотеки `argparse`. Собирает позиционный аргумент описания задачи и опциональный флаг переопределения минимального числа раундов `--min` перед вызовом основного оркестратора.
+  Разбирает входящие параметры с помощью `argparse`. Собирает позиционный аргумент задачи (объединяемый в одну строку), а также необязательные переопределения `--min` (число раундов) и `--ipc {file,rpc}` (выбор транспорта) перед передачей оркестратору. Логирование привязано к `stderr`, чтобы канал транспорта оставался чистым. Запуск без аргумента задачи трактуется как возобновление и допустим только при наличии файла состояния запуска.
 * **`runner.py`** (Оркестратор):
-  Реализует логику конечного автомата. Содержит центральный цикл выполнения, управляет стандартными потоками для обмена сообщениями с хост-редактором, анализирует вывод модели для извлечения markdown YAML-блоков состояния и рассчитывает условия завершения работы или фиксации дедлока.
+  Реализует конечный автомат и оба транспорта. Ключевые обязанности:
+  * `run_file_ipc` — конечная машина одного перехода: определение возобновления, восстановление после устаревшего ожидания, маршрутизация ответа и переход к следующему раунду.
+  * `run` — диспетчер транспортов. При `ipc_mode == "file"` делегирует в `run_file_ipc`, иначе выполняет устаревший долгоживущий цикл JSON-RPC прямо в этой функции.
+  * `parse_state_block` — извлекает последний корректный блок состояния из markdown-ограждений. Языковой тег не обязателен, поэтому ограждение без тега тоже разбирается; всё проходит через `yaml.safe_load`, который принимает и JSON.
+  * `check_exit` / `check_deadlock` / `_are_approaches_similar` — логика сходимости и семантической кластеризации.
+  * `Yaml` — изолированный `SafeDumper` с презентером строк, учитывающим блочные скаляры, плюс атомарная запись через временный файл; защитные пределы `HARD_CAP` (40) и `TOOL_DEPTH_CAP` (20); обработчики сигналов для очистки IPC.
 * **`state.py`** (Слой сериализации состояния):
-  Выполняет операции файлового ввода-вывода для файла манифеста состояния `JINX.yaml`. Его особенности включают:
-  * **Динамическое разрешение путей**: Реализует многоуровневый алгоритм поиска (через переменную окружения `JINX_PATH`, проверку путей разработки или рекурсивный поиск вверх по дереву каталогов от текущей рабочей директории CWD), гарантирующий корректную и бесшовную работу JINX как в локальных репозиториях, так и в глобально установленных через pip окружениях.
-  * **Закаленные схемы валидации**: Использует модели Pydantic (`ScoreEntry` и `StateBlock`), спроектированные с отказоустойчивыми значениями по умолчанию (например, `round=0`, `approach="unspecified"`), что полностью предотвращает появление исключений парсинга и непреднамеренный сброс состояния, даже если LLM опускает второстепенные метрики в своем YAML-блоке.
-* **`tools.py`** (Вспомогательный модуль JSON-RPC):
-  Задает схемы доступных инструментов (`bash_exec`, `file_read`, `file_write`), передаваемых в запросах LLM-генерации, и форматирует стандартизированный вывод в stdout.
+  Выполняет все файловые операции с манифестом `JINX.yaml`:
+  * **Динамическое разрешение путей**: трёхуровневый поиск через `JINX_PATH` / путь разработки / подъём вверх, описанный в §3.
+  * **Закаленные схемы валидации**: модели Pydantic `GraphNode`, `GraphEdge`, `ApproachGraph`, `ScoreEntry` и `StateBlock` с отказоустойчивыми значениями по умолчанию, так что частично сформированный блок не вызывает исключений и не теряет состояние.
+  * **Атомарная запись**: `atomic_write_yaml` — единственный источник истины для записи через промежуточный файл, используемый и `StateManager.persist_state`, и оркестратором.
+  * **Нормализация форматов**: `_normalize_score_entry` / `_normalize_state_update` преобразуют упрощённую форму `verdict`/`detail` и удаляют значения `None` перед валидацией.
+* **`tools.py`** (Реестр схем инструментов):
+  Возвращает декларативные схемы инструментов (`bash_exec`, `file_read` с необязательными `start_line`/`end_line`, `file_write`), поставляемые в каждый запрос `llm_generate`. Ввод-вывод не выполняется.
+* **`prompts.py`** (Шаблоны промптов):
+  Содержит `SYSTEM_PROMPT`, предупреждение `MISSING_STATE_WARNING`, вставляемое, когда раунд не выдал блок состояния, восстановительную директиву `TOOL_DEPTH_CRITICAL_MSG` и функцию `construct_round_prompt()`.
+
+### Переменные окружения среды выполнения
+
+| Переменная | По умолчанию | Применимость | Назначение |
+| :--- | :--- | :--- | :--- |
+| `JINX_PATH` | *(авто)* | оба | Явный путь к `JINX.yaml` |
+| `JINX_IPC_TIMEOUT` | `10` | `--ipc rpc` | Секунд ожидания одной попытки чтения stdin |
+| `JINX_IPC_RETRIES` | `3` | `--ipc rpc` | Число попыток чтения до выброса `IPCError` |
+| `JINX_IPC_BACKOFF` | `1.0` | `--ipc rpc` | Секунд паузы между попытками чтения |
+| `JINX_BACKGROUND_WAIT_TIMEOUT` | `30` | `--ipc file` | Секунд, после которых неотвеченный запуск считается устаревшим |
 
 ---
 
 ## 5. Руководство по интеграции с хостом и реализации подпроцесса
 
-Для интеграции JINX хост-редактор или оркестратор уровня предприятия должен запускать исполняемую команду JINX как дочерний процесс.
+Для интеграции JINX хост-редактор или оркестратор уровня предприятия должен запускать исполняемую команду JINX как дочерний процесс и управлять циклом запрос/ответ.
 
 ### Требования к запуску подпроцесса
-* **Команда выполнения**: `python .agent/jinx.py "[TASK_DESCRIPTION]"`
-* **Конфигурация процесса**: Настройте перенаправление потоков `stdout` и `stdin` в `subprocess.PIPE`. Активируйте текстовый режим (`text=True`) и обеспечьте автоматический сброс буфера вывода (`flush`).
-* **Логика цикла**: Считывайте каждую строку из `stdout` как объект JSON, маршрутизируйте вызов в зависимости от значения поля `jinx_command`, выполняйте соответствующее системное действие и возвращайте результат в `stdin` в виде JSON-строки в одну строку.
+* **Команда выполнения**: `python .agent/jinx.py "[TASK_DESCRIPTION]"` для старта, `python .agent/jinx.py` для возобновления.
+* **Конфигурация процесса**: запуск в текстовом режиме с перенаправленными потоками. Хост не хранит состояние в памяти — всё необходимое для продолжения цикла лежит на диске.
+* **Логика цикла**: после каждого запуска читать `.agent/jinx_request.yaml`. Маршрутизировать по полю `type`, выполнять действие, записывать `.agent/jinx_response.yaml` и перевызывать точку входа без аргумента задачи. Цикл завершается, когда `jinx_request.yaml` больше не появляется.
 
 ### Пример интеграции на языке Python
 
-Приведенный ниже сценарий демонстрирует практическую реализацию хост-стороны протокола IPC:
+Приведённый ниже сценарий демонстрирует практическую реализацию хост-стороны протокола File-IPC:
 
 ```python
 import subprocess
-import json
+import sys
+from pathlib import Path
+from typing import Any, Dict, List
 
-def execute_jinx(task_description: str):
-    # Запуск JINX как дочернего процесса
-    process = subprocess.Popen(
-        ["python", ".agent/jinx.py", task_description],
-        stdout=subprocess.PIPE,
-        stdin=subprocess.PIPE,
-        text=True
+import yaml
+
+AGENT = Path(".agent")
+REQUEST = AGENT / "jinx_request.yaml"
+RESPONSE = AGENT / "jinx_response.yaml"
+
+
+def spawn(task: str | None = None) -> subprocess.CompletedProcess:
+    """Один переход JINX. Возвращает управление сразу после записи запроса."""
+    argv = [sys.executable, str(AGENT / "jinx.py")]
+    if task:
+        argv.append(task)
+    return subprocess.run(argv, text=True, capture_output=True, check=False)
+
+
+def call_llm(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Передать system / messages / tools на корпоративный инференс-шлюз.
+
+    Замените тело настоящим вызовом шлюза. Этот пример читает один файл на
+    первом раунде, а затем отдаёт блок состояния, поэтому цикл ниже действительно
+    доходит до [JINX_COMPLETE], а не запрашивает инструменты бесконечно.
+    """
+    already_ran_a_tool = any(
+        isinstance(m, dict) and isinstance(m.get("content"), list)
+        and any(isinstance(b, dict) and b.get("type") == "tool_result"
+                for b in m["content"])
+        for m in request.get("messages", [])
     )
+    if not already_ran_a_tool:
+        return {"content": [
+            {"type": "text", "text": "Inspecting the workspace."},
+            {"type": "tool_use", "id": "call_01", "name": "file_read",
+             "input": {"path": ".agent/src/jinx/state.py"}},
+        ]}
+    return {"content": [{"type": "text", "text": (
+        "Read the manifest module.\n\n"
+        "```yaml\nid: JINX\nstate:\n"
+        "  task: Update the auth schema\n"
+        "  facts:\n    - Inspected src/jinx/state.py\n"
+        "  scores:\n    - round: 1\n"
+        "      approach: Read the manifest module\n"
+        "      requirements:\n        task_complete: true\n"
+        "      pass_count: 1\n      all_pass: true\n"
+        "  debt: []\n  open: []\n  exit_ready: true\n  deadlock: false\n```"
+    )}]}
 
-    try:
-        # Построчное чтение вывода из дочернего процесса JINX
-        for line in process.stdout:
-            payload = json.loads(line.strip())
-            command = payload.get("jinx_command")
-            tool_use_id = payload.get("tool_use_id")
-            params = payload.get("params", {})
 
-            if command == "llm_generate":
-                # Реализация корпоративной логики генерации LLM
-                # ...
-                ai_output = [
-                    {"type": "text", "text": "Текстовый шаг генерации."},
-                    {"type": "tool_use", "id": "call_01", "name": "bash_exec", "input": {"script": "pytest"}}
-                ]
-                # Отправка JSON-ответа обратно в stdin JINX
-                process.stdin.write(json.dumps({"content": ai_output}) + "\n")
-                process.stdin.flush()
+def run_tool(name: str, params: Dict[str, Any]) -> str:
+    if name == "bash_exec":
+        return subprocess.run(
+            params["script"], shell=True, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        ).stdout
+    if name == "file_read":
+        lines = Path(params["path"]).read_text(encoding="utf-8").splitlines()
+        start = max(1, int(params.get("start_line", 1)))
+        end = int(params.get("end_line", len(lines)))
+        return "\n".join(lines[start - 1:end])
+    if name == "file_write":
+        target = Path(params["path"])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(params["content"], encoding="utf-8")
+        return "Success"
+    return f"Error: unknown tool '{name}'"
 
-            elif command == "bash_exec":
-                # Запуск команды в окружении хоста
-                script = params.get("script")
-                # ...
-                execution_result = "Test suite passed"
-                # Отправка JSON-ответа обратно в stdin JINX
-                process.stdin.write(json.dumps({"output": execution_result}) + "\n")
-                process.stdin.flush()
 
-            elif command == "file_read":
-                # Чтение локального файла рабочей области
-                filepath = params.get("path")
-                # ...
-                file_content = "File content mock"
-                process.stdin.write(json.dumps({"content": file_content}) + "\n")
-                process.stdin.flush()
+def dispatch(request: Dict[str, Any]) -> None:
+    """Записать ответ, которого ожидает JINX."""
+    if request.get("type") == "llm_generate":
+        response = call_llm(request)
+    else:  # type == "tool_calls"
+        done: List[Dict[str, str]] = []
+        for call in request.get("calls", []):
+            if call["id"] in request.get("processed_tool_use_ids", []):
+                continue  # уже выполнено при повторе — вернуть сохранённый результат
+            done.append({
+                "tool_use_id": call["id"],
+                "content": run_tool(call["name"], call.get("params") or {}),
+            })
+        response = {"results": done}
+    RESPONSE.write_text(yaml.safe_dump(response, sort_keys=False), encoding="utf-8")
 
-            elif command == "file_write":
-                # Запись в локальный файл рабочей области
-                filepath = params.get("path")
-                content = params.get("content")
-                # ...
-                process.stdin.write(json.dumps({"output": "Success"}) + "\n")
-                process.stdin.flush()
 
-    except Exception as e:
-        process.kill()
-        raise e
+def execute_jinx(task_description: str) -> int:
+    result = spawn(task_description)
+    if result.returncode != 0:
+        return result.returncode  # 1 = ожидание редактора, 2 = исчерпан HARD_CAP
 
-    process.wait()
-    return process.returncode
+    while REQUEST.exists():
+        request = yaml.safe_load(REQUEST.read_text(encoding="utf-8"))
+        REQUEST.unlink()          # запрос потреблён до записи ответа
+        dispatch(request)
+
+        result = spawn()          # возобновление: без аргумента задачи
+        if result.returncode != 0:
+            return result.returncode
+
+    # Запроса больше нет: JINX вывел [JINX_COMPLETE] или [JINX_DEADLOCK].
+    return 0
+
 
 if __name__ == "__main__":
-    exit_code = execute_jinx("Implement corporate schema update")
-    print(f"Код завершения процесса JINX: {exit_code}")
+    print(f"Код завершения процесса JINX: {execute_jinx('Обновить схему авторизации')}")
 ```
+
+> **Примечание**: категорически не удаляйте `jinx_run_state.yaml` между итерациями — это единственный указатель JINX на текущий раунд, глубину инструментов и историю сообщений.
+
+**Таблица маршрутизации:**
+
+| `type` | Читать из запроса | Записать в ответ |
+| :--- | :--- | :--- |
+| `llm_generate` | `system`, `messages`, `tools` | `content:` — список блоков `text` / `tool_use` |
+| `tool_calls` | `calls[]` с `id`, `name`, `params` | `results[]` с `tool_use_id`, `content` |
+
+Перед выполнением вызова, перечисленного в `processed_tool_use_ids` (это происходит только при перевыдаче с `retry: true`), хост должен вернуть сохранённый результат, а не повторять побочный эффект.
 
 ---
 
 ## 6. Постинтеграционный рабочий процесс разработчика
 
-После успешного запуска JINX и настройки управления IPC-подключением со стороны хост-редактора, взаимодействие разработчика с прошивкой строится на основе модели аудита и оперативного вмешательства.
+После успешного запуска JINX и настройки рукопожатия File-IPС со стороны хоста взаимодействие разработчика с runtime строится на основе модели аудита и оперативного вмешательства.
 
 ### Диагностика в реальном времени
-Во время работы JINX разработчику не требуется вручную обрабатывать стандартные потоки ввода-вывода (эти задачи полностью выполняет фоновый модуль интеграции IDE). Вместо этого разработчик может контролировать ход выполнения по следующим каналам:
+Во время работы JINX разработчику не требуется вручную обрабатывать цикл. Ход выполнения наблюдается по следующим каналам:
 1. **Аудит манифеста состояния**:
-   Откройте `.agent/JINX.yaml` в редакторе. Этот файл автоматически обновляется в реальном времени по окончании каждого раунда. Блок `state` выступает в качестве интерактивного дашборда:
+   Откройте `.agent/JINX.yaml` в редакторе. Он атомарно перезаписывается в конце каждого раунда. Блок `state` выступает в качестве интерактивного дашборда:
    * **`facts`**: Отслеживает все выявленные факты и свойства рабочей области, принятые агентом.
-   * **`scores`**: Регистрирует метрики и результаты выполнения каждого раунда с детализацией по требованиям.
+   * **`scores`**: Регистрирует метрики и результаты каждого раунда, включая `prior_failure` и любой `approach_graph`.
    * **`debt`**: Перечисляет зафиксированные компромиссы или временные решения.
-2. **Просмотр логов генерации**:
-   Интеграционный модуль IDE перехватывает промежуточные мыслительные блоки LLM (`{"type": "text"}`) и транслирует их в нативную вкладку чата или консоли, что позволяет видеть текущую когнитивную задачу агента.
+   * **`open`**: Перечисляет нерешённые пункты, перенесённые в следующий раунд.
+2. **Аудит состояния запуска**:
+   `.agent/jinx_run_state.yaml` предоставляет `rnd`, `tool_depth`, `waiting_for` и полную историю сообщений — идеально для трассировки того, что именно было сказано модели и что она сделала.
+3. **Журналы stdout / stderr**:
+   Хост выводит маркеры прогресса из stdout JINX и поток логов из stderr (`[jinx.cli]`, `[jinx.runner]`, `[jinx.state]`) в нативную вкладку интерфейса.
 
 ### Обработка пауз и разрешение дедлоков
-Архитектура JINX предусматривает принудительную остановку цикла при достижении критических лимитов протокола для запроса вмешательства человека:
-* **Условие дедлока**:
-  Если одно и то же требование падает на 3 независимых подходах, флаг состояния переходит в значение `deadlock: true`, и дочерний процесс завершает работу с ошибкой либо приостанавливается.
+JINX автоматически останавливает выполнение при достижении лимитов протокола, запрашивая вмешательство человека.
+* **Триггер дедлока**:
+  Если одно и то же требование падает в 3 семантически различных кластерах стратегий, в манифест принудительно выставляется `deadlock: true`, печатается `[JINX_DEADLOCK]`, IPC-файлы удаляются, а процесс завершается с кодом `0` (цикл завершён намеренно, а не по ошибке — отличить его от успешного `[JINX_COMPLETE]` можно по манифесту).
+* **Триггер жёсткого лимита**:
+  После 40 раундов процесс завершается с кодом `2`; IPC-файлы всё равно удаляются.
 * **Рабочий процесс ручной коррекции**:
-  1. Разработчик открывает файл `.agent/JINX.yaml` для локализации упавшего требования и истории попыток.
-  2. Разработчик устраняет блокирующую проблему в коде проекта вручную или корректирует параметры окружения (например, исправляет конфигурации БД или тестовые фикстуры).
-  3. При необходимости разработчик может вручную изменить свойства `state` в `JINX.yaml` (например, скорректировать факты или список открытых задач).
-  4. Разработчик повторно запускает сессию JINX из CLI через команду хоста. JINX считывает текущий манифест `JINX.yaml`, идентифицирует историю прошлых раундов и продолжает когнитивный цикл с учетом обновленного контекста.
+  1. Изучите `.agent/JINX.yaml`, чтобы определить упавшее требование и историю подходов.
+  2. Устраните блокирующую проблему в коде или скорректируйте окружение (начальные данные БД, фикстуры, доступность инструментов).
+  3. При необходимости вручную отредактируйте свойства `state` в `JINX.yaml` (facts, debt, открытые вопросы).
+  4. Перезапустите из CLI. Передача задачи начинает новую сессию, а её отсутствие возобновляет существующую. JINX читает сохранённый `JINX.yaml`, определяет предыдущие раунды и продолжает цикл с обновлённым контекстом.
 
 ### Верификация и фиксация изменений
-Когда когнитивный цикл успешно завершает работу по критериям выхода, процесс JINX завершается с кодом `0`.
-1. **Анализ диффов**: Разработчик проверяет внесенные изменения в файлах проекта.
-2. **Фиксация кода**: Разработчик выполняет коммит готовых файлов. Метаданные состояния в `.agent/JINX.yaml` остаются в изолированной директории рабочего пространства и служат контекстной базой для последующих запусков.
+Когда цикл удовлетворяет всем условиям выхода, JINX печатает `[JINX_COMPLETE] Task resolved successfully!` и завершается с кодом `0`.
+1. **Анализ диффов**: Проверьте внесённые изменения в файлах рабочего пространства.
+2. **Фиксация кода**: Метаданные состояния в `.agent/JINX.yaml` сохраняются как контекст для следующей задачи, а временные `jinx_request.yaml`, `jinx_response.yaml` и `jinx_run_state.yaml` удаляются автоматически.
 
 ---
 
 ## 7. Модульная система верификации и AI-синтеза тестов machineGPT
 
-Для обеспечения 100% совместимости, строгого соответствия схемам данных и структурной стабильности JINX, в проекте реализован профессиональный унифицированный тестовый сьют `scripts/jinx_test.py`. Данная система объединяет статический аудит окружения и модульное регрессионное тестирование с полностью автоматизированным, самовосстанавливающимся динамическим движком AI-синтеза (`AISynthesisEngine`).
+Для гарантии соответствия схемам и структурной стабильности JINX в проекте реализован профессиональный унифицированный тестовый сьют `scripts/jinx_test.py`. Данная система объединяет статический аудит окружения и модульное регрессионное тестирование с полностью автоматизированным, самовосстанавливающимся динамическим движком AI-синтеза (`AISynthesisEngine`).
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
@@ -496,8 +689,8 @@ flowchart TD
 
     subgraph Plugins["tests/enterprise_plugins/"]
         V_CLI["verify_cli.py"]:::sub
-        V_TOOLS["verify_tools.py"]:::sub
-        V_OTHER["verify_runner.py / verify_state.py / verify_prompts.py"]:::sub
+        V_STATE["verify_state.py"]:::sub
+        V_OTHER["verify_runner.py / verify_prompts.py / verify_tools.py / verify_parse_state.py"]:::sub
     end
     style Plugins fill:#0d1117,stroke:#30363d,color:#e6edf3
 
@@ -505,16 +698,17 @@ flowchart TD
 ```
 
 ### Основные направления верификации
-Оркестратор тестов выполняет 9 независимых диагностических фаз, сгруппированных в 5 ключевых направлений (или 10 фаз и 6 направлений при запуске с параметром `--stress`):
+Оркестратор тестов выполняет **10 диагностических фаз, сгруппированных в 5 ключевых направлений** (или **11 фаз и 6 направлений** при запуске с параметром `--stress`). Сначала выполняются четыре статических направления, затем по одной AI-синтезированной фазе на каждый обнаруженный модуль ядра:
+
 1. **Аудит платформы и окружения**: Проверяет системные требования, python-зависимости (Pydantic, PyYAML, Pytest) и корректность разрешения путей к файлам.
-2. **Соответствие схем и моделей**: Проверяет валидацию моделей Pydantic и полный цикл сериализации/десериализации состояния в манифест `.agent/JINX.yaml`.
-3. **Сходство графов и нагрузочное тестирование**: Тестирует алгоритмы математической кластеризации графов, обнаружение дедлоков и масштабирование сходства при экстремальных топологических нагрузках.
-4. **Регрессионные тесты Pytest**: Нативно запускает существующий набор модульных unit-тестов проекта.
-5. **Динамическая AI-верификация (модульная)**: Автоматически сканирует структуру исходного кода ядра JINX с помощью абстрактных синтаксических деревьев (AST) и компилирует актуальные тесты для классов, методов и функций в директории `tests/enterprise_plugins/`.
-6. **Стресс-профилирование когнитивного цикла (`--stress`)**: Симулирует работу с ApproachGraph из 500 узлов и 499 ребер, профилирует пропускную способность полного цикла Pydantic/YAML сериализации, а также симулирует дедлок-сценарии с 100 изолированными путями в рамках сверхжесткого лимита времени (доли миллисекунды).
+2. **Соответствие схем и моделей**: Проверяет валидацию моделей Pydantic и полный цикл сериализации/десериализации блоков состояния (включая узлы и рёбра `ApproachGraph`) через `.agent/JINX.yaml`.
+3. **Сходство графов и нагрузочное тестирование**: Тестирует кластеризацию по Жаккару, обнаружение дедлоков и масштабирование сходства при экстремальных топологических нагрузках.
+4. **Регрессионные тесты Pytest**: Нативно запускает весь модульный набор регрессий из каталога `tests/`.
+5. **Динамическая AI-верификация (модульная)**: Сканирует `.agent/src/jinx/` с помощью абстрактных синтаксических деревьев (AST) и компилирует проверки наличия классов, методов и функций в `tests/enterprise_plugins/verify_<module>.py` — по одной фазе на модуль (`cli`, `runner`, `state`, `tools`, `prompts`, `parse_state`).
+6. **Стресс-профилирование когнитивного цикла (`--stress`)**: Симулирует работу с ApproachGraph из 500 узлов и 499 ребер, профилирует пропускную способность полного цикла Pydantic/YAML сериализации, а также симулирует дедлок-сценарии с 100 изолированными кластерами в рамках сверхжёсткого лимита времени (доли миллисекунды).
 
 ### Протокол сохранения пользовательского кода
-Разработчики и AI-агенты могут дополнять сгенерированные файлы верификации в `tests/enterprise_plugins/verify_<module>.py` собственными проверками и утверждениями. Любой пользовательский код, размещенный внутри специальных комментариев-границ, строго сохраняется при автоматической синхронизации и обновлениях:
+Разработчики и AI-агенты могут дополнять сгенерированные файлы верификации в `tests/enterprise_plugins/verify_<module>.py` собственными проверками и утверждениями. Любой пользовательский код, размещённый внутри специальных комментариев-границ, строго сохраняется при автоматической синхронизации и обновлениях:
 ```python
 # ==============================================================================
 # <CUSTOM_CODE_START>
@@ -528,32 +722,33 @@ def custom_validation_rules(suite):
 
 ### Параметры командной строки (CLI)
 Запуск тестового сьюта осуществляется из корня репозитория:
-* **Запуск полного цикла верификации**:
-  ```bash
-  python scripts/jinx_test.py
-  ```
-* **Вывод каталога обнаруженных модулей и статуса покрытия тестами**:
-  ```bash
-  python scripts/jinx_test.py --ai-list
-  ```
-* **Принудительная компиляция AST и полная синхронизация модулей**:
-  ```bash
-  python scripts/jinx_test.py --ai-sync
-  ```
-* **Высокомасштабное стресс-тестирование и микросекундное профилирование производительности**:
-  ```bash
-  python scripts/jinx_test.py --stress
-  ```
+
+| Флаг | Действие |
+| :--- | :--- |
+| *(нет)* | Выполнить полный 10-фазный цикл верификации и вывести статусный дашборд |
+| `--ai-list` | Вывести каталог обнаруженных модулей, их классов/функций и статус покрытия плагинами |
+| `--ai-sync` | Принудительная компиляция AST и полная синхронизация/перегенерация модулей плагинов |
+| `--stress` | Включить дополнительную фазу стресс/производительности (всего 11 фаз) |
+| `--output PATH` | Переопределить путь JSON-отчёта (по умолчанию `tests/jinx_test_report.json`) |
+| `--verbose` | Выводить детальные результаты по каждой проверке |
+
+```bash
+python scripts/jinx_test.py
+python scripts/jinx_test.py --ai-list
+python scripts/jinx_test.py --ai-sync
+python scripts/jinx_test.py --stress
+python -m pytest -q          # 59 регрессионных тестов в tests/
+```
 
 ---
 
 ## 8. Протокол Интеграции с Хост-Средой Anthropic Claude Code CLI
 
-Архитектурная спецификация JINX предусматривает бесшовное развертывание среды выполнения в качестве управляемого ядра внутри официальной консольной среды разработки **Anthropic Claude Code CLI**. При данной схеме развертывания Claude Code берет на себя роль родительского хост-процесса (orchestration host), обеспечивая трансляцию логических шагов JINX во внешние сервисы и локальную файловую систему.
+Архитектурная спецификация JINX предусматривает развёртывание среды выполнения в качестве управляемого ядра внутри официальной консольной среды разработки **Anthropic Claude Code CLI**. При данной схеме развёртывания Claude Code берёт на себя роль родительского хост-процесса (orchestration host), обеспечивая трансляцию логических шагов JINX во внешние сервисы и локальную файловую систему.
 
 Хост-оркестратор осуществляет:
 1. Перехват входящих запросов пользователя.
-2. Маршрутизацию запросов на внешние инференс-шлюзы Anthropic API (Claude 3.5 Sonnet).
+2. Маршрутизацию запросов на внешние инференс-шлюзы (Claude через Anthropic API).
 3. Исполнение декларативных директив JINX на чтение, модификацию файлов и выполнение системных команд.
 4. Возврат результатов выполнения обратно в когнитивный цикл JINX через механизм File-IPC.
 
@@ -564,22 +759,22 @@ def custom_validation_rules(suite):
 По умолчанию модель безопасности Claude Code CLI требует интерактивного подтверждения оператора для каждого изменения файлов и выполнения команд терминала.
 
 > [!TIP]
-> **Рекомендуемая безопасная настройка**: Мы настоятельно рекомендуем сохранять интерактивные запросы включенными. Это гарантирует, что вы будете явно просматривать и утверждать каждое изменение, которое JINX предлагает внести в вашу систему.
+> **Рекомендуемая безопасная настройка**: Мы настоятельно рекомендуем сохранять интерактивные запросы включёнными. Это гарантирует, что вы будете явно просматривать и утверждать каждое изменение, которое JINX предлагает внести в вашу систему.
 
 #### ОПЦИОНАЛЬНО: Неинтерактивный режим песочницы (для изолированных или проверенных доверенных сред)
 
-Если вы предпочитаете полностью автоматизированный, неблокирующий когнитивный цикл (например, в безопасном изолированном контейнере разработки, на виртуальной машине в песочнице или в среде CI/CD), вы можете настроить глобальные параметры Claude для автоматического подтверждения редактирования файлов и определенных шаблонов команд.
+Если вы предпочитаете полностью автоматизированный, неблокирующий когнитивный цикл (например, в безопасном изолированном контейнере разработки, виртуальной машине в песочнице или в среде CI/CD), вы можете настроить глобальные параметры Claude для автоматического подтверждения редактирования файлов и определённых шаблонов команд.
 
 > [!CAUTION]
 > **КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ О БЕЗОПАСНОСТИ**: Включение `"defaultMode": "acceptEdits"` и автоматическое одобрение команд терминала отключает интерактивные запросы подтверждения Claude Code. Это позволяет JINX (и любому другому агенту, запущенному в этой рабочей области) читать, записывать и выполнять произвольные команды на вашей хост-системе без подтверждения. НЕ настраивайте эти параметры на основной рабочей машине или в средах с ненадлежащим уровнем доверия.
 
-Конфигурационный файл глобальных настроек размещен по универсальному пути, привязанному к домашней директории активного профиля пользователя:
+Конфигурационный файл глобальных настроек размещён по универсальному пути, привязанному к домашней директории активного профиля пользователя:
 * **Windows OS**: `%USERPROFILE%\.claude\settings.json` (интерпретируется как `C:\Users\<Текущая_Учетная_Запись>\.claude\settings.json`)
 * **macOS / Linux**: `~/.claude/settings.json` (интерпретируется как `/home/<Имя_Пользователя>/.claude/settings.json`)
 
 #### Системные директивы для создания и инициализации конфигурационного профиля:
 
-Для инициализации или модификации профиля безопасности используйте стандартные средства системного терминала под вашей текущей учетной записью:
+Для инициализации или модификации профиля безопасности используйте стандартные средства системного терминала под вашей текущей учётной записью:
 
 * **Windows (PowerShell)**:
   ```powershell
@@ -610,7 +805,7 @@ def custom_validation_rules(suite):
 #### Архитектурное назначение параметров авторизации (для неинтерактивного режима):
 | Параметр | Тип значения | Описание и функциональное назначение |
 | :--- | :--- | :--- |
-| `"defaultMode": "acceptEdits"` | `string` | Переводит файловую песочницу хоста в режим автоматического одобрения. Разрешает JINX неблокирующее создание временных файлов IPC-обмена (`jinx_request.json`, `jinx_response.json`) и целевых артефактов ПО. |
+| `"defaultMode": "acceptEdits"` | `string` | Переводит файловую песочницу хоста в режим автоматического одобрения. Разрешает JINX неблокирующее чтение и запись IPC-файлов (`.agent/jinx_request.yaml`, `.agent/jinx_response.yaml`, `.agent/jinx_run_state.yaml`) и целевых артефактов ПО. |
 | `"allow": ["Bash(python *)"]` | `array[string]` | Декларативный белый список шаблонов терминальных команд. Позволяет хосту запускать и транслировать управление оркестратору `python .agent/jinx.py` без интерактивного ожидания действий оператора. |
 
 ### Регламент Запуска и Сквозной Маршрутизации
@@ -623,10 +818,20 @@ def custom_validation_rules(suite):
    * *«JINX: Добавь функцию деления в calc.py и проверь тестами»*
    * *«Пожалуйста, запусти JINX для реализации деления»*
 
-В соответствии с явными указаниями разработчика, хост выполнит инициализацию дочернего оркестратора `python .agent/jinx.py "[запрос]"` и прозрачно проведет сессию через все транзакционные раунды когнитивного цикла до полной верификации поставленной задачи.
+В соответствии с явными указаниями разработчика хост выполнит инициализацию оркестратора `python .agent/jinx.py "[запрос]"`, проведёт рукопожатие File-IPC до тех пор, пока `.agent/jinx_request.yaml` не исчезнет, и сообщит терминальный маркер (`[JINX_COMPLETE]`, `[JINX_DEADLOCK]` либо код выхода `2`).
+
+---
 
 ## Web Agent
-  ```bash
-  .agent/webagent/
-  ```
+
+Панель мониторинга на React + Express + Vite для визуализации когнитивного цикла в реальном времени расположена в `.agent/webagent/`.
+
+```bash
+cd .agent/webagent
+npm install
+npm run dev          # http://localhost:3301
+```
+
+Полное руководство по дашборду, переменным окружения и API приведено в [`README.md`](.agent/webagent/README.md) · [`README_RU.md`](.agent/webagent/README_RU.md) · [`README_ZH.md`](.agent/webagent/README_ZH.md).
+
 ![Скриншот](images/webagent.jpg)
