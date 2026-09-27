@@ -158,6 +158,9 @@ class StateBlock(BaseModel):
     scores: List[ScoreEntry] = Field(default_factory=list)
     debt: List[str] = Field(default_factory=list)
     open: List[str] = Field(default_factory=list)
+    # Durable, cross-run rules. Unlike facts/debt/open these are ADDITIVE and are
+    # written to a separate ledger, so a new session does not erase them.
+    lessons: List[Any] = Field(default_factory=list)
     exit_ready: bool = False
     deadlock: bool = False
 
@@ -381,6 +384,16 @@ def merge_state(
         outcome["applied"] = True
 
     s: Dict[str, Any] = jinx.setdefault("state", {})
+
+    # Lessons are durable and cross-run, so they are deliberately NOT written
+    # into the state block: ``_init_new_session`` resets this dict when a new
+    # task starts, and re-sending them here would cost tokens every round for
+    # no reason. They are handed to the caller to persist in the ledger.
+    if "lessons" in update:
+        if outcome is not None:
+            outcome["lessons"] = update.get("lessons")
+        else:
+            update = {k: v for k, v in update.items() if k != "lessons"}
 
     for key in ("task",):
         if key in update and key in validated_dict:

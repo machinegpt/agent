@@ -60,9 +60,34 @@ it on rounds where you can't fill it out correctly.
 - `edges`: directed links between those nodes — `source` node ID, `target` node ID, and a `relation` label
   (e.g. 'reads', 'modifies', 'tests', 'depends_on').
 
+SELF-IMPROVEMENT — TWO SEPARATE THINGS, DON'T CONFUSE THEM:
+1. `lessons` (YOUR CALL, ALWAYS SAFE): send a `lessons` list in your state block to record a
+   durable rule distilled from what you actually observed this round. Unlike `facts`/`debt`/`open`,
+   lessons are ADDITIVE and survive into future tasks in a separate ledger, so a rule worth keeping
+   must be stated as a general, reusable imperative, not a note about this task. Examples:
+   "state blocks are validated as one unit, so never leave approach_graph half-filled",
+   "measure a notice against the same window you actually send, not the one you persist".
+   Send only NEW lessons; duplicates are collapsed automatically. Each round, the lessons you were
+   shown are credited or blamed by whether that round passed, so a rule that keeps failing stops
+   being shown. Do not pad this list — unproven rules start at zero credit and are dropped at the cap.
+2. Editing your own code under `.agent` (POWERFUL, GATED): you MAY edit `.agent/src/jinx/*.py` to
+   improve your own results, and that is a legitimate strategy. It is verified automatically: after
+   any round that touches framework source, the runner executes the full test suite. If anything
+   fails, your edit is REVERTED and you are told exactly what broke — you will not be left with a
+   silently broken framework. Rules:
+   - Always run the tests yourself before you consider such an edit finished.
+   - You may NOT redefine the brake logic: `merge_state`, `StateBlock`, `atomic_write_yaml`,
+     `_resolve_jinx_path` in state.py, or `check_exit`, `check_deadlock`, `_resolve_min_rounds`,
+     `_handle_llm_response` in runner.py. Writes that do are refused outright, and selfpatch.py and
+     learning.py are wholly off limits. These detect a broken framework; an agent that can rewrite
+     them cannot be verified by them.
+   - Prefer additive, backward-compatible changes. A change that makes the suite green by weakening
+     an assertion is worse than no change.
+
 REQUIRED — end every response with exactly one markdown YAML code block containing the updated state. The
 schema below shows the SHAPE of each field, not data to copy — replace every value with this task's real
-current state. Send only this round's `scores` entry; send `facts`/`debt`/`open` as the full list:
+current state. Send only this round's `scores` entry; send `facts`/`debt`/`open` as the full list, and
+`lessons` as NEW entries only:
 
 FULL FORMAT (preferred for complex tasks with multiple requirements):
 ```yaml
@@ -88,6 +113,7 @@ state:
     all_pass: <true|false>
   debt: [<every shortcut taken so far, not just new ones>]
   open: [<every unresolved issue so far, not just new ones>]
+  lessons: [<only NEW durable rules learned this round, each a general imperative, not a task note>]
   exit_ready: <true|false — true only once all_pass is true on the latest round AND you are not still improving>
   deadlock: <true|false — true only if 3+ genuinely different approaches failed the same requirement>
 ```
@@ -117,7 +143,8 @@ TOOL_DEPTH_CRITICAL_MSG: str = (
 
 
 def construct_round_prompt(
-    rnd: int, min_rounds: int, state_dump: str, missing_state: bool = False
+    rnd: int, min_rounds: int, state_dump: str, missing_state: bool = False,
+    lessons_text: str = "",
 ) -> str:
     """Constructs the structured user prompt for a specific execution round in the cognitive loop.
 
@@ -126,10 +153,16 @@ def construct_round_prompt(
         min_rounds (int): The minimum configured round threshold.
         state_dump (str): The serialized YAML or JSON string representing the current state block.
         missing_state (bool): If True, prepends the missing state block warning message.
+        lessons_text (str): Pre-rendered, already-bounded LEARNED RULES block from the
+            durable cross-run ledger. Passed in pre-rendered so the cost bound lives
+            in one place (``learning.render_lessons``) instead of being re-derived here.
 
     Returns:
         str: The fully-formed, formatted user prompt string for the cognitive loop.
     """
     warning_prefix = MISSING_STATE_WARNING if missing_state else ""
     round_label = f"ROUND {rnd} (at least {min_rounds} rounds required before exit is considered)"
-    return f"{warning_prefix}{round_label}\nCURRENT STATE:\n{state_dump}"
+    sections = [f"{warning_prefix}{round_label}\nCURRENT STATE:\n{state_dump}"]
+    if lessons_text:
+        sections.append(lessons_text)
+    return "\n\n".join(sections)

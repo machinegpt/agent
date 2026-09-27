@@ -433,9 +433,16 @@ state:
           - {source: "pytest", target: "jwt_signer.py", relation: tests}
   debt: []
   open: []
+  lessons:                    # 可选——跨轮次持久；合并进 .agent/lessons.yaml
+    - text: "在写入状态块前先验证解析结果"
+      kind: rule
+      evidence: "一个未加引号的 ':' 曾静默丢弃整整一轮"
   exit_ready: false
   deadlock: false
 ```
+
+`lessons` 是此处唯一**不**存储在 `JINX.yaml` 中的字段。它会被送往 §4a.1 描述的
+持久账本，因为 `_init_new_session` 会在新任务开始时重置该状态块。
 
 ### 路径解析
 
@@ -488,7 +495,16 @@ JINX 运行时由以下位于 `.agent/` 目录下的 Python 组件构成（核�
   * **原子写入**：`atomic_write_yaml` 是暂存文件写入的唯一事实来源，`StateManager.persist_state` 与编排器都委托于此。
   * **格式归一化**：`_normalize_score_entry` / `_normalize_state_update` 在校验前将简化的 `verdict`/`detail` 形态转换并剔除 `None` 值。
 * **`tools.py`**（工具结构注册表）：
-  返回声明式的工具结构（`bash_exec`、带可选 `start_line`/`end_line` 的 `file_read`、`file_write`），随每个 `llm_generate` 请求下发。它不执行任何 I/O。
+* **`learning.py`**（跨轮次的持久经验账本）：
+  让学习成果活过单次运行。`facts`/`debt`/`open` 属于单次运行的工作记忆，并且为了保持每轮成本平稳而被有意截断，因此没有这个模块，JINX 学到的最昂贵的东西会在任务之间被丢弃。账本存放在**独立文件** `.agent/lessons.yaml` 中，正是因为 `_init_new_session` 在新任务开始时会重置状态块。关键职责：
+  * `add_lessons` — 增量且去重：重复表述的规则会累加 `seen` 计数，而不是追加副本，因此每轮都复述自身规则的模型无法撑大该文件。上限为 `JINX_LESSONS_CAP`。
+  * `render_lessons` — 注入有界的 `LEARNED RULES` 块。同时受**数量**（`JINX_LESSONS_INJECT_LIMIT`）和**字符预算**（`JINX_LESSONS_BUDGET_CHARS`）限制，因为真正消耗 token 的正是字符。它还会返回已展示经验的键，这正是记功机制得以成立的前提。
+  * `record_outcome` — 每一轮根据该轮结果，为实际展示过的经验记功或记过。被验证有效的经验上浮；反复失效的经验不再展示，因此该存储会自我修剪而不是持续增长。缺少这一步，账本就只是一份只写的日志。
+* **`selfpatch.py`**（带闸门的自我修改）：
+  允许 JINX 修改自己的代码，同时不允许它拆掉自己的安全闸。`file_write` 接受的是裸字符串路径，因此模型一直都能重写 `.agent/src/jinx/*.py`——事实上本仓库自身的发布工作正是这样完成的。此前没有任何机制检查结果是否还能工作，本模块补上了这一环：
+  * **校验与回滚** — `capture_baseline` 复制源码树，`baseline_changed` 比对差异，`restore_baseline` 执行回滚。任何改动了框架源码的轮次之后，`verify` 都会运行 `pytest` **以及** 完整的 `jinx_test` 套件；任一失败即撤销该修改，并把失败输出回灌到下一轮提示词中。一次失败的尝试只损失一轮，而不是整次运行。基线覆盖整个运行，而非单轮：运行开始时采集，某个轮次没有改动时保留，已验证的修改被采纳后重新采集。正常结束时清除；出错退出时**刻意保留**——正是它让下一次启动能够修复损坏。
+  * **启动前预检** — 同一检查会在 `.agent/jinx.py` 中、在导入 JINX 之前再运行一次，并按路径直接加载 `selfpatch.py`。否则，留下语法错误的自修改会让框架根本无法启动，而本该捕捉该问题的闸门也根本无法运行。磁盘上没有基线时无从比较，此时损坏的代码树会明确报错，而不是被悄悄覆盖。
+  * **闸门保护** — `guard_tool_call` 拒绝任何会重定义 `merge_state`、`StateBlock`、`atomic_write_yaml`、`_resolve_jinx_path`、`check_exit`、`check_deadlock`、`_resolve_min_rounds`、`_handle_llm_response` 或 `SYSTEM_PROMPT` 的写入，并将 `selfpatch.py` 与 `learning.py` 整体列为禁区。拒绝发生在**派发之前**而非事后撤销，模型因此会知道自己被拒绝，而不会误以为校验机制坏了。保护比较这些定义的*函数体*与磁盘上的实际内容，而不仅仅检查名字是否存在，因此只要闸门本身逐字节未变，就可以整体重写受保护的文件。削弱、改写或删除闸门都会被拒绝；而 `bash_exec` 会完全绕过这项检查——这也正是下面「校验与回滚」这一步不可省略的原因。
 * **`prompts.py`**（提示词模板）：
   包含 `SYSTEM_PROMPT`、当某轮遗漏状态块时注入的 `MISSING_STATE_WARNING`、恢复指令 `TOOL_DEPTH_CRITICAL_MSG`，以及 `construct_round_prompt()`。
 
@@ -506,6 +522,64 @@ JINX 运行时由以下位于 `.agent/` 目录下的 Python 组件构成（核�
 | `JINX_FACTS_CAP` | `60` | 两者 | `facts` 保留的最大条目数，优先丢弃最旧的 |
 | `JINX_KEEP_IPC_ON_SIGNAL` | *(未设置)* | 两者 | 设为 `1` 时在 Ctrl+C 后保留 IPC 文件以便排查 |
 | `JINX_TOOL_RESULT_CACHE_CAP` | `64` | 两者 | 保留的记忆化工具结果上限，超出时淘汰最旧的条目 |
+
+---
+
+---
+
+## 4a. 自我改进：两种不同的能力
+
+JINX 能够自我改进，但"自我改进"其实涵盖了两件风险等级完全不同的事情。把二者混为一谈是这里最容易犯的设计错误，因此我们有意将它们分开。
+
+### 4a.1 持久经验——始终安全，而且价值更高
+
+JINX 已经学到的一切（`prior_failure`、`approach_graph`、`facts`/`debt`/`open`）都是**单次运行内**的，并且为了保持每轮成本平稳而被有意截断——`facts` 上限 60 条，`prior_failure` 只保留最近 5 轮。因此它学到的最昂贵的东西会在任务之间被丢弃，每个新任务都从零开始。
+
+状态块中的 `lessons` 字段解决了这个问题。经验具有以下特性：
+
+* **增量累积。** 与每轮由模型全量替换的 `facts`/`debt`/`open` 不同，经验是合并写入的。只需发送新增条目。
+* **跨轮次持久。** 它们写入 `.agent/lessons.yaml` 这个独立文件，因为开始新任务会调用 `_init_new_session` 重置状态块。若把经验也存在那里，存储的衰减速度就与它本应超越的状态完全相同。
+* **按结果记功。** 每一轮中，实际注入到提示词里的经验会根据该轮是否通过而记功或记过。被验证有效的规则上浮；反复失效的规则不再展示。这正是它成为"学习"而非"日志"的原因，也正是它保持有界的机制。
+
+由于经验会延续到后续任务，一条经验应当是通用、可复用的祈使句，而不是关于当前任务的备注：
+
+```yaml
+lessons:
+  - text: "状态块是整体校验的，所以绝不要留下未填完整的 approach_graph"
+    kind: antipattern        # rule | skill | antipattern（省略时按措辞推断）
+    evidence: "第 2 轮因一条不完整的边被整体拒绝"
+```
+
+`kind` 为可选项，省略时会按措辞推断。`evidence` 为可选项。
+
+若要重置 JINX 自认为已经学到的东西，删除 `.agent/lessons.yaml` 即可。
+
+### 4a.2 带闸门的自我修改——强大且经过验证
+
+JINX 可以编辑 `.agent/src/jinx/*.py` 来改善自身效果，而在做框架本身的工作时，这往往是**正确的**策略而非权宜之计。闸门的存在，是因为此前缺少了这样一项检查：确认结果仍然可用。
+
+在任何写入了框架源码的轮次之后，运行器会：
+
+1. 运行 `pytest` **以及** 完整的 `scripts/jinx_test.py` 套件，并在首次失败处停止；
+2. 两者都通过则保留该修改；
+3. 否则**回滚源码树**，并把失败输出回灌到下一轮提示词中，使失败的尝试产出证据，而不是留下一个悄悄损坏的框架。
+
+此外，任何会重新定义闸门逻辑的写入都会在**派发之前**被拒绝，而不是先写入再回滚，因此模型会知道自己被拒绝，而不会误判校验机制已损坏。受保护的有：`merge_state`、`StateBlock`、`atomic_write_yaml`、`_resolve_jinx_path`、`check_exit`、`check_deadlock`、`_resolve_min_rounds`、`_handle_llm_response` 和 `SYSTEM_PROMPT`；`selfpatch.py` 与 `learning.py` 整体不可触碰。
+
+**为什么这道防线不可省略。** `file_write` 没有任何路径限制，而且模型已经可以把 `protocol` 块合并进清单，从而在会话中途改变 `min_rounds`。没有防线保护的自主自我修改，会让"智能体改进了自己"和"智能体删掉了本会察觉此事的逻辑"变得无法区分——而后者可由任意任务中的提示词注入触发。
+
+设置 `JINX_ALLOW_PROTECTED_EDITS=1` 可允许修改受保护逻辑。这是供人工有意使用的覆盖开关，而不是让智能体为自己开启的。
+
+| 变量 | 默认值 | 适用范围 | 用途 |
+| :--- | :--- | :--- | :--- |
+| `JINX_SELF_PATCH` | `1` | 两者 | 设为 `0` 可完全关闭校验回滚闸门与经验注入 |
+| `JINX_SELF_PATCH_TIMEOUT` | `600` | 两者 | 每个校验套件允许的秒数，超时即视为失败 |
+| `JINX_SELF_PATCH_BASELINE` | `.agent/.selfpatch_baseline` | 两者 | 修改前源码一次性副本的存放位置 |
+| `JINX_ALLOW_PROTECTED_EDITS` | `0` | 两者 | `1` 允许修改受保护的闸门逻辑。仅供人工覆盖 |
+| `JINX_LESSONS_CAP` | `40` | 两者 | 存储经验的上限，超出时淘汰最旧的条目 |
+| `JINX_LESSONS_INJECT_LIMIT` | `12` | 两者 | 注入到轮次提示词中的经验条数上限 |
+| `JINX_LESSONS_BUDGET_CHARS` | `1200` | 两者 | 注入块的字符预算 |
+| `JINX_LESSONS_PATH` | `.agent/lessons.yaml` | 两者 | 持久经验账本的位置 |
 
 ---
 
@@ -730,7 +804,7 @@ flowchart TD
 ```
 
 ### 核心验证支柱
-编排器共运行 **10 个诊断阶段，归入 5 大主要验证支柱**（使用 `--stress` 时为 **11 个阶段、6 大支柱**）。四个静态支柱先行执行，随后针对每个被发现的核心模块各运行一个 AI 合成阶段：
+编排器共运行若干**诊断阶段，归入主要验证支柱**（使用 `--stress` 时会额外增加阶段与支柱）。四个静态支柱先行执行，随后针对每个被发现的核心模块各运行一个 AI 合成阶段：
 
 1. **平台与环境审计**：校验运行时约束、Python 依赖（Pydantic、PyYAML、Pytest）以及文件路径解析。
 2. **结构与模型一致性**：对 Pydantic 模型序列化以及状态块的完整序列化／反序列化往返进行压力测试（涵盖 `ApproachGraph` 的节点与边），并通过 `.agent/JINX.yaml` 落地。
@@ -757,10 +831,10 @@ def custom_validation_rules(suite):
 
 | 标志 | 作用 |
 | :--- | :--- |
-| *(无)* | 执行完整的 10 阶段验证循环并渲染状态仪表板 |
+| *(无)* | 执行完整的验证循环并渲染状态仪表板 |
 | `--ai-list` | 打印所发现模块的清单、其类／函数以及插件覆盖状态 |
 | `--ai-sync` | 强制执行 AST 编译，并对插件模块进行同步／重新生成 |
-| `--stress` | 启用额外的压力／性能阶段（总计 11 个阶段） |
+| `--stress` | 启用额外的压力／性能阶段 |
 | `--output PATH` | 覆盖 JSON 报告输出路径（默认为 `tests/jinx_test_report.json`） |
 | `--verbose` | 输出每一项检查的详细结果 |
 

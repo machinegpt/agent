@@ -45,3 +45,16 @@ Thumbs.db
 .pytest_cache/
 *.log
 tests/jinx_test_report.json
+
+# --- JINX Runtime State ---
+# Per-run IPC files and the run manifest are session state, not source.
+.agent/JINX.yaml
+.agent/jinx_request.yaml
+.agent/jinx_response.yaml
+.agent/jinx_run_state.yaml
+# Durable cross-run lesson ledger: accumulated knowledge, regenerated as the
+# agent learns. Delete it to reset what JINX believes it has learned.
+.agent/lessons.yaml
+# Self-patch baseline: a throwaway copy of framework source used to roll back a
+# failed self-edit. Never source of truth.
+.agent/.selfpatch_baseline/

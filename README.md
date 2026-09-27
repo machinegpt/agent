@@ -443,9 +443,17 @@ state:
           - {source: "pytest", target: "jwt_signer.py", relation: tests}
   debt: []
   open: []
+  lessons:                    # optional — durable, cross-run; merged into .agent/lessons.yaml
+    - text: "verify the parse before writing a state block"
+      kind: rule
+      evidence: "an unquoted ':' silently discarded a whole round"
   exit_ready: false
   deadlock: false
 ```
+
+`lessons` is the only field here that is **not** stored in `JINX.yaml`. It is
+routed to the durable ledger described in §4a.1, because `_init_new_session`
+resets this block when a new task starts.
 
 ### Path Resolution
 
@@ -499,6 +507,16 @@ The JINX runtime is comprised of the following Python components located in `.ag
   * **Format Normalization**: `_normalize_score_entry` / `_normalize_state_update` convert the simplified `verdict`/`detail` shape and drop `None` values before validation.
 * **`tools.py`** (Tool Schema Registry):
   Returns the declarative tool schemas (`bash_exec`, `file_read` with optional `start_line`/`end_line`, `file_write`) shipped in every `llm_generate` request. It performs no I/O.
+* **`learning.py`** (Durable Cross-Run Lesson Ledger):
+  Makes learning outlive a run. `facts`/`debt`/`open` are per-run working memory and are deliberately truncated to keep per-round cost flat, so without this module the most expensive thing JINX learns is discarded between tasks. The ledger lives in a **separate file**, `.agent/lessons.yaml`, precisely because `_init_new_session` wipes the state block on a new task. Key responsibilities:
+  * `add_lessons` — additive and deduplicating: a re-stated rule increments a `seen` counter instead of appending a copy, so a model that restates its rules every round cannot grow the file. Bounded by `JINX_LESSONS_CAP`.
+  * `render_lessons` — injects a bounded `LEARNED RULES` block. Bounded by **both** a count (`JINX_LESSONS_INJECT_LIMIT`) and a character budget (`JINX_LESSONS_BUDGET_CHARS`), because characters are what actually cost tokens. Returns the keys of the lessons shown, which is what makes credit assignment possible.
+  * `record_outcome` — each round credits or blames the lessons it was actually shown, by whether that round passed. A rule that keeps failing sinks and stops being injected, so the store self-prunes instead of growing. Without this the ledger would be a write-only log.
+* **`selfpatch.py`** (Gated Self-Patching):
+  Lets JINX edit its own code without letting it remove its own brakes. `file_write` accepts a bare string path, so the model has always been able to rewrite `.agent/src/jinx/*.py` — and has, which is how this repository's own release work happens. Nothing used to check whether the result still worked. This module adds that check:
+  * **Verify and roll back** — `capture_baseline` copies the source tree, `baseline_changed` diffs it, and `restore_baseline` reverts. After any round that touched framework source, `verify` runs `pytest` **and** the full `jinx_test` suite; if either fails the edit is undone and the failure output is fed back to the model. A failed attempt costs one round instead of the whole run. The baseline lives for the whole run, not one round: it is captured when the run starts, kept while a round changes nothing, and re-captured after a verified edit is adopted. It is dropped on a clean finish, and deliberately **kept** on an error exit, because that is what lets the next invocation repair the damage.
+  * **Bootstrap preflight** — the same check runs once more in `.agent/jinx.py` before JINX is imported, loading `selfpatch.py` directly from its path. Without this, a self-edit that leaves a syntax error would stop the framework from starting at all, and the gate designed to catch exactly that would be unable to run. With no baseline on disk there is nothing to compare against, so a broken tree fails loudly instead of being silently overwritten.
+  * **Brake protection** — `guard_tool_call` refuses a write that would redefine `merge_state`, `StateBlock`, `atomic_write_yaml`, `_resolve_jinx_path`, `check_exit`, `check_deadlock`, `_resolve_min_rounds`, `_handle_llm_response`, or `SYSTEM_PROMPT`, and treats `selfpatch.py` and `learning.py` as wholly off limits. Refusal happens **before** dispatch, not after, so the model is told it was refused instead of concluding verification is broken. Protection compares the *bodies* of those definitions against what is on disk, not merely their presence, so rewriting a whole protected file is allowed as long as the brake itself is byte-identical. Weakening, rewriting or deleting a brake is refused, and `bash_exec` bypasses this check entirely — which is why the verify-and-roll-back step below is not optional.
 * **`prompts.py`** (Prompt Templates):
   Holds `SYSTEM_PROMPT`, the `MISSING_STATE_WARNING` injected when a round omits its state block, the `TOOL_DEPTH_CRITICAL_MSG` recovery directive, and `construct_round_prompt()`.
 
@@ -516,6 +534,62 @@ The JINX runtime is comprised of the following Python components located in `.ag
 | `JINX_FACTS_CAP` | `60` | both | Max `facts` entries kept; oldest dropped first |
 | `JINX_KEEP_IPC_ON_SIGNAL` | *(unset)* | both | Set to `1` to keep IPC files on Ctrl+C for inspection |
 | `JINX_TOOL_RESULT_CACHE_CAP` | `64` | both | Max memoized tool results kept; oldest evicted |
+
+---
+
+## 4a. Self-Improvement: Two Distinct Capabilities
+
+JINX can improve itself, but "self-improvement" covers two very different things with very different risk profiles. Conflating them is the main design mistake available here, so they are kept separate.
+
+### 4a.1 Durable Lessons — always safe, and the higher-value half
+
+Everything JINX already learned (`prior_failure`, `approach_graph`, `facts`/`debt`/`open`) is **per-run** and deliberately truncated to hold per-round cost flat — `facts` at 60 entries, `prior_failure` to the last 5 rounds. So the most expensive thing it learns is thrown away between tasks, and every new task starts from zero.
+
+The `lessons` field in the state block fixes that. Lessons are:
+
+* **Additive.** Unlike `facts`/`debt`/`open`, which are *replaced* by whatever the model sends each round, lessons are merged. Send only new ones.
+* **Durable.** They are written to `.agent/lessons.yaml`, a separate file, because starting a new task calls `_init_new_session`, which resets the state block. Wiping lessons there would make the store decay at exactly the rate of the state it is meant to outlast.
+* **Credit-assigned.** Each round, the lessons that were actually injected are credited or blamed according to whether that round passed. Proven rules float up; rules that keep failing stop being shown. This is what makes it learning rather than a log, and it is also what keeps the store bounded.
+
+Because they survive into later tasks, a lesson must be a general, reusable imperative rather than a note about the current task:
+
+```yaml
+lessons:
+  - text: "state blocks are validated as one unit, so never leave approach_graph half-filled"
+    kind: antipattern        # rule | skill | antipattern (inferred if omitted)
+    evidence: "round 2 was rejected wholesale for one incomplete edge"
+```
+
+`kind` is optional and inferred from the wording when absent. `evidence` is optional.
+
+To reset what JINX believes it has learned, delete `.agent/lessons.yaml`.
+
+### 4a.2 Gated Self-Patching — powerful, and verified
+
+JINX may edit its own code under `.agent/src/jinx/*.py` to improve its results, and for framework work this is often the *right* strategy rather than a workaround. The gate exists because of what was previously missing: a check that the result still works.
+
+After any round that writes to framework source, the runner:
+
+1. runs `pytest` **and** the full `scripts/jinx_test.py` suite, stopping at the first failure;
+2. keeps the edit if both pass;
+3. otherwise **reverts the source tree** and feeds the failure output back into the next round's prompt, so a failed attempt produces evidence instead of a silently broken framework.
+
+Separately, a write that would redefine the brake logic is **refused before dispatch** — not written and then undone — so the model is told it was refused rather than concluding that verification is broken. Protected: `merge_state`, `StateBlock`, `atomic_write_yaml`, `_resolve_jinx_path`, `check_exit`, `check_deadlock`, `_resolve_min_rounds`, `_handle_llm_response`, and `SYSTEM_PROMPT`; `selfpatch.py` and `learning.py` are off limits entirely.
+
+**Why the guard is not optional.** `file_write` has no path restrictions, and the model can already merge a `protocol` block into the manifest, which re-resolves `min_rounds` mid-session. Autonomous self-modification without a brake-removal guard would make "the agent improved itself" and "the agent removed the logic that would have noticed" indistinguishable — and the second is prompt-injectable from any task.
+
+Set `JINX_ALLOW_PROTECTED_EDITS=1` to permit protected edits. That is a deliberate human override, not something for the agent to set for itself.
+
+| Variable | Default | Applies to | Purpose |
+| :--- | :--- | :--- | :--- |
+| `JINX_SELF_PATCH` | `1` | both | Set to `0` to disable the verify-and-revert gate and lesson injection entirely |
+| `JINX_SELF_PATCH_TIMEOUT` | `600` | both | Seconds allowed for each verification suite before it counts as a failure |
+| `JINX_SELF_PATCH_BASELINE` | `.agent/.selfpatch_baseline` | both | Where the throwaway pre-edit source copy lives |
+| `JINX_ALLOW_PROTECTED_EDITS` | `0` | both | `1` permits edits to protected brake logic. Human override only |
+| `JINX_LESSONS_CAP` | `40` | both | Max stored lessons; oldest evicted first |
+| `JINX_LESSONS_INJECT_LIMIT` | `12` | both | Max lessons injected into a round prompt |
+| `JINX_LESSONS_BUDGET_CHARS` | `1200` | both | Character budget for the injected block |
+| `JINX_LESSONS_PATH` | `.agent/lessons.yaml` | both | Location of the durable lesson ledger |
 
 ---
 
@@ -741,7 +815,7 @@ flowchart TD
 ```
 
 ### Core Testing Pillars
-The orchestrator runs **10 diagnostic phases grouped into 5 primary verification pillars** (or **11 phases and 6 pillars** under `--stress`). The four static pillars run first, followed by one AI-synthesized phase per discovered core module:
+The orchestrator runs **diagnostic phases grouped into primary verification pillars** (with additional phases and pillars under `--stress`). The four static pillars run first, followed by one AI-synthesized phase per discovered core module:
 
 1. **Platform & Environment Audit**: Validates runtime constraints, Python dependencies (Pydantic, PyYAML, Pytest), and file path resolutions.
 2. **Schema & Model Conformance**: Stresses Pydantic model serialization and full state-block round-trip cycles (including `ApproachGraph` nodes and edges) through `.agent/JINX.yaml`.
@@ -768,10 +842,10 @@ The test suite can be run from the repository root:
 
 | Flag | Effect |
 | :--- | :--- |
-| *(none)* | Run the full 10-phase verification cycle and render the status dashboard |
+| *(none)* | Run the full verification cycle and render the status dashboard |
 | `--ai-list` | Print the discovered module inventory, their classes/functions, and plugin coverage status |
 | `--ai-sync` | Force full AST compilation and sync/regeneration of the plugin modules |
-| `--stress` | Enable the extra stress/performance phase (11 phases total) |
+| `--stress` | Enable the extra stress/performance phase |
 | `--output PATH` | Override the JSON report destination (default `tests/jinx_test_report.json`) |
 | `--verbose` | Emit detailed per-check output |
 

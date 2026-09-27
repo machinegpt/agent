@@ -32,6 +32,7 @@ import queue as _queue
 from .prompts import SYSTEM_PROMPT, TOOL_DEPTH_CRITICAL_MSG, construct_round_prompt
 from .state import merge_state, read_jinx, write_jinx
 from .tools import tool_schema
+from . import learning, selfpatch
 
 logger = logging.getLogger("jinx.runner")
 
@@ -464,6 +465,116 @@ def _init_new_session(task: str, jinx: Dict[str, Any]) -> None:
         "open": [], "exit_ready": False, "deadlock": False
     })
     write_jinx(jinx)
+    # NOTE: the durable lesson ledger in .agent/lessons.yaml is deliberately left
+    # untouched. A new task wipes working memory, but what was learned is exactly
+    # what should carry over; resetting it here would make the store decay at the
+    # same rate as the state it is supposed to outlast.
+
+
+def _inject_lessons(run_state: Dict[str, Any]) -> Tuple[str, List[str]]:
+    """Renders the bounded LEARNED RULES block and records what was injected.
+
+    Returns the block text and the normalized keys of the lessons actually shown,
+    which the caller must pass to :func:`write_llm_request` so they survive the
+    next process. The NEXT round then credits or blames exactly those lessons,
+    and no others. Without that round-trip the ledger could not tell a proven
+    rule from a useless one.
+    """
+    if not selfpatch.SELF_PATCH_ENABLED:
+        return "", []
+    try:
+        ledger = learning.load_ledger()
+        rendered = learning.render_lessons(ledger.get("lessons"))
+    except Exception as e:  # never let the learning store break a round
+        logger.error("Lesson injection failed: %s", e, exc_info=True)
+        return "", []
+    run_state["applied_lessons"] = rendered["applied"]
+    return rendered["text"], rendered["applied"]
+
+
+def _close_lesson_bookkeeping(
+    run_state: Dict[str, Any], passed: Optional[bool]
+) -> None:
+    """Credits or blames the lessons that were injected into the finished round."""
+    applied = run_state.get("applied_lessons") or []
+    if not applied:
+        return
+    try:
+        ledger = learning.load_ledger()
+        ledger["lessons"] = learning.record_outcome(
+            ledger.get("lessons"), applied, bool(passed)
+        )
+        learning.save_ledger(ledger)
+    except Exception as e:
+        logger.error("Lesson bookkeeping failed: %s", e, exc_info=True)
+    finally:
+        run_state.pop("applied_lessons", None)
+
+
+def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> None:
+    """Verifies and, if necessary, reverts edits the model made to framework source.
+
+    Called after tool results come back. The model has always been able to write
+    into .agent/src — that is how this repository's own release work happens —
+    but nothing used to check whether the result still worked. This is the
+    missing check: a broken self-edit is undone and reported, so a failed attempt
+    costs one round instead of the whole run.
+    """
+    if not selfpatch.SELF_PATCH_ENABLED:
+        return
+    if not selfpatch.BASELINE_DIR.exists():
+        return
+    try:
+        changed = selfpatch.baseline_changed()
+    except Exception as e:
+        logger.error("Self-patch diff failed: %s", e, exc_info=True)
+        return
+    if not changed:
+        # Keep the baseline: it is the reference for the whole run, not a
+        # one-shot checkpoint. Clearing it on an unchanged round would disarm
+        # the gate before any tool call had a chance to break something.
+        return
+
+    result = selfpatch.verify(AGENT_DIR.parent)
+    if result["ok"]:
+        logger.info("Self-patch verified: %s", ", ".join(changed))
+        # Adopt the verified edit as the new reference so the same diff is not
+        # re-verified on every later round.
+        selfpatch.capture_baseline()
+        return
+
+    restored = selfpatch.restore_baseline()
+    message = (
+        "SELF-PATCH REVERTED: your edit to JINX's own source (%s) failed "
+        "verification (%s). The change was rolled back automatically, so the "
+        "framework is intact — the round was not wasted, it produced evidence. "
+        "Read the failure below, decide whether the idea is still right, and if "
+        "so apply it in a smaller or more targeted form.\n%s"
+        % (
+            ", ".join(changed),
+            result["summary"],
+            "\n".join("[%s] %s" % (c["name"], c["tail"]) for c in result["checks"]),
+        )
+    )
+    logger.warning("Self-patch gate reverted %d file(s)", len(restored))
+    history = run_state.get("history")
+    if isinstance(history, list):
+        history.append({"role": "user", "content": message})
+    run_state["self_patch_feedback"] = message
+    logger.info("Self-patch feedback queued for the next prompt.")
+
+
+def _finish_run() -> None:
+    """Terminal cleanup for a run that ended on its own terms.
+
+    The self-patch baseline is dropped here because the run is over and the next
+    task recaptures it. It is intentionally NOT dropped on the error exits: a run
+    that died with a half-applied self-edit should leave the baseline behind so
+    the bootstrap preflight can still roll that edit back on the next invocation.
+    """
+    if selfpatch.SELF_PATCH_ENABLED:
+        selfpatch.clear_baseline()
+    clean_up_ipc_files()
 
 
 def _touch_run_state(run_state: Dict[str, Any]) -> Dict[str, Any]:
@@ -640,9 +751,9 @@ def _update_tool_result_cache(
 
 
 def write_llm_request(
-    history: List[Dict[str, Any]], rnd: int, tool_depth: int, min_rounds: int,
-    retry: bool = False
-) -> None:
+        history: List[Dict[str, Any]], rnd: int, tool_depth: int, min_rounds: int,
+        retry: bool = False, applied_lessons: Optional[List[str]] = None
+    ) -> None:
     """Writes the current prompt/history state and requests LLM generation.
 
     Only the bounded history window is both sent and persisted. The full
@@ -680,6 +791,14 @@ def write_llm_request(
     if notice:
         messages.insert(0, notice)
 
+    # A self-patch reverted by the bootstrap preflight leaves its explanation in
+    # the run state. It is surfaced here because this is the one funnel every
+    # llm_generate request passes through, and the run state is rebuilt from
+    # explicit keys below, so the marker is consumed exactly once.
+    feedback = carried.get("self_patch_feedback")
+    if isinstance(feedback, str) and feedback:
+        messages.insert(0, {"role": "user", "content": feedback})
+
     request_payload = {
         "type": "llm_generate", "system": SYSTEM_PROMPT,
         "messages": messages, "tools": tool_schema(),
@@ -696,6 +815,14 @@ def write_llm_request(
         "waiting_for": "llm_generate", "min_rounds": min_rounds,
         "processed_tool_use_ids": processed_ids,
         "tool_result_cache": result_cache,
+        # Carried, not recomputed: this function rebuilds the run state from an
+        # explicit key list, so anything a caller stashed in the in-memory dict
+        # (such as the lessons shown this round) would otherwise be silently
+        # dropped on every persist.
+        "applied_lessons": (
+            applied_lessons if applied_lessons is not None
+            else carried.get("applied_lessons") or []
+        ),
         "updated_at": time.time()
     }
     try:
@@ -720,10 +847,27 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
         min_rounds = _resolve_min_rounds(jinx, min_override)
         clean_up_ipc_files()
 
+        # Baseline the framework source before any tool call this round can
+        # modify it, and start from a fresh lesson-credit slate.
+        if selfpatch.SELF_PATCH_ENABLED:
+            selfpatch.capture_baseline()
+
+        run_state: Dict[str, Any] = {
+            "rnd": 1, "tool_depth": 0, "history": [],
+            "waiting_for": "llm_generate", "min_rounds": min_rounds,
+        }
+        lessons_text, applied = _inject_lessons(run_state)
+
         state_dump = Yaml.dump_to_string(jinx["state"])
-        user_msg = construct_round_prompt(rnd=1, min_rounds=min_rounds, state_dump=state_dump)
+        user_msg = construct_round_prompt(
+            rnd=1, min_rounds=min_rounds, state_dump=state_dump,
+            lessons_text=lessons_text,
+        )
         try:
-            write_llm_request([{"role": "user", "content": user_msg}], 1, 0, min_rounds)
+            write_llm_request(
+                [{"role": "user", "content": user_msg}], 1, 0, min_rounds,
+                applied_lessons=applied,
+            )
         except (IPCError, OSError, JinxError) as e:
             logger.error("Failed to write initial LLM request: %s", e, exc_info=True)
             clean_up_ipc_files()
@@ -835,16 +979,45 @@ def _handle_llm_response(
     tool_blocks = [b for b in content_blocks if b.get("type") == "tool_use"]
     valid_calls: List[Dict[str, Any]] = []
     malformed_results: List[Dict[str, Any]] = []
+    refused_results: List[Dict[str, Any]] = []
 
     for b in tool_blocks:
         tool_use_id, name, params, err = _validate_tool_use_block(b)
         if err:
             malformed_results.append(err)
             continue
+        # Refuse a self-patch that would rewrite brake logic BEFORE dispatching
+        # it. Undo-after-the-fact is not good enough here: the model must be told
+        # it was refused, or it will keep re-attempting the same edit and read
+        # the failure as "verification is broken".
+        if name == "file_write" and isinstance(params, dict):
+            reason = selfpatch.guard_tool_call(
+                str(params.get("path") or ""), str(params.get("content") or "")
+            )
+            if reason:
+                logger.warning("Refused protected self-patch: %s", params.get("path"))
+                refused_results.append(
+                    {"type": "tool_result", "tool_use_id": tool_use_id, "content": reason}
+                )
+                continue
         valid_calls.append({"id": tool_use_id, "name": name, "params": params})
 
     if malformed_results:
         history.append({"role": "user", "content": malformed_results})
+
+    if refused_results:
+        # Paired refusals are delivered as a normal tool_result turn so the model
+        # stays in the tool-calling protocol instead of falling through to a
+        # state-block parse it did not intend.
+        history.append({"role": "user", "content": refused_results})
+        if not valid_calls:
+            try:
+                write_llm_request(history, rnd, tool_depth, min_rounds)
+            except (IPCError, OSError, JinxError) as e:
+                logger.error("IPC failure after refusing a self-patch: %s", e, exc_info=True)
+                clean_up_ipc_files()
+                sys.exit(1)
+            return
 
     if valid_calls:
         try:
@@ -871,10 +1044,28 @@ def _handle_llm_response(
         # rejected block must not be able to terminate the loop or claim success
         # on the strength of scores the run state never accepted.
         if outcome.get("applied"):
+            # Persist any NEW durable lessons to the cross-run ledger, and settle
+            # the credit for the lessons this round was actually shown. Both are
+            # best-effort: the learning store must never fail a round.
+            incoming = outcome.get("lessons") or []
+            if incoming:
+                try:
+                    ledger = learning.load_ledger()
+                    ledger["lessons"] = learning.add_lessons(
+                        ledger.get("lessons"), incoming
+                    )
+                    learning.save_ledger(ledger)
+                except Exception as e:
+                    logger.error("Could not persist lessons: %s", e, exc_info=True)
+            _close_lesson_bookkeeping(
+                run_state, bool(jinx["state"].get("scores", [{}])[-1].get("all_pass")
+                                if jinx["state"].get("scores") else False)
+            )
+
             flags = jinx["state"]
             if flags.get("exit_ready") and check_exit(scores, min_rounds, rnd):
                 print("[JINX_COMPLETE] Task resolved successfully!", flush=True)
-                clean_up_ipc_files()
+                _finish_run()
                 return
 
             if flags.get("deadlock") or check_deadlock(scores, min_rounds, rnd):
@@ -882,7 +1073,7 @@ def _handle_llm_response(
                     jinx["state"]["deadlock"] = True
                     write_jinx(jinx)
                 print("[JINX_DEADLOCK] Loop aborted due to strategy deadlock.", flush=True)
-                clean_up_ipc_files()
+                _finish_run()
                 return
         else:
             logger.warning(
@@ -893,18 +1084,22 @@ def _handle_llm_response(
     # Transition to next round
     rnd += 1
     if rnd >= HARD_CAP:
-        clean_up_ipc_files()
+        _finish_run()
         logger.error("Cognitive loop exhausted HARD_CAP.")
         sys.exit(2)
 
     jinx = read_jinx()
     state_dump = Yaml.dump_to_string(jinx.get("state") or {})
-    user_msg = construct_round_prompt(rnd=rnd, min_rounds=min_rounds, state_dump=state_dump, missing_state=not update)
+    lessons_text, applied = _inject_lessons(run_state)
+    user_msg = construct_round_prompt(
+        rnd=rnd, min_rounds=min_rounds, state_dump=state_dump,
+        missing_state=not update, lessons_text=lessons_text,
+    )
     if diagnostics:
         user_msg = user_msg + "\n" + "\n".join(diagnostics) + "\n"
     history.append({"role": "user", "content": user_msg})
     try:
-        write_llm_request(history, rnd, 0, min_rounds)
+        write_llm_request(history, rnd, 0, min_rounds, applied_lessons=applied)
     except (IPCError, OSError, JinxError) as e:
         logger.error("IPC failure while writing next LLM request: %s", e, exc_info=True)
         clean_up_ipc_files()
@@ -922,6 +1117,11 @@ def _handle_tool_response(
         {"type": "tool_result", "tool_use_id": r.get("tool_use_id"), "content": r.get("content") or ""}
         for r in results
     ]
+
+    # The model may edit JINX's own source. That is allowed and sometimes the
+    # right move, but it must not be allowed to leave a broken framework behind,
+    # so verify-and-revert runs before the results are handed back for a new turn.
+    _enforce_self_patch_gate(run_state)
 
     if tool_depth >= TOOL_DEPTH_CAP:
         logger.warning("Tool depth limit reached. Forcing state recovery.")
@@ -1121,6 +1321,8 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
             last_round_missing_state = True
     else:
         logger.error("HARD_CAP (%d rounds) exhausted.", HARD_CAP)
+        if selfpatch.SELF_PATCH_ENABLED:
+            selfpatch.clear_baseline()
         sys.exit(2)
 
 
@@ -1129,6 +1331,15 @@ def _execute_rpc_tool(block: Dict[str, Any]) -> Dict[str, Any]:
     tool_use_id, name, params, err = _validate_tool_use_block(block)
     if err:
         return err
+    # Same brake-removal guard as the File-IPC path: a refused self-patch is
+    # never dispatched to the editor.
+    if name == "file_write" and isinstance(params, dict):
+        reason = selfpatch.guard_tool_call(
+            str(params.get("path") or ""), str(params.get("content") or "")
+        )
+        if reason:
+            logger.warning("Refused protected self-patch in RPC mode: %s", params.get("path"))
+            return {"type": "tool_result", "tool_use_id": tool_use_id, "content": reason}
     result_content, was_sliced, is_error = get_tool_result_from_editor(tool_use_id, name, params)
     if name == "file_read" and not is_error and not was_sliced:
         result_content = _slice_file_content(result_content, params)
