@@ -249,8 +249,9 @@ def merge_scores(
     round permanently deleted it from disk.
 
     Entries lacking an integer ``round`` are keyed positionally so they survive
-    round-trips without colliding with numbered entries. Order is ascending by
-    round, which keeps the persisted history stable for humans and diffs.
+    round-trips without colliding with numbered entries. Unnumbered entries are
+    emitted BEFORE the numbered history: ``check_exit`` reads ``scores[-1]`` as the
+    current round, so a legacy entry sitting last would be mistaken for it.
     """
     merged: Dict[Any, Dict[str, Any]] = {}
     anon = 0
@@ -267,7 +268,7 @@ def merge_scores(
 
     numbered = sorted((k, v) for k, v in merged.items() if isinstance(k, int))
     unnumbered = [v for k, v in merged.items() if not isinstance(k, int)]
-    return [v for _, v in numbered] + unnumbered
+    return unnumbered + [v for _, v in numbered]
 
 
 def normalize_text_list(items: List[str], cap: int = 0) -> List[str]:
@@ -329,20 +330,25 @@ def write_jinx(data: Dict[str, Any]) -> None:
 def merge_state(
     jinx: Dict[str, Any], update: Dict[str, Any],
     diagnostics: Optional[List[str]] = None,
+    outcome: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Merges a parsed update block back into the JINX manifest state.
 
     Automatically normalizes simplified score formats (verdict/detail)
     to the full ScoreEntry format before validation.
 
-    Scores are merged by round number and prose lists are unioned rather than
-    replaced, so a reply that carries only the current round cannot destroy
-    history. When validation fails the previous state is kept AND the reason is
-    appended to ``diagnostics`` so the caller can tell the model why its block was
-    dropped — previously the rejection was logged and then invisible.
+    Scores are merged by round number and prose lists are deduplicated, so a
+    reply that carries only the current round cannot destroy history. When
+    validation fails the previous state is kept AND the reason is appended to
+    ``diagnostics`` so the caller can tell the model why its block was dropped —
+    previously the rejection was logged and then invisible.
+
+    ``outcome``, when supplied, receives ``{"applied": bool}``. Callers that act
+    on ``exit_ready``/``deadlock`` MUST consult it: those flags are only
+    trustworthy once the whole block has passed validation, and honouring them
+    from a rejected block would let a malformed response terminate the loop or
+    claim success on stale state.
     """
-    # If the update contains a nested 'state' key (from the full YAML block
-    # including id/protocol), extract just the state fields for validation.
     if "state" in update and isinstance(update["state"], dict):
         # Merge protocol section into jinx top-level so _resolve_min_rounds can read it
         if "protocol" in update and isinstance(update["protocol"], dict):
@@ -362,10 +368,17 @@ def merge_state(
                 "Your previous state block was REJECTED and discarded; the state on "
                 "disk is unchanged. Reason: %s: %s. Re-send a corrected block. Common "
                 "causes: an unquoted ':' or '#' inside a scalar value, a tab used for "
-                "indentation, or a key nested one level too deep."
+                "indentation, or a key nested one level too deep. Because the block "
+                "was rejected, your exit_ready/deadlock flags were NOT honoured."
                 % (type(e).__name__, str(e).splitlines()[0][:200])
             )
+        if outcome is not None:
+            outcome["applied"] = False
+            outcome["error"] = str(e)
         return jinx
+
+    if outcome is not None:
+        outcome["applied"] = True
 
     s: Dict[str, Any] = jinx.setdefault("state", {})
 

@@ -111,6 +111,8 @@ tools:                                                      # tools.tool_schema(
         content: {type: string, description: The full content to write}
       required: [path, content]
 processed_tool_use_ids: [call_00, call_01]   # уже выполненные вызовы, для дедупликации на стороне редактора
+tool_result_cache:                          # memoized results, keyed by tool_use_id
+  call_00: "85 passed in 0.21s"
 retry: false                                  # true при перевыдаче после устаревшего ожидания
 ```
 
@@ -137,6 +139,8 @@ calls:
     name: bash_exec
     params: {script: pytest tests/test_state.py}
 processed_tool_use_ids: []
+tool_result_cache:
+  call_00: "85 passed in 0.21s"
 retry: false
 ```
 
@@ -503,6 +507,7 @@ scores:
 | `JINX_HISTORY_PERSIST_WINDOW` | `8` | оба | Сколько сообщений хранится в `jinx_run_state.yaml` |
 | `JINX_FACTS_CAP` | `60` | оба | Максимум записей в `facts`; самые старые отбрасываются первыми |
 | `JINX_KEEP_IPC_ON_SIGNAL` | *(не задано)* | оба | Значение `1` сохраняет IPC-файлы по Ctrl+C для разбора |
+| `JINX_TOOL_RESULT_CACHE_CAP` | `64` | оба | Максимум мемоизированных результатов инструментов; самые старые вытесняются |
 
 ---
 
@@ -530,6 +535,17 @@ import yaml
 AGENT = Path(".agent")
 REQUEST = AGENT / "jinx_request.yaml"
 RESPONSE = AGENT / "jinx_response.yaml"
+RUN_STATE = AGENT / "jinx_run_state.yaml"
+
+
+def current_round() -> int:
+    """The round JINX is asking about, read from the run state it just wrote.
+
+    The manifest merges `scores` by round number, so the host only ever sends the
+    round it is currently answering; earlier rounds are already on disk.
+    """
+    state = yaml.safe_load(RUN_STATE.read_text(encoding="utf-8")) or {}
+    return int(state.get("rnd", 1))
 
 
 def spawn(task: str | None = None) -> subprocess.CompletedProcess:
@@ -564,7 +580,9 @@ def call_llm(request: Dict[str, Any]) -> Dict[str, Any]:
         "```yaml\nid: JINX\nstate:\n"
         "  task: Update the auth schema\n"
         "  facts:\n    - Inspected src/jinx/state.py\n"
-        "  scores:\n    - round: 1\n"
+        # Only this round's entry. merge_scores() keeps every earlier round, so
+        # the manifest accumulates distinct rounds and check_exit can complete.
+        f"  scores:\n    - round: {current_round()}\n"
         "      approach: Read the manifest module\n"
         "      requirements:\n        task_complete: true\n"
         "      pass_count: 1\n      all_pass: true\n"
@@ -596,12 +614,18 @@ def dispatch(request: Dict[str, Any]) -> None:
     if request.get("type") == "llm_generate":
         response = call_llm(request)
     else:  # type == "tool_calls"
+        # Воспроизводим мемоизированные результаты вместо повторения побочного
+        # эффекта. Одного идентификатора вызова недостаточно: кэш хранит то, что
+        # вызов действительно вернул.
+        cache = request.get("tool_result_cache") or {}
         done: List[Dict[str, str]] = []
         for call in request.get("calls", []):
-            if call["id"] in request.get("processed_tool_use_ids", []):
-                continue  # уже выполнено при повторе — вернуть сохранённый результат
+            cid = call["id"]
+            if cid in cache:
+                done.append({"tool_use_id": cid, "content": cache[cid]})
+                continue
             done.append({
-                "tool_use_id": call["id"],
+                "tool_use_id": cid,
                 "content": run_tool(call["name"], call.get("params") or {}),
             })
         response = {"results": done}
@@ -639,7 +663,9 @@ if __name__ == "__main__":
 | `llm_generate` | `system`, `messages`, `tools` | `content:` — список блоков `text` / `tool_use` |
 | `tool_calls` | `calls[]` с `id`, `name`, `params` | `results[]` с `tool_use_id`, `content` |
 
-Перед выполнением вызова, перечисленного в `processed_tool_use_ids` (это происходит только при перевыдаче с `retry: true`), хост должен вернуть сохранённый результат, а не повторять побочный эффект.
+Оба типа запросов содержат `tool_result_cache` — отображение `tool_use_id` в результат, который данный вызов вернул. Раннер записывает каждый полученный результат и сохраняет это отображение (с ограничением `JINX_TOOL_RESULT_CACHE_CAP`, по умолчанию **64**, самые старые вытесняются), поэтому последующий запрос — в том числе повторный `retry: true` после устаревшего ожидания — может быть выполнен из памяти.
+
+Именно это делает `processed_tool_use_ids` достаточным. Список идентификаторов сообщает хосту только *то*, что вызов уже выполнялся, но не *что он вернул*, поэтому единственным безопасным ответом было пропустить вызов и потерять его вывод — вместе с результатом, который был нужен модели. С кэшем хост может воспроизвести точное сохранённое содержимое под тем же `tool_use_id`, и побочный эффект не повторится. Поэтому сначала следует проверять `tool_result_cache`, а к `processed_tool_use_ids` обращаться только если кэш недоступен, поскольку тот же вызов позже может быть запрошен снова с другими параметрами.
 
 ---
 
@@ -670,7 +696,7 @@ JINX автоматически останавливает выполнение 
   1. Изучите `.agent/JINX.yaml`, чтобы определить упавшее требование и историю подходов.
   2. Устраните блокирующую проблему в коде или скорректируйте окружение (начальные данные БД, фикстуры, доступность инструментов).
   3. При необходимости вручную отредактируйте свойства `state` в `JINX.yaml` (facts, debt, открытые вопросы).
-  4. Перезапустите из CLI. Передача задачи начинает новую сессию, а её отсутствие возобновляет существующую. JINX читает сохранённый `JINX.yaml`, определяет предыдущие раунды и продолжает цикл с обновлённым контекстом.
+   4. Перезапустите из CLI. Голый `python .agent/jinx.py` **возобновляет работу только если `jinx_run_state.yaml` ещё существует** — именно этот файл помечает запуск как незавершённый. Он удаляется при `[JINX_COMPLETE]`, `[JINX_DEADLOCK]` и по достижении жёсткого лимита, поэтому после завершения запуска голый перезапуск завершится с кодом `1` и сообщением «Cannot start new session without a task description», а не возобновит цикл. Сам `JINX.yaml` при этом *не* удаляется и остаётся читаемым как журнал аудита, однако передача задачи вызывает `_init_new_session`, которая сбрасывает `facts`, `scores`, `debt` и `open`, — поэтому новая задача начинается с чистого листа, а предыдущие оценки исчезают из манифеста. Чтобы продолжить прерванную работу, оставьте run-state на месте и либо устраните причину и запустите снова без аргументов, либо сначала вручную отредактируйте манифест.
 
 ### Верификация и фиксация изменений
 Когда цикл удовлетворяет всем условиям выхода, JINX печатает `[JINX_COMPLETE] Task resolved successfully!` и завершается с кодом `0`.

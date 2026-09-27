@@ -12,8 +12,14 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+import yaml
 
-from jinx.runner import compact_history_for_request
+from jinx.runner import (
+    _update_tool_result_cache,
+    compact_history_for_request,
+    summarize_dropped_history,
+    write_llm_request,
+)
 from jinx.state import FACTS_CAP, merge_scores, merge_state, normalize_text_list
 
 
@@ -204,6 +210,28 @@ class TestHistoryWindowIsSafe:
         tail = win[-1].get("content") if win and isinstance(win[-1].get("content"), list) else []
         assert not [b for b in tail if isinstance(b, dict) and b.get("type") == "tool_use"]
 
+    def test_history_ending_with_a_tool_response(self) -> None:
+        """A window whose last message is a tool_result must not orphan it."""
+        history = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "x"}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
+                                          "content": "output"}]},
+        ]
+
+        for limit in (1, 2, 3, 4):
+            win = compact_history_for_request(history, limit)
+            assert _orphan_result_ids(win) == [], "limit=%d produced an orphan" % limit
+
+    def test_lone_orphan_tool_result_is_dropped(self) -> None:
+        """Regression: the window must not unconditionally keep its last message."""
+        history = [
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "gone",
+                                          "content": "output"}]},
+        ]
+
+        assert compact_history_for_request(history, 6) == []
+
     def test_short_history_is_returned_unchanged(self) -> None:
         history = _tool_exchange()
 
@@ -222,3 +250,163 @@ class TestHistoryWindowIsSafe:
         )
 
         assert windowed < full
+
+
+class TestToolResultMemoization:
+    """A retried call must be answerable from memory, not just recognised by id."""
+
+    def test_results_are_recorded_by_tool_use_id(self) -> None:
+        cache = _update_tool_result_cache(None, [
+            {"tool_use_id": "a", "content": "output A"},
+            {"tool_use_id": "b", "content": "output B"},
+        ])
+
+        assert cache == {"a": "output A", "b": "output B"}
+
+    def test_none_content_is_memoized_as_empty_string(self) -> None:
+        cache = _update_tool_result_cache(None, [{"tool_use_id": "a", "content": None}])
+
+        assert cache == {"a": ""}
+
+    def test_non_string_content_is_serialized(self) -> None:
+        cache = _update_tool_result_cache(None, [{"tool_use_id": "a", "content": {"k": "v"}}])
+
+        assert "k" in cache["a"]
+
+    def test_entries_without_an_id_are_ignored(self) -> None:
+        cache = _update_tool_result_cache(None, [
+            {"content": "orphan result"},
+            {"tool_use_id": "", "content": "blank id"},
+            {"tool_use_id": 7, "content": "numeric id"},
+        ])
+
+        assert cache == {}
+
+    def test_cache_is_bounded_and_keeps_newest(self, monkeypatch) -> None:
+        monkeypatch.setattr("jinx.runner.TOOL_RESULT_CACHE_CAP", 3)
+
+        cache = _update_tool_result_cache(None, [
+            {"tool_use_id": "t%d" % i, "content": str(i)} for i in range(6)
+        ])
+
+        assert list(cache) == ["t3", "t4", "t5"]
+
+    def test_re_recording_moves_an_id_to_the_newest_slot(self, monkeypatch) -> None:
+        monkeypatch.setattr("jinx.runner.TOOL_RESULT_CACHE_CAP", 3)
+        cache = _update_tool_result_cache(
+            {"t1": "1", "t2": "2", "t3": "3"}, [{"tool_use_id": "t1", "content": "1b"}]
+        )
+
+        assert list(cache) == ["t2", "t3", "t1"], "t1 should be newest, not oldest"
+        assert cache["t1"] == "1b"
+
+    def test_existing_cache_survives_an_empty_update(self) -> None:
+        cache = _update_tool_result_cache({"a": "kept"}, [])
+
+        assert cache == {"a": "kept"}
+
+
+class TestRejectedBlockCannotTerminateTheLoop:
+    """exit_ready/deadlock must be honoured only from validated state."""
+
+    def test_outcome_reports_acceptance(self) -> None:
+        outcome: dict = {}
+        merge_state({"state": {}}, _wrap([_score(1)]), outcome=outcome)
+
+        assert outcome.get("applied") is True
+
+    def test_outcome_reports_rejection(self) -> None:
+        outcome: dict = {}
+        merge_state({"state": {}}, {"state": {"scores": "bad"}}, outcome=outcome)
+
+        assert outcome.get("applied") is False
+        assert "error" in outcome
+
+    def test_rejection_diagnostic_mentions_flags_were_ignored(self) -> None:
+        diagnostics: list = []
+        merge_state({"state": {}}, {"state": {"scores": "bad"}}, diagnostics=diagnostics)
+
+        assert "flags were NOT honoured" in diagnostics[0]
+
+    def test_rejected_block_leaves_prior_scores_intact(self) -> None:
+        jinx = {"state": {"scores": [_score(1)], "exit_ready": False}}
+        outcome: dict = {}
+
+        merge_state(jinx, {"state": {"scores": "bad", "exit_ready": True}}, outcome=outcome)
+
+        assert outcome["applied"] is False
+        assert jinx["state"]["scores"] == [_score(1)]
+        assert jinx["state"]["exit_ready"] is False
+
+
+class TestUnnumberedScoresDoNotDisplaceTheCurrentRound:
+    """check_exit reads scores[-1], so legacy entries must not sit last."""
+
+    def test_unnumbered_entries_come_first(self) -> None:
+        merged = merge_scores(
+            [{"approach": "legacy"}], [_score(1), _score(2)]
+        )
+
+        assert [s.get("round") for s in merged] == [None, 1, 2]
+
+    def test_current_round_is_last(self) -> None:
+        """check_exit() reads scores[-1]; the current round must be there."""
+        merged = merge_scores([{"approach": "legacy"}], [_score(7)])
+
+        assert merged[-1]["round"] == 7
+        assert len(merged) == 2
+
+
+class TestHistoryCompactionNotice:
+    """Finding 2: the notice must be wired into the request, not merely defined."""
+
+    def test_notice_is_none_when_nothing_was_dropped(self) -> None:
+        history = [{"role": "user", "content": "a"}]
+
+        assert summarize_dropped_history([], history) is None
+
+    def test_notice_counts_dropped_messages(self) -> None:
+        dropped = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
+
+        notice = summarize_dropped_history(dropped, [{"role": "user", "content": "c"}])
+
+        assert notice is not None
+        assert "2 earlier message" in notice["content"]
+
+    def test_write_llm_request_prepends_the_notice(self, tmp_path, monkeypatch) -> None:
+        request = tmp_path / "jinx_request.yaml"
+        run_state = tmp_path / "jinx_run_state.yaml"
+        monkeypatch.setattr("jinx.runner.REQUEST_PATH", request)
+        monkeypatch.setattr("jinx.runner.RUN_STATE_PATH", run_state)
+
+        history = [{"role": "user", "content": "m%d" % i} for i in range(20)]
+        write_llm_request(history, 3, 0, 2)
+
+        payload = yaml.safe_load(request.read_text(encoding="utf-8"))
+        first = payload["messages"][0]
+        assert "elided" in first["content"]
+        assert payload["messages"][0]["role"] == "user"
+
+        persisted = yaml.safe_load(run_state.read_text(encoding="utf-8"))
+        assert not any(
+            isinstance(m.get("content"), str) and "elided" in m["content"]
+            for m in persisted["history"]
+        ), "the synthetic notice must not be persisted, or it would accumulate"
+
+    def test_write_llm_request_carries_the_result_cache(self, tmp_path, monkeypatch) -> None:
+        request = tmp_path / "jinx_request.yaml"
+        run_state = tmp_path / "jinx_run_state.yaml"
+        monkeypatch.setattr("jinx.runner.REQUEST_PATH", request)
+        monkeypatch.setattr("jinx.runner.RUN_STATE_PATH", run_state)
+        run_state.write_text(
+            yaml.safe_dump({"tool_result_cache": {"a": "cached output"}}),
+            encoding="utf-8",
+        )
+
+        write_llm_request([{"role": "user", "content": "hi"}], 1, 0, 2)
+
+        payload = yaml.safe_load(request.read_text(encoding="utf-8"))
+        assert payload["tool_result_cache"] == {"a": "cached output"}
+        persisted = yaml.safe_load(run_state.read_text(encoding="utf-8"))
+        assert persisted["tool_result_cache"] == {"a": "cached output"}, \
+            "the cache must survive a run-state rewrite"

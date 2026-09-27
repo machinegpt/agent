@@ -515,6 +515,9 @@ def _extract_last_tool_calls(history: List[Dict[str, Any]]) -> List[Dict[str, An
 
 HISTORY_WINDOW: int = int(os.getenv("JINX_HISTORY_WINDOW", "6"))
 HISTORY_PERSIST_WINDOW: int = int(os.getenv("JINX_HISTORY_PERSIST_WINDOW", "8"))
+# Bound on the memoized tool results kept in the run state. Large enough to cover
+# a deep tool loop, small enough that the cache never dominates the file.
+TOOL_RESULT_CACHE_CAP: int = int(os.getenv("JINX_TOOL_RESULT_CACHE_CAP", "64"))
 
 
 def _has_orphan_tool_result(msg: Dict[str, Any]) -> bool:
@@ -559,12 +562,14 @@ def compact_history_for_request(
         window = list(history)
     else:
         window = list(history[-limit:])
-    idx = 0
-    while idx < len(window) - 1 and _has_orphan_tool_result(window[idx]):
-        idx += 1
-    # Never leave a trailing tool_use whose results were trimmed away.
     while window and _has_unanswered_tool_use(window[-1]):
         window = window[:-1]
+    idx = 0
+    # Advance past every orphaned tool_result, including a window that consists of
+    # exactly one message: keeping the last element unconditionally would let a
+    # lone tool_result reach the API with no tool_use to answer.
+    while idx < len(window) and _has_orphan_tool_result(window[idx]):
+        idx += 1
     return window[idx:]
 
 
@@ -593,6 +598,43 @@ def summarize_dropped_history(
     }
 
 
+def _update_tool_result_cache(
+    cache: Optional[Dict[str, str]], results: List[Dict[str, Any]]
+) -> Dict[str, str]:
+    """Records tool results keyed by ``tool_use_id``, bounded to recent entries.
+
+    Memoization exists so a retried ``tool_calls`` request can be answered from
+    the cache instead of re-running side effects. Storing only the id (as
+    ``processed_tool_use_ids`` does) is not enough: the host is told a call was
+    processed but is given no way to recover what it produced, so the safe
+    response is to skip the call and lose the result.
+
+    The cache is capped because it is persisted in the run state; without a bound
+    it would simply relocate the unbounded-growth problem this work removed.
+    Re-recording an id moves it to the newest slot so eviction keeps live calls.
+    """
+    merged: Dict[str, str] = dict(cache or {})
+    for r in results or []:
+        if not isinstance(r, dict):
+            continue
+        tid = r.get("tool_use_id")
+        if not isinstance(tid, str) or not tid:
+            continue
+        content = r.get("content")
+        if content is None:
+            text = ""
+        elif isinstance(content, str):
+            text = content
+        else:
+            text = Yaml.dump_to_string(content).strip()
+        merged.pop(tid, None)
+        merged[tid] = text
+    if len(merged) > TOOL_RESULT_CACHE_CAP:
+        for old in list(merged)[: len(merged) - TOOL_RESULT_CACHE_CAP]:
+            merged.pop(old, None)
+    return merged
+
+
 def write_llm_request(
     history: List[Dict[str, Any]], rnd: int, tool_depth: int, min_rounds: int,
     retry: bool = False
@@ -603,22 +645,38 @@ def write_llm_request(
     transcript is not written to disk, because nothing ever reads it back: the
     request uses the window, exit and deadlock detection read the score history
     in ``JINX.yaml``, and tool dispatch only needs the most recent calls.
+
+    When messages fall outside the window a one-line notice is prepended to the
+    request only. It is deliberately not persisted, so the synthetic note cannot
+    accumulate one entry per round.
     """
-    # Include persisted processed tool_use ids and an optional retry indicator
-    processed_ids: List[str] = []
+    carried: Dict[str, Any] = {}
     try:
         if RUN_STATE_PATH.exists():
             existing = Yaml.load_from_file(RUN_STATE_PATH)
             if isinstance(existing, dict):
-                processed_ids = existing.get("processed_tool_use_ids", []) or []
+                carried = existing
     except Exception:
-        processed_ids = []
+        carried = {}
 
-    window = compact_history_for_request(history, HISTORY_PERSIST_WINDOW)
+    processed_ids: List[str] = carried.get("processed_tool_use_ids", []) or []
+    result_cache: Dict[str, str] = carried.get("tool_result_cache", {}) or {}
+
+    persist_window = compact_history_for_request(history, HISTORY_PERSIST_WINDOW)
+    send_window = compact_history_for_request(history)
+
+    kept = {id(m) for m in persist_window}
+    dropped = [m for m in history if id(m) not in kept]
+    messages = list(send_window)
+    notice = summarize_dropped_history(dropped, persist_window)
+    if notice:
+        messages.insert(0, notice)
+
     request_payload = {
         "type": "llm_generate", "system": SYSTEM_PROMPT,
-        "messages": compact_history_for_request(history), "tools": tool_schema(),
-        "processed_tool_use_ids": processed_ids, "retry": bool(retry)
+        "messages": messages, "tools": tool_schema(),
+        "processed_tool_use_ids": processed_ids,
+        "tool_result_cache": result_cache, "retry": bool(retry)
     }
     try:
         Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
@@ -626,8 +684,10 @@ def write_llm_request(
         raise IPCError(f"Failed to write request: {e}") from e
 
     run_state = {
-        "rnd": rnd, "tool_depth": tool_depth, "history": window,
+        "rnd": rnd, "tool_depth": tool_depth, "history": persist_window,
         "waiting_for": "llm_generate", "min_rounds": min_rounds,
+        "processed_tool_use_ids": processed_ids,
+        "tool_result_cache": result_cache,
         "updated_at": time.time()
     }
     try:
@@ -789,31 +849,38 @@ def _handle_llm_response(
 
     # No tool calls — parse state block
     update = parse_state_block(full_text)
-    if update and isinstance(update.get("state"), dict):
-        flags = update["state"]
-    else:
-        flags = update or {}
     jinx = read_jinx()
     diagnostics: List[str] = []
     if update:
-        jinx = merge_state(jinx, update, diagnostics=diagnostics)
+        outcome: Dict[str, Any] = {}
+        jinx = merge_state(jinx, update, diagnostics=diagnostics, outcome=outcome)
         write_jinx(jinx)
         # Re-resolve min_rounds so protocol changes from LLM take effect mid-session
         min_rounds = _resolve_min_rounds(jinx, None)
         scores = jinx["state"].get("scores", [])
 
-        if flags.get("exit_ready") and check_exit(scores, min_rounds, rnd):
-            print("[JINX_COMPLETE] Task resolved successfully!", flush=True)
-            clean_up_ipc_files()
-            return
+        # Honour exit/deadlock ONLY from state that actually passed validation. A
+        # rejected block must not be able to terminate the loop or claim success
+        # on the strength of scores the run state never accepted.
+        if outcome.get("applied"):
+            flags = jinx["state"]
+            if flags.get("exit_ready") and check_exit(scores, min_rounds, rnd):
+                print("[JINX_COMPLETE] Task resolved successfully!", flush=True)
+                clean_up_ipc_files()
+                return
 
-        if flags.get("deadlock") or check_deadlock(scores, min_rounds, rnd):
-            if not flags.get("deadlock"):
-                jinx["state"]["deadlock"] = True
-                write_jinx(jinx)
-            print("[JINX_DEADLOCK] Loop aborted due to strategy deadlock.", flush=True)
-            clean_up_ipc_files()
-            return
+            if flags.get("deadlock") or check_deadlock(scores, min_rounds, rnd):
+                if not flags.get("deadlock"):
+                    jinx["state"]["deadlock"] = True
+                    write_jinx(jinx)
+                print("[JINX_DEADLOCK] Loop aborted due to strategy deadlock.", flush=True)
+                clean_up_ipc_files()
+                return
+        else:
+            logger.warning(
+                "State block rejected; ignoring exit_ready/deadlock flags from the "
+                "rejected response and continuing to the next round."
+            )
 
     # Transition to next round
     rnd += 1
@@ -862,7 +929,9 @@ def _handle_tool_response(
 
     history.append({"role": "user", "content": tool_results})
 
-    # Persist processed tool_use ids so stale-run retries can be recognized by the editor
+    # Persist processed ids AND the results themselves. Ids alone tell a host that
+    # a call ran but not what it produced, so a retry could only skip it and lose
+    # the output; with the cache the retry can be answered from memory.
     try:
         processed = run_state.get("processed_tool_use_ids", []) or []
         for r in results:
@@ -870,12 +939,15 @@ def _handle_tool_response(
             if isinstance(tid, str) and tid not in processed:
                 processed.append(tid)
         run_state["processed_tool_use_ids"] = processed
+        run_state["tool_result_cache"] = _update_tool_result_cache(
+            run_state.get("tool_result_cache"), results
+        )
         try:
             Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
         except JinxError:
-            logger.warning("Failed to persist processed_tool_use_ids to run state.")
+            logger.warning("Failed to persist tool result cache to run state.")
     except Exception:
-        logger.debug("Unable to update processed_tool_use_ids in run_state.", exc_info=True)
+        logger.debug("Unable to update tool result cache in run_state.", exc_info=True)
 
     try:
         write_llm_request(history, rnd, tool_depth, min_rounds)
@@ -891,23 +963,28 @@ def _write_tool_request(
     retry: bool = False
 ) -> None:
     """Writes a tool_calls request and updates run state."""
-    # Include existing processed tool_use ids and an optional retry marker so the
-    # editor can detect already-executed bash/file-write calls and return stored
-    # results instead of executing them again.
-    processed_ids: List[str] = []
-    try:
-        processed_ids = run_state.get("processed_tool_use_ids", []) or []
-    except Exception:
-        processed_ids = []
+    processed_ids: List[str] = run_state.get("processed_tool_use_ids", []) or []
+    result_cache: Dict[str, str] = _update_tool_result_cache(
+        run_state.get("tool_result_cache"), []
+    )
 
-    request_payload = {"type": "tool_calls", "calls": tool_calls, "processed_tool_use_ids": processed_ids, "retry": bool(retry)}
+    request_payload = {
+        "type": "tool_calls", "calls": tool_calls,
+        "processed_tool_use_ids": processed_ids,
+        "tool_result_cache": result_cache, "retry": bool(retry)
+    }
     try:
         Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
     except JinxError as e:
         # Propagate as IPCError so callers can clean up IPC files.
         raise IPCError(f"Failed to write tool_calls request: {e}") from e
 
-    run_state.update({"tool_depth": tool_depth, "history": history, "waiting_for": "tool_calls", "updated_at": time.time()})
+    run_state.update({
+        "tool_depth": tool_depth,
+        "history": compact_history_for_request(history, HISTORY_PERSIST_WINDOW),
+        "waiting_for": "tool_calls", "updated_at": time.time(),
+        "tool_result_cache": result_cache,
+    })
     try:
         Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
     except JinxError as e:
@@ -929,7 +1006,11 @@ def _write_llm_request_no_tools(
     except JinxError as e:
         raise IPCError(f"Failed to write final summary request: {e}") from e
 
-    run_state.update({"waiting_for": "llm_generate", "history": history, "updated_at": time.time()})
+    run_state.update({
+        "waiting_for": "llm_generate",
+        "history": compact_history_for_request(history, HISTORY_PERSIST_WINDOW),
+        "updated_at": time.time()
+    })
     try:
         Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
     except JinxError as e:
@@ -1007,16 +1088,24 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
         update = parse_state_block(full_text)
         if update:
             last_round_missing_state = False
-            jinx = merge_state(jinx, update)
+            outcome: Dict[str, Any] = {}
+            jinx = merge_state(jinx, update, outcome=outcome)
             write_jinx(jinx)
             scores = jinx["state"].get("scores", [])
 
-            if update.get("exit_ready") and check_exit(scores, min_rounds, rnd):
+            # Same rule as the File-IPC path: a rejected block cannot terminate
+            # the loop. Its flags are ignored and the round continues.
+            if not outcome.get("applied"):
+                logger.warning("State block rejected in RPC mode; ignoring flags.")
+
+            if outcome.get("applied") and jinx["state"].get("exit_ready") \
+                    and check_exit(scores, min_rounds, rnd):
                 logger.info("Execution complete in round %d.", rnd)
                 break
-            if update.get("deadlock") or check_deadlock(scores, min_rounds, rnd):
+            if outcome.get("applied") and (jinx["state"].get("deadlock")
+                                           or check_deadlock(scores, min_rounds, rnd)):
                 logger.warning("Deadlock in round %d.", rnd)
-                if not update.get("deadlock"):
+                if not jinx["state"].get("deadlock"):
                     jinx["state"]["deadlock"] = True
                     write_jinx(jinx)
                 break

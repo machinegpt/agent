@@ -111,6 +111,8 @@ tools:                                                      # tools.tool_schema(
         content: {type: string, description: The full content to write}
       required: [path, content]
 processed_tool_use_ids: [call_00, call_01]   # already-executed calls, for editor-side dedupe
+tool_result_cache:                          # memoized results, keyed by tool_use_id
+  call_00: "85 passed in 0.21s"
 retry: false                                  # true when reissued after a stale wait
 ```
 
@@ -137,6 +139,8 @@ calls:
     name: bash_exec
     params: {script: pytest tests/test_state.py}
 processed_tool_use_ids: []
+tool_result_cache:
+  call_00: "85 passed in 0.21s"
 retry: false
 ```
 
@@ -511,6 +515,7 @@ The JINX runtime is comprised of the following Python components located in `.ag
 | `JINX_HISTORY_PERSIST_WINDOW` | `8` | both | Messages retained in `jinx_run_state.yaml` |
 | `JINX_FACTS_CAP` | `60` | both | Max `facts` entries kept; oldest dropped first |
 | `JINX_KEEP_IPC_ON_SIGNAL` | *(unset)* | both | Set to `1` to keep IPC files on Ctrl+C for inspection |
+| `JINX_TOOL_RESULT_CACHE_CAP` | `64` | both | Max memoized tool results kept; oldest evicted |
 
 ---
 
@@ -538,6 +543,17 @@ import yaml
 AGENT = Path(".agent")
 REQUEST = AGENT / "jinx_request.yaml"
 RESPONSE = AGENT / "jinx_response.yaml"
+RUN_STATE = AGENT / "jinx_run_state.yaml"
+
+
+def current_round() -> int:
+    """The round JINX is asking about, read from the run state it just wrote.
+
+    The manifest merges `scores` by round number, so the host only ever sends the
+    round it is currently answering; earlier rounds are already on disk.
+    """
+    state = yaml.safe_load(RUN_STATE.read_text(encoding="utf-8")) or {}
+    return int(state.get("rnd", 1))
 
 
 def spawn(task: str | None = None) -> subprocess.CompletedProcess:
@@ -572,7 +588,9 @@ def call_llm(request: Dict[str, Any]) -> Dict[str, Any]:
         "```yaml\nid: JINX\nstate:\n"
         "  task: Update the auth schema\n"
         "  facts:\n    - Inspected src/jinx/state.py\n"
-        "  scores:\n    - round: 1\n"
+        # Only this round's entry. merge_scores() keeps every earlier round, so
+        # the manifest accumulates distinct rounds and check_exit can complete.
+        f"  scores:\n    - round: {current_round()}\n"
         "      approach: Read the manifest module\n"
         "      requirements:\n        task_complete: true\n"
         "      pass_count: 1\n      all_pass: true\n"
@@ -604,12 +622,17 @@ def dispatch(request: Dict[str, Any]) -> None:
     if request.get("type") == "llm_generate":
         response = call_llm(request)
     else:  # type == "tool_calls"
+        # Replay memoized results instead of repeating the side effect. A call id
+        # alone is not enough: the cache carries what the call actually produced.
+        cache = request.get("tool_result_cache") or {}
         done: List[Dict[str, str]] = []
         for call in request.get("calls", []):
-            if call["id"] in request.get("processed_tool_use_ids", []):
-                continue  # already executed on a retry — return the stored result
+            cid = call["id"]
+            if cid in cache:
+                done.append({"tool_use_id": cid, "content": cache[cid]})
+                continue
             done.append({
-                "tool_use_id": call["id"],
+                "tool_use_id": cid,
                 "content": run_tool(call["name"], call.get("params") or {}),
             })
         response = {"results": done}
@@ -647,7 +670,9 @@ if __name__ == "__main__":
 | `llm_generate` | `system`, `messages`, `tools` | `content:` list of `text` / `tool_use` blocks |
 | `tool_calls` | `calls[]` with `id`, `name`, `params` | `results[]` with `tool_use_id`, `content` |
 
-Before executing a call listed in `processed_tool_use_ids` (which only happens on `retry: true` reissues), the host should return its stored result instead of repeating the side effect.
+Both request types carry `tool_result_cache`, a map of `tool_use_id` to the result that call produced. The runner records every result it receives and persists the map (bounded by `JINX_TOOL_RESULT_CACHE_CAP`, default **64**, oldest evicted), so a later request — including a `retry: true` reissue after a stale wait — can be answered from memory.
+
+This is what makes `processed_tool_use_ids` sufficient. The id list alone tells the host *that* a call already ran but not *what it returned*, so the only safe response was to skip the call and drop its output — losing the result the model needed. With the cache the host can replay the exact stored content under the same `tool_use_id` and the side effect is not repeated. Hosts should therefore check `tool_result_cache` first and fall back to `processed_tool_use_ids` only if a cache is unavailable, since a call may legitimately be re-requested later with a different parameter set.
 
 ---
 
@@ -678,7 +703,7 @@ JINX halts execution automatically when protocol limits are hit, requesting huma
   1. Inspect `.agent/JINX.yaml` to identify the failing requirement and the approach history.
   2. Resolve the blocking issue in the code, or correct the environment (database seeds, fixtures, tool availability).
   3. Optionally hand-edit the `state` properties in `JINX.yaml` (facts, debt, open issues).
-  4. Restart from the CLI. Supplying a task starts a fresh session; omitting it resumes the existing one. JINX reads the persisted `JINX.yaml`, identifies prior rounds, and continues the loop with the updated context.
+   4. Restart from the CLI. A bare `python .agent/jinx.py` **resumes only when `jinx_run_state.yaml` still exists** — it is the flag that marks a run as unfinished. That file is removed on `[JINX_COMPLETE]`, `[JINX_DEADLOCK]`, and after the hard cap, so once a run has terminated a bare restart exits `1` with "Cannot start new session without a task description" rather than resuming. `JINX.yaml` itself is *not* deleted and stays readable as an audit record, but supplying a task calls `_init_new_session`, which resets `facts`, `scores`, `debt`, and `open` — so a new task starts from a clean slate and the previous evaluations are gone from the manifest. To continue interrupted work, leave the run-state in place and either fix the blocking cause and re-run bare, or hand-edit the manifest first.
 
 ### Session Verification and Commit
 Once the loop satisfies all exit criteria, JINX prints `[JINX_COMPLETE] Task resolved successfully!` and exits `0`.

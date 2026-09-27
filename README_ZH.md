@@ -111,6 +111,8 @@ tools:                                                      # tools.tool_schema(
         content: {type: string, description: The full content to write}
       required: [path, content]
 processed_tool_use_ids: [call_00, call_01]   # 已执行的调用，供编辑器侧去重
+tool_result_cache:                          # memoized results, keyed by tool_use_id
+  call_00: "85 passed in 0.21s"
 retry: false                                  # 因等待超时而重新下发时为 true
 ```
 
@@ -137,6 +139,8 @@ calls:
     name: bash_exec
     params: {script: pytest tests/test_state.py}
 processed_tool_use_ids: []
+tool_result_cache:
+  call_00: "85 passed in 0.21s"
 retry: false
 ```
 
@@ -501,6 +505,7 @@ JINX 运行时由以下位于 `.agent/` 目录下的 Python 组件构成（核�
 | `JINX_HISTORY_PERSIST_WINDOW` | `8` | 两者 | `jinx_run_state.yaml` 中保留的消息条数 |
 | `JINX_FACTS_CAP` | `60` | 两者 | `facts` 保留的最大条目数，优先丢弃最旧的 |
 | `JINX_KEEP_IPC_ON_SIGNAL` | *(未设置)* | 两者 | 设为 `1` 时在 Ctrl+C 后保留 IPC 文件以便排查 |
+| `JINX_TOOL_RESULT_CACHE_CAP` | `64` | 两者 | 保留的记忆化工具结果上限，超出时淘汰最旧的条目 |
 
 ---
 
@@ -528,6 +533,17 @@ import yaml
 AGENT = Path(".agent")
 REQUEST = AGENT / "jinx_request.yaml"
 RESPONSE = AGENT / "jinx_response.yaml"
+RUN_STATE = AGENT / "jinx_run_state.yaml"
+
+
+def current_round() -> int:
+    """The round JINX is asking about, read from the run state it just wrote.
+
+    The manifest merges `scores` by round number, so the host only ever sends the
+    round it is currently answering; earlier rounds are already on disk.
+    """
+    state = yaml.safe_load(RUN_STATE.read_text(encoding="utf-8")) or {}
+    return int(state.get("rnd", 1))
 
 
 def spawn(task: str | None = None) -> subprocess.CompletedProcess:
@@ -561,7 +577,9 @@ def call_llm(request: Dict[str, Any]) -> Dict[str, Any]:
         "```yaml\nid: JINX\nstate:\n"
         "  task: Update the auth schema\n"
         "  facts:\n    - Inspected src/jinx/state.py\n"
-        "  scores:\n    - round: 1\n"
+        # Only this round's entry. merge_scores() keeps every earlier round, so
+        # the manifest accumulates distinct rounds and check_exit can complete.
+        f"  scores:\n    - round: {current_round()}\n"
         "      approach: Read the manifest module\n"
         "      requirements:\n        task_complete: true\n"
         "      pass_count: 1\n      all_pass: true\n"
@@ -593,12 +611,17 @@ def dispatch(request: Dict[str, Any]) -> None:
     if request.get("type") == "llm_generate":
         response = call_llm(request)
     else:  # type == "tool_calls"
+        # 重放已记忆化的结果，而不是重复产生副作用。仅有调用 ID 并不够：
+        # 缓存中保存的是该调用实际返回的内容。
+        cache = request.get("tool_result_cache") or {}
         done: List[Dict[str, str]] = []
         for call in request.get("calls", []):
-            if call["id"] in request.get("processed_tool_use_ids", []):
-                continue  # 重试时已执行过 —— 返回已保存的结果
+            cid = call["id"]
+            if cid in cache:
+                done.append({"tool_use_id": cid, "content": cache[cid]})
+                continue
             done.append({
-                "tool_use_id": call["id"],
+                "tool_use_id": cid,
                 "content": run_tool(call["name"], call.get("params") or {}),
             })
         response = {"results": done}
@@ -636,7 +659,9 @@ if __name__ == "__main__":
 | `llm_generate` | `system`、`messages`、`tools` | `content:`，即 `text` / `tool_use` 块列表 |
 | `tool_calls` | `calls[]`，含 `id`、`name`、`params` | `results[]`，含 `tool_use_id`、`content` |
 
-在执行 `processed_tool_use_ids` 中列出的调用之前（这只发生在 `retry: true` 的重新下发时），宿主应返回其已保存的结果，而不是重复产生副作用。
+两种请求类型都带有 `tool_result_cache`，即 `tool_use_id` 到该调用实际返回结果的映射。运行器会记录收到的每一个结果并持久化该映射（上限为 `JINX_TOOL_RESULT_CACHE_CAP`，默认 **64**，超出时淘汰最旧的条目），因此后续请求 —— 包括等待超时后以 `retry: true` 重新下发的请求 —— 都可以直接从记忆中作答。
+
+这正是 `processed_tool_use_ids` 得以成立的原因。ID 列表只能告诉宿主某个调用*已经*执行过，却无法告诉它*返回了什么*，于是唯一安全的做法是跳过该调用并丢弃其输出 —— 连模型需要的结果也一并丢失。有了缓存，宿主可以在同一个 `tool_use_id` 下原样重放已保存的内容，副作用不会重复发生。因此宿主应优先检查 `tool_result_cache`，仅在缓存不可用时才回退到 `processed_tool_use_ids`，因为同一个调用之后可能以不同参数被重新请求。
 
 ---
 
@@ -667,7 +692,7 @@ JINX 在触达协议上限时会自动停止执行，以请求人工介入。
   1. 检查 `.agent/JINX.yaml`，定位失败的需求与方案历史。
   2. 手动修复代码中的阻塞问题，或修正环境配置（数据库种子数据、测试夹具、工具可用性）。
   3. 如有需要，可手工编辑 `JINX.yaml` 中的 `state` 属性（facts、debt、未解决事项）。
-  4. 从 CLI 重新启动。传入任务将开启全新会话，不传任务则恢复现有会话。JINX 会读取已持久化的 `JINX.yaml`，识别历史轮次，并基于更新后的上下文继续循环。
+  4. 从 CLI 重新启动。直接执行 `python .agent/jinx.py` **只有在 `jinx_run_state.yaml` 仍然存在时才会恢复运行** —— 该文件正是标记一次运行尚未完结的标志。它会在 `[JINX_COMPLETE]`、`[JINX_DEADLOCK]` 以及达到硬上限时被删除，因此运行一旦结束，直接重启会以代码 `1` 退出并提示「Cannot start new session without a task description」，而不会恢复循环。`JINX.yaml` 本身*不会*被删除，仍可作为审计记录读取；但一旦传入任务就会调用 `_init_new_session`，将 `facts`、`scores`、`debt` 与 `open` 全部重置 —— 于是新任务从干净状态开始，先前的评估记录会从清单中消失。若要继续被中断的工作，请保留 run-state，并选择先排除故障原因再无参数重启，或先手动编辑清单。
 
 ### 会话验证与提交
 当循环满足全部退出条件时，JINX 输出 `[JINX_COMPLETE] Task resolved successfully!` 并以代码 `0` 退出。
