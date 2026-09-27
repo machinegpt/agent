@@ -198,8 +198,14 @@ def add_lessons(
         out.append(entry)
 
     if cap and len(out) > cap:
-        logger.debug("lesson cap %d dropped %d oldest entries", cap, len(out) - cap)
-        out = out[-cap:]
+        # Keep the best rules, not the most recent ones. Slicing the tail would
+        # silently discard proven rules the moment a run proposes several new
+        # ones. Ranking is by score with the original order as the tiebreak, so
+        # equally-rated entries keep the order the ledger recorded them in.
+        ranked = sorted(range(len(out)), key=lambda i: (-_score(out[i]), i))
+        keep = set(ranked[:cap])
+        logger.debug("lesson cap %d dropped %d lowest-scored entries", cap, len(out) - cap)
+        out = [entry for i, entry in enumerate(out) if i in keep]
     return out
 
 
@@ -241,8 +247,14 @@ def render_lessons(
     ``applied`` — the normalized keys of the lessons actually included, which
     :func:`record_outcome` later needs. Both bounds are enforced: at most
     ``limit`` entries, and the block is truncated to fit ``budget`` characters.
+
+    A rule that has been blamed more often than it has been confirmed scores
+    below zero and is withheld entirely. Re-showing it just invites the model to
+    re-apply the advice that already failed; the ledger keeps it, so it can
+    recover once it is confirmed again.
     """
     candidates = [l for l in (lessons or []) if isinstance(l, dict) and l.get("text")]
+    candidates = [l for l in candidates if _score(l) >= 0]
     if not candidates:
         return {"text": "", "applied": []}
 

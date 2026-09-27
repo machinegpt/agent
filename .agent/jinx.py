@@ -82,6 +82,9 @@ def self_patch_preflight():
                 file=sys.stderr,
             )
             return
+        # Same rule as the runner: the suite that judges the patch is itself part
+        # of what the patch could have edited, so it is put back before it runs.
+        mod.restore_baseline(only=mod.REPO_PREFIX)
         result = mod.verify(src_path.parent.parent)
         if result["ok"]:
             print("[JINX SELF-PATCH] Verified: %s" % ", ".join(changed), file=sys.stderr)

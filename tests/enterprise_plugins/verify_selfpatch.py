@@ -1,7 +1,7 @@
 # ==============================================================================
 # AI-Generated Enterprise Verification Plugin
 # Module: jinx.selfpatch
-# Generated At: 2026-09-27T16:07:12Z
+# Generated At: 2026-09-27T17:29:47Z
 #
 # This file is dynamically managed by the JINX AI Synthesis Engine.
 # Public classes and methods are verified automatically.
@@ -42,6 +42,13 @@ class VerifySelfpatchPhase(VerificationPhase):
             success = False
 
         # --- FUNCTION VERIFICATIONS ---
+        # Verify Function protection_violations
+        if hasattr(target_module, "protection_violations"):
+            suite.print_badge("Function protection_violations: PRESENT", True)
+        else:
+            suite.print_badge("Function protection_violations: MISSING", False)
+            success = False
+
         # Verify Function is_protected_change
         if hasattr(target_module, "is_protected_change"):
             suite.print_badge("Function is_protected_change: PRESENT", True)

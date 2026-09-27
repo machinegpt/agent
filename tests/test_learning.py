@@ -51,8 +51,13 @@ def ledger(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def sandbox_src(tmp_path, monkeypatch):
-    """A fake framework source tree plus its baseline directory."""
-    src = tmp_path / "src" / "jinx"
+    """A fake framework source tree plus its baseline directory.
+
+    The layout mirrors the real one (``.agent/src/jinx``) because the baseline
+    reaches outside the source tree: ``_repo_root`` walks three levels up from
+    SRC_DIR to find the tests it has to protect.
+    """
+    src = tmp_path / ".agent" / "src" / "jinx"
     src.mkdir(parents=True)
     (src / "state.py").write_text("def merge_state():\n    return {}\n", encoding="utf-8")
     (src / "tools.py").write_text("def tool_schema():\n    return []\n", encoding="utf-8")
@@ -129,6 +134,48 @@ class TestLessonLedgerStaysBounded:
         rendered = render_lessons(stored, limit=100, budget=600)
         assert len(rendered["text"]) <= 600, "the budget is a hard cap, not a hint"
         assert len(rendered["applied"]) < 20, "the budget must actually drop entries"
+
+    def test_a_rule_the_ledger_distrusts_is_withheld(self) -> None:
+        """A rule blamed more often than confirmed is kept on disk, not shown."""
+        lessons = [
+            {"text": "blamed rule", "kind": "antipattern", "uses": 3,
+             "confirmed": 0, "failed": 4},
+            {"text": "proven rule", "kind": "rule", "uses": 2,
+             "confirmed": 2, "failed": 0},
+        ]
+        out = render_lessons(lessons)
+        assert "blamed rule" not in out["text"]
+        assert "proven rule" in out["text"]
+        assert out["applied"] == ["proven rule"], \
+            "a withheld rule must not be credited as if it had been shown"
+
+    def test_the_cap_keeps_the_best_rules_not_the_newest(self) -> None:
+        """Overwriting the ledger must not silently drop proven rules."""
+        existing = [
+            {"text": "proven early rule", "kind": "rule", "uses": 2,
+             "confirmed": 3, "failed": 0},
+            {"text": "proven middle rule", "kind": "rule", "uses": 1,
+             "confirmed": 1, "failed": 0},
+        ]
+        incoming = [{"text": "brand new rule %d" % i} for i in range(3)]
+        kept = [entry["text"] for entry in add_lessons(existing, incoming, cap=3)]
+        assert len(kept) == 3
+        assert "proven early rule" in kept, \
+            "a new rule must not push a proven one out of the ledger"
+        assert "proven middle rule" in kept
+
+    def test_the_cap_keeps_the_recorded_order_of_equal_scores(self) -> None:
+        existing = [
+            {"text": "first tied rule", "kind": "rule", "uses": 1,
+             "confirmed": 1, "failed": 0},
+            {"text": "second tied rule", "kind": "rule", "uses": 1,
+             "confirmed": 1, "failed": 0},
+            {"text": "third tied rule", "kind": "rule", "uses": 1,
+             "confirmed": 1, "failed": 0},
+        ]
+        kept = [e["text"] for e in add_lessons(existing, [{"text": "newcomer"}], cap=2)]
+        assert kept == ["first tied rule", "second tied rule"], \
+            "equal scores must keep the order the ledger recorded them in"
 
     def test_the_budget_covers_the_header_too(self) -> None:
         # The header is text the model reads, so it has to come out of the same
@@ -352,22 +399,111 @@ class TestTerminalRunCleanup:
         assert cleaned == [True]
         assert not base.exists()
 
-    def test_an_error_exit_keeps_the_baseline_for_repair(self, monkeypatch) -> None:
-        # The bootstrap preflight can only roll a half-applied self-edit back if
-        # the baseline it compares against survived the crash.
-        import jinx.selfpatch as sp
+    def test_an_error_exit_keeps_the_baseline_for_repair(self, sandbox_src,
+                                                        monkeypatch) -> None:
+        """A run that dies mid-edit must leave the recovery snapshot behind.
 
-        calls = []
-        monkeypatch.setattr(sp, "clear_baseline", lambda: calls.append("cleared"))
-        # The error paths call clean_up_ipc_files + sys.exit directly, never
-        # _finish_run, so no baseline cleanup can happen on them.
-        assert "cleared" not in calls
+        The bootstrap preflight can only roll a half-applied self-edit back if
+        the baseline it compares against survived the crash, so the error paths
+        have to be checked by actually taking one.
+        """
+        import jinx.runner as runner
+
+        src, base = sandbox_src
+        capture_baseline()
+        assert base.exists()
+        # A half-applied edit: the run is about to die with the source modified.
+        (src / "tools.py").write_text("def tool_schema(:\n", encoding="utf-8")
+
+        cleared = []
+        monkeypatch.setattr(selfpatch, "clear_baseline", lambda: cleared.append(True))
+        # No response file: the runner cannot know what to do next and exits.
+        monkeypatch.setattr(runner, "RESPONSE_PATH",
+                            selfpatch._repo_root() / "no_such_response.yaml")
+        monkeypatch.setattr(runner, "REQUEST_PATH",
+                            selfpatch._repo_root() / "no_such_request.yaml")
+        monkeypatch.setattr(runner, "clean_up_ipc_files", lambda: None)
+
+        with pytest.raises(SystemExit):
+            runner.run_file_ipc("a task", None)
+
+        assert cleared == [], "an error exit must not drop the baseline"
+        assert base.exists(), "the preflight has nothing to repair from otherwise"
 
 
 
 # ==============================================================================
 # Self-patch protection
 # ==============================================================================
+
+
+class TestVerificationInputsAreProtected:
+    """The suite that judges a self-patch is itself part of what it could edit."""
+
+    def test_the_tests_are_part_of_the_baseline(self, sandbox_src) -> None:
+        src, base = sandbox_src
+        repo = selfpatch._repo_root()
+        tests = repo / "tests"
+        tests.mkdir(parents=True)
+        (tests / "test_thing.py").write_text("def test_ok():\n    assert True\n",
+                                            encoding="utf-8")
+        (repo / "pyproject.toml").write_text("[tool.pytest.ini_options]\n",
+                                            encoding="utf-8")
+        assert capture_baseline() is True
+        assert "repo/tests/test_thing.py" in _baseline_files_keys()
+        assert "repo/pyproject.toml" in _baseline_files_keys()
+        assert baseline_changed() == []
+
+    def test_a_weakened_test_is_restored_before_verification(self, sandbox_src,
+                                                             monkeypatch) -> None:
+        import jinx.runner as runner
+
+        src, _ = sandbox_src
+        tests = selfpatch._repo_root() / "tests"
+        tests.mkdir(parents=True)
+        test_file = tests / "test_thing.py"
+        original = "def test_ok():\n    assert True\n"
+        test_file.write_text(original, encoding="utf-8")
+        capture_baseline()
+
+        # The model deletes the assertion instead of fixing the code.
+        test_file.write_text("def test_ok():\n    assert True  # skipped\n"
+                             "def test_disabled():\n    pass\n", encoding="utf-8")
+        assert "repo/tests/test_thing.py" in baseline_changed()
+
+        seen = {}
+
+        def fake_verify(repo_root, *a, **k):
+            seen["test_file"] = test_file.read_text(encoding="utf-8")
+            return {"ok": True, "summary": "PASS", "checks": []}
+
+        monkeypatch.setattr(selfpatch, "verify", fake_verify)
+        runner._enforce_self_patch_gate({"history": []})
+
+        assert seen["test_file"] == original, \
+            "verification must run against the baseline test, not the edited one"
+        assert test_file.read_text(encoding="utf-8") == original
+
+    def test_a_new_test_file_does_not_break_verification(self, sandbox_src,
+                                                         monkeypatch) -> None:
+        """Adding a test is legitimate; it must not read as a brake change."""
+        import jinx.runner as runner
+
+        src, _ = sandbox_src
+        capture_baseline()
+        assert runner._enforce_self_patch_gate({"history": []}) is None
+        monkeypatch.setattr(
+            selfpatch, "verify",
+            lambda *a, **k: {"ok": True, "summary": "PASS", "checks": []},
+        )
+        (src / "state.py").write_text(
+            "def merge_state():\n    return {}\n\n\ndef helper():\n    return 1\n",
+            encoding="utf-8")
+        assert runner._enforce_self_patch_gate({"history": []}) is None
+
+
+def _baseline_files_keys():
+    return set(selfpatch._baseline_files())
 
 
 class TestBrakeProtection:
@@ -632,6 +768,31 @@ class TestOnDiskProtectionRecheck:
             "# protected, now changed\n", encoding="utf-8")
         assert selfpatch.protection_violations()
 
+    def test_a_gutted_file_is_treated_as_a_removal_not_a_fragment(self, sandbox_src) -> None:
+        """The on-disk comparison knows it is looking at whole files.
+
+        Replaced by a much shorter file, ``state.py`` must read as a removed
+        brake. Inferred from the line counts it would look like a small edit that
+        simply does not mention the brake, and the removal would go unreported.
+        """
+        src, _ = sandbox_src
+        (src / "state.py").write_text(
+            "def merge_state():\n    return {}\n\n\ndef other():\n    return 1\n" * 8,
+            encoding="utf-8")
+        capture_baseline()
+        (src / "state.py").write_text("# gutted\n", encoding="utf-8")
+        violations = selfpatch.protection_violations()
+        assert "state.py" in violations
+        assert any("removed" in reason for reason in violations["state.py"])
+
+    def test_a_deleted_protected_module_is_reported(self, sandbox_src) -> None:
+        src, _ = sandbox_src
+        capture_baseline()
+        (src / "state.py").unlink()
+        violations = selfpatch.protection_violations()
+        assert "state.py" in violations, \
+            "deleting a module that defines a brake is a removal, not an absence"
+
     def test_the_override_still_wins(self, sandbox_src, monkeypatch) -> None:
         src, _ = sandbox_src
         original = (src / "state.py").read_text(encoding="utf-8")
@@ -645,6 +806,63 @@ class TestOnDiskProtectionRecheck:
 
 class TestGateFeedbackDelivery:
     """The gate returns its verdict; the caller places it after the tool results."""
+
+    def test_a_failed_protection_check_refuses_rather_than_verifying(
+        self, sandbox_src, monkeypatch
+    ) -> None:
+        """If the brake check cannot run, the patch is not judged on its word.
+
+        Continuing would reach ``capture_baseline`` and adopt whatever is on disk
+        as the new trusted reference — which is exactly the outcome the check
+        exists to prevent.
+        """
+        import jinx.runner as runner
+
+        src, _ = sandbox_src
+        capture_baseline()
+        (src / "tools.py").write_text("broken(", encoding="utf-8")
+
+        def boom():
+            raise OSError("baseline unreadable")
+
+        monkeypatch.setattr(selfpatch, "protection_violations", boom)
+        monkeypatch.setattr(
+            runner, "_rollback_and_report",
+            lambda reason: "SELF-PATCH REFUSED: %s" % reason,
+        )
+        verified = []
+        monkeypatch.setattr(
+            selfpatch, "verify",
+            lambda *a, **k: verified.append(True) or {"ok": True, "summary": "PASS",
+                                                     "checks": []},
+        )
+        message = runner._enforce_self_patch_gate({"history": []})
+
+        assert message and "SELF-PATCH REFUSED" in message
+        assert "could not be completed" in message
+        assert verified == [], "a patch must never be verified after a failed brake check"
+
+    def test_a_rollback_failure_is_reported_distinctly(self, sandbox_src,
+                                                       monkeypatch) -> None:
+        import jinx.runner as runner
+
+        src, _ = sandbox_src
+        capture_baseline()
+        (src / "tools.py").write_text("broken(", encoding="utf-8")
+        monkeypatch.setattr(
+            selfpatch, "protection_violations",
+            lambda: {"tools.py": ["tools.py::brake"]},
+        )
+
+        def boom():
+            raise OSError("disk full")
+
+        monkeypatch.setattr(selfpatch, "restore_baseline", boom)
+        message = runner._enforce_self_patch_gate({"history": []})
+
+        assert message and "ROLLBACK FAILED" in message, \
+            "a partial rollback must not be reported as a clean refusal"
+        assert "disk full" in message
 
     def test_the_gate_returns_the_message_instead_of_stashing_it(self, sandbox_src,
                                                                  monkeypatch) -> None:

@@ -1,7 +1,7 @@
 # ==============================================================================
 # AI-Generated Enterprise Verification Plugin
 # Module: jinx.runner
-# Generated At: 2026-08-20T19:01:34Z
+# Generated At: 2026-09-27T17:29:47Z
 #
 # This file is dynamically managed by the JINX AI Synthesis Engine.
 # Public classes and methods are verified automatically.
@@ -143,6 +143,13 @@ class VerifyRunnerPhase(VerificationPhase):
             suite.print_badge("Function compact_history_for_request: PRESENT", True)
         else:
             suite.print_badge("Function compact_history_for_request: MISSING", False)
+            success = False
+
+        # Verify Function summarize_dropped_history
+        if hasattr(target_module, "summarize_dropped_history"):
+            suite.print_badge("Function summarize_dropped_history: PRESENT", True)
+        else:
+            suite.print_badge("Function summarize_dropped_history: MISSING", False)
             success = False
 
         # Verify Function write_llm_request

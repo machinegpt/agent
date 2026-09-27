@@ -1,7 +1,7 @@
 # ==============================================================================
 # AI-Generated Enterprise Verification Plugin
 # Module: jinx.state
-# Generated At: 2026-08-20T19:01:34Z
+# Generated At: 2026-09-27T17:29:47Z
 #
 # This file is dynamically managed by the JINX AI Synthesis Engine.
 # Public classes and methods are verified automatically.
@@ -102,6 +102,20 @@ class VerifyStatePhase(VerificationPhase):
             suite.print_badge("Function atomic_write_yaml: PRESENT", True)
         else:
             suite.print_badge("Function atomic_write_yaml: MISSING", False)
+            success = False
+
+        # Verify Function merge_scores
+        if hasattr(target_module, "merge_scores"):
+            suite.print_badge("Function merge_scores: PRESENT", True)
+        else:
+            suite.print_badge("Function merge_scores: MISSING", False)
+            success = False
+
+        # Verify Function normalize_text_list
+        if hasattr(target_module, "normalize_text_list"):
+            suite.print_badge("Function normalize_text_list: PRESENT", True)
+        else:
+            suite.print_badge("Function normalize_text_list: MISSING", False)
             success = False
 
         # Verify Function read_jinx

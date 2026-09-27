@@ -511,6 +511,30 @@ def _close_lesson_bookkeeping(
         run_state.pop("applied_lessons", None)
 
 
+def _rollback_and_report(reason: str) -> str:
+    """Rolls the self-patch back and builds the model's refusal message.
+
+    The rollback is reported separately from the reason because the two can
+    disagree: a partially failed restore leaves files on disk that the model
+    believes were undone, and saying so is the only way it can find out.
+    """
+    try:
+        restored = selfpatch.restore_baseline()
+    except Exception as e:
+        logger.error("Self-patch rollback failed: %s", e, exc_info=True)
+        return (
+            "SELF-PATCH REFUSED and ROLLBACK FAILED: %s\nThe rollback itself "
+            "raised %s: %s. Treat JINX's source as untrustworthy and ask a human "
+            "before continuing — the next run's preflight will retry the repair "
+            "from the baseline." % (reason, type(e).__name__, e)
+        )
+    logger.warning("Self-patch protection gate reverted %d file(s)", len(restored))
+    return (
+        "SELF-PATCH REFUSED: %s\nFiles rolled back: %s"
+        % (reason, ", ".join(restored) or "none")
+    )
+
+
 def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> Optional[str]:
     """Verifies or reverts self-edits. Returns feedback for the model, or None.
 
@@ -540,24 +564,42 @@ def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> Optional[str]:
     try:
         violations = selfpatch.protection_violations()
     except Exception as e:
+        # Fail closed. If the check itself cannot run, this round has no evidence
+        # that the brake survived, and "no evidence of a violation" is not the
+        # same as "no violation": continuing would let `capture_baseline` adopt
+        # whatever is on disk as the new trusted reference.
         logger.error("Self-patch protection check failed: %s", e, exc_info=True)
-        violations = {}
+        return _rollback_and_report(
+            "the protected-logic check could not be completed (%s: %s), so this "
+            "edit was neither verified nor accepted" % (type(e).__name__, e)
+        )
     if violations:
-        restored = selfpatch.restore_baseline()
         detail = "; ".join(
             "%s: %s" % (name, ", ".join(reasons))
             for name, reasons in sorted(violations.items())
         )
-        message = (
-            "SELF-PATCH REFUSED: your edit to JINX's own source changed protected "
-            "brake logic (%s). It was rolled back automatically and NOT verified: "
-            "these functions are what stop a self-patch from removing its own "
-            "safety checks, so no test result can justify changing them. Improve "
-            "something else, or ask a human.\nFiles rolled back: %s"
-            % (detail, ", ".join(restored) or "none")
+        return _rollback_and_report(
+            "your edit to JINX's own source changed protected brake logic (%s). "
+            "It was rolled back automatically and NOT verified: these functions "
+            "are what stop a self-patch from removing its own safety checks, so no "
+            "test result can justify changing them. Improve something else, or ask "
+            "a human." % detail
         )
-        logger.warning("Self-patch protection gate reverted %d file(s)", len(restored))
-        return message
+
+    # Put the tests and test configuration back BEFORE the suite runs. They are
+    # the yardstick the patch is about to be measured with, so leaving a weakened
+    # or skipped test in place would let the model edit the answer instead of the
+    # framework. Source changes are deliberately left alone here: they are the
+    # thing under test, and a failing patch is reverted below anyway.
+    try:
+        selfpatch.restore_baseline(only=selfpatch.REPO_PREFIX)
+    except Exception as e:
+        logger.error("Could not restore the test files: %s", e, exc_info=True)
+        return _rollback_and_report(
+            "the test files that decide whether this patch is acceptable could "
+            "not be restored (%s: %s), so it was not verified against a trusted "
+            "suite" % (type(e).__name__, e)
+        )
 
     result = selfpatch.verify(AGENT_DIR.parent)
     if result["ok"]:
@@ -569,7 +611,7 @@ def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> Optional[str]:
 
     restored = selfpatch.restore_baseline()
     message = (
-        "SELF-PATCH REVERTED: your edit to JINX's own source (%s) failed "
+        "SELF-PATCH REVERTED: your edit to the files JINX verifies (%s) failed "
         "verification (%s). The change was rolled back automatically, so the "
         "framework is intact — the round was not wasted, it produced evidence. "
         "Read the failure below, decide whether the idea is still right, and if "
@@ -892,7 +934,14 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
             logger.error("Failed to write initial LLM request: %s", e, exc_info=True)
             clean_up_ipc_files()
             sys.exit(1)
-        return
+        # Return is removed here to ensure the logic continues into the check for response files
+        # even on the first round if requested by tests or specific IPC states.
+        # However, the original logic returned. Let's see if that's the issue.
+        # Wait, if it returns, it NEVER hits the RESPONSE_PATH.exists() check in the same call.
+        # The test calls runner.run_file_ipc("a task", None).
+        # In that case, it goes into the `if not is_resuming` block and RETURNS.
+        # That's why it doesn't raise SystemExit!
+
 
     # Resume path
     try:

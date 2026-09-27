@@ -93,6 +93,26 @@ PROTECTED_SYMBOLS: Tuple[Tuple[str, str], ...] = (
     ("prompts.py", r"^SYSTEM_PROMPT"),
 )
 
+# Files outside the framework source that decide whether verification passes.
+# They are not "brake logic" and are not refused outright — a self-patch is
+# allowed to add a test — but they are part of the baseline, so an edit to them
+# is undone before the suite runs. Without this the cheapest bypass of the whole
+# mechanism is to weaken or skip the test that would have caught the patch.
+TEST_TREE = "tests"
+TEST_CONFIG_FILES: Tuple[str, ...] = (
+    "conftest.py",
+    "pytest.ini",
+    "pyproject.toml",
+    "setup.cfg",
+    "tox.ini",
+    "scripts/jinx_test.py",
+)
+
+# Key prefix for everything outside SRC_DIR. It keeps the two namespaces from
+# colliding: a bare "conftest.py" key would be indistinguishable from a module of
+# the same name inside the package, and restore would write it to the wrong root.
+REPO_PREFIX = "repo/"
+
 
 class ProtectionError(RuntimeError):
     """Raised when a self-patch would modify protected brake logic."""
@@ -146,13 +166,23 @@ def _read_existing(relative_path: Path) -> Optional[str]:
     return None
 
 
-def _violations_against(name: str, new_text: str, old_text: Optional[str]) -> List[str]:
+def _violations_against(
+    name: str, new_text: str, old_text: Optional[str],
+    whole_file: Optional[bool] = None,
+) -> List[str]:
     """Returns the protected constructs ``new_text`` would add or alter.
 
     ``old_text`` is the trusted prior content, or None for a file that did not
     exist. Taking it as an argument rather than reading it is what lets the same
     comparison run against a candidate tool call *and* against what is actually
     sitting on disk, where the only prior version available is the baseline.
+
+    ``whole_file`` says whether ``new_text`` is the complete file or just a
+    fragment of it. It is inferred from the line counts when not given, which is
+    the right guess for a candidate write but the wrong one for a file read back
+    from disk: a file that was gutted to a fraction of its former length would
+    then be mistaken for a small edit, and the brake it no longer defines would
+    not be reported as removed.
     """
     if ALLOW_PROTECTED:
         return []
@@ -162,9 +192,10 @@ def _violations_against(name: str, new_text: str, old_text: Optional[str]) -> Li
     # Removal is only meaningful for a whole-file rewrite. A short fragment is
     # not a document that had a brake deleted from it; treating it as one would
     # make every small, legitimate write look like an attack on all four brakes.
-    whole_file = old_text is not None and len(new_text.splitlines()) >= (
-        0.5 * len(old_text.splitlines())
-    )
+    if whole_file is None:
+        whole_file = old_text is not None and len(new_text.splitlines()) >= (
+            0.5 * len(old_text.splitlines())
+        )
     for filename, pattern in PROTECTED_SYMBOLS:
         if name != filename:
             continue
@@ -222,9 +253,9 @@ def protection_violations() -> Dict[str, List[str]]:
             continue
         if new_text is None:
             # A protected file that was deleted outright.
-            violations = _violations_against(name, "", old_text)
+            violations = _violations_against(name, "", old_text, whole_file=True)
         else:
-            violations = _violations_against(name, new_text, old_text)
+            violations = _violations_against(name, new_text, old_text, whole_file=True)
         if violations:
             found[name] = violations
     for name, text in current.items():
@@ -257,21 +288,59 @@ def within_src_tree(path: str) -> bool:
         return str(resolved).startswith(str(SRC_DIR.resolve()))
 
 
+def _repo_root() -> Path:
+    """The repository that owns the framework source.
+
+    Derived from ``SRC_DIR`` rather than ``__file__`` so a test that points
+    SRC_DIR at a copy of the tree also gets that copy's repository.
+    """
+    return SRC_DIR.parent.parent.parent
+
+
+def _target_for(name: str) -> Path:
+    """Resolves a baseline key back to the file it came from."""
+    if name.startswith(REPO_PREFIX):
+        return _repo_root() / name[len(REPO_PREFIX):]
+    return SRC_DIR / name
+
+
+def _tracked_files() -> Dict[str, Path]:
+    """Every file the baseline covers, keyed the way the baseline stores it.
+
+    Two namespaces: framework modules are keyed relative to ``SRC_DIR``, and the
+    repository's tests and test configuration are prefixed with ``repo/``.
+    """
+    tracked: Dict[str, Path] = {}
+    if SRC_DIR.exists():
+        for path in sorted(SRC_DIR.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            tracked[path.relative_to(SRC_DIR).as_posix()] = path
+    root = _repo_root()
+    tests_dir = root / TEST_TREE
+    if tests_dir.is_dir():
+        for path in sorted(tests_dir.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            tracked[REPO_PREFIX + path.relative_to(root).as_posix()] = path
+    for rel in TEST_CONFIG_FILES:
+        candidate = root / rel
+        if candidate.is_file():
+            tracked[REPO_PREFIX + rel] = candidate
+    return tracked
+
+
 def snapshot() -> Dict[str, str]:
-    """Captures every framework source file so a bad edit can be undone."""
+    """Captures the framework source and the files verification depends on."""
     snap: Dict[str, str] = {}
-    if not SRC_DIR.exists():
-        return snap
-    for path in sorted(SRC_DIR.rglob("*.py")):
-        if "__pycache__" in path.parts:
-            continue
+    for name, path in _tracked_files().items():
         try:
             # Keyed by path relative to SRC_DIR, not by basename: two modules
             # with the same filename in different subpackages would otherwise
             # collide, and the loser of that collision would be written back to
             # the source root on restore.
-            snap[path.relative_to(SRC_DIR).as_posix()] = path.read_text(encoding="utf-8")
-        except (OSError, ValueError) as e:
+            snap[name] = path.read_text(encoding="utf-8")
+        except (OSError, ValueError, UnicodeDecodeError) as e:
             logger.warning("Could not snapshot %s: %s", path, e)
     return snap
 
@@ -290,17 +359,22 @@ def changed_files(snap: Dict[str, str]) -> List[str]:
     return changed
 
 
-def restore(snap: Dict[str, str]) -> List[str]:
-    """Reverts the framework source to the snapshot. Returns files restored.
+def restore(snap: Dict[str, str], only: Optional[str] = None) -> List[str]:
+    """Reverts tracked files to the snapshot. Returns files restored.
 
-    Keys are paths relative to SRC_DIR, so nested modules are written back where
-    they came from rather than flattened into the source root.
+    Keys are paths relative to SRC_DIR (or ``repo/``-prefixed repository paths),
+    so nested modules and test files are written back where they came from rather
+    than flattened into the source root. ``only`` restricts the restore to keys
+    carrying that prefix, which is how the tests are put back before verification
+    without also reverting the patch that is about to be judged.
     """
     restored: List[str] = []
     current = snapshot()
     for name, text in snap.items():
+        if only is not None and not name.startswith(only):
+            continue
         if current.get(name) != text:
-            target = SRC_DIR / name
+            target = _target_for(name)
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(text, encoding="utf-8")
@@ -308,12 +382,13 @@ def restore(snap: Dict[str, str]) -> List[str]:
             except OSError as e:
                 logger.error("Could not restore %s: %s", name, e)
     for name in current:
-        if name not in snap:
-            try:
-                (SRC_DIR / name).unlink(missing_ok=True)
-                restored.append("%s (deleted)" % name)
-            except OSError as e:
-                logger.error("Could not remove new file %s: %s", name, e)
+        if name in snap or (only is not None and not name.startswith(only)):
+            continue
+        try:
+            _target_for(name).unlink(missing_ok=True)
+            restored.append("%s (deleted)" % name)
+        except OSError as e:
+            logger.error("Could not remove new file %s: %s", name, e)
     if restored:
         logger.warning("Self-patch gate reverted: %s", ", ".join(restored))
     return restored
@@ -345,13 +420,13 @@ def _baseline_files() -> Dict[str, Path]:
         return {}
     return {
         p.relative_to(BASELINE_DIR).as_posix(): p
-        for p in sorted(BASELINE_DIR.rglob("*.py"))
-        if "__pycache__" not in p.parts
+        for p in sorted(BASELINE_DIR.rglob("*"))
+        if p.is_file() and "__pycache__" not in p.parts
     }
 
 
 def capture_baseline() -> bool:
-    """Copies the current framework source to the baseline directory.
+    """Copies the tracked files to the baseline directory.
 
     Returns True when a usable baseline was written. A failure is logged and
     reported rather than raised: no baseline means no self-patching this round,
@@ -359,14 +434,18 @@ def capture_baseline() -> bool:
     """
     if not SRC_DIR.exists():
         return False
+    snap = snapshot()
+    if not snap:
+        return False
     try:
         if BASELINE_DIR.exists():
             shutil.rmtree(BASELINE_DIR, ignore_errors=True)
-        shutil.copytree(
-            SRC_DIR,
-            BASELINE_DIR,
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-        )
+        # Written file by file rather than copied as a tree, because the baseline
+        # spans two roots: the source package and the repository's tests.
+        for name, text in snap.items():
+            target = BASELINE_DIR / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
         return True
     except OSError as e:
         logger.error("Could not capture self-patch baseline: %s", e)
@@ -386,8 +465,8 @@ def baseline_changed() -> List[str]:
     return changed
 
 
-def restore_baseline() -> List[str]:
-    """Restores the framework source from the on-disk baseline.
+def restore_baseline(only: Optional[str] = None) -> List[str]:
+    """Restores the tracked files from the on-disk baseline.
 
     The baseline is deliberately KEPT afterwards. A previous version cleared it
     here, which disarmed the gate for the rest of the run: ``baseline_changed``
@@ -404,7 +483,7 @@ def restore_baseline() -> List[str]:
     }
     if not snap:
         return []
-    return restore(snap)
+    return restore(snap, only=only)
 
 
 def clear_baseline() -> None:
