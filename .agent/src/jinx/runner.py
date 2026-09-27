@@ -29,6 +29,7 @@ import yaml
 import threading
 import queue as _queue
 
+from . import prompts
 from .prompts import SYSTEM_PROMPT, TOOL_DEPTH_CRITICAL_MSG, construct_round_prompt
 from .state import merge_state, read_jinx, write_jinx
 from .tools import tool_schema
@@ -562,7 +563,28 @@ def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> Optional[str]:
     # only ever sees `file_write`, so a brake weakened through `bash_exec` would
     # otherwise sail through a green test suite and be adopted as the baseline.
     try:
-        violations = selfpatch.protection_violations()
+        for name in changed:
+            # 1. Block any edit to PROTECTED_FILES
+            if name in selfpatch.PROTECTED_FILES:
+                return _rollback_and_report(
+                    prompts.PROTECTED_FILE_REFUSAL % name
+                )
+
+            # 2. Check for symbol violations in other files.
+            # We must treat the change as a whole-file rewrite to detect
+            # deletions or shadowing of protected symbols.
+            base_path = selfpatch._target_for(name)
+            old_text = base_path.read_text(encoding="utf-8", errors="replace")
+            current_text = selfpatch.snapshot().get(name, "")
+
+            violations = selfpatch._violations_against(
+                name, current_text, old_text, whole_file=True
+            )
+            if violations:
+                detail = "; ".join(violations)
+                return _rollback_and_report(
+                    prompts.PROTECTED_SYMBOL_REFUSAL % (name, detail)
+                )
     except Exception as e:
         # Fail closed. If the check itself cannot run, this round has no evidence
         # that the brake survived, and "no evidence of a violation" is not the
@@ -570,20 +592,7 @@ def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> Optional[str]:
         # whatever is on disk as the new trusted reference.
         logger.error("Self-patch protection check failed: %s", e, exc_info=True)
         return _rollback_and_report(
-            "the protected-logic check could not be completed (%s: %s), so this "
-            "edit was neither verified nor accepted" % (type(e).__name__, e)
-        )
-    if violations:
-        detail = "; ".join(
-            "%s: %s" % (name, ", ".join(reasons))
-            for name, reasons in sorted(violations.items())
-        )
-        return _rollback_and_report(
-            "your edit to JINX's own source changed protected brake logic (%s). "
-            "It was rolled back automatically and NOT verified: these functions "
-            "are what stop a self-patch from removing its own safety checks, so no "
-            "test result can justify changing them. Improve something else, or ask "
-            "a human." % detail
+            prompts.PROTECTION_CHECK_FAILURE % (type(e).__name__, e)
         )
 
     # Put the tests and test configuration back BEFORE the suite runs. They are
@@ -934,13 +943,7 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
             logger.error("Failed to write initial LLM request: %s", e, exc_info=True)
             clean_up_ipc_files()
             sys.exit(1)
-        # Return is removed here to ensure the logic continues into the check for response files
-        # even on the first round if requested by tests or specific IPC states.
-        # However, the original logic returned. Let's see if that's the issue.
-        # Wait, if it returns, it NEVER hits the RESPONSE_PATH.exists() check in the same call.
-        # The test calls runner.run_file_ipc("a task", None).
-        # In that case, it goes into the `if not is_resuming` block and RETURNS.
-        # That's why it doesn't raise SystemExit!
+        return
 
 
     # Resume path

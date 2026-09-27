@@ -417,7 +417,16 @@ class TestTerminalRunCleanup:
 
         cleared = []
         monkeypatch.setattr(selfpatch, "clear_baseline", lambda: cleared.append(True))
-        # No response file: the runner cannot know what to do next and exits.
+
+        # Create a fake run state so run_file_ipc thinks it is resuming.
+        run_state_path = selfpatch._repo_root() / "jinx_run_state.yaml"
+        run_state_path.write_text(yaml.dump({
+            "rnd": 1, "tool_depth": 0, "history": [],
+            "waiting_for": "llm_generate", "min_rounds": 10,
+        }), encoding="utf-8")
+
+        # Mock the paths to point to this fake run state.
+        monkeypatch.setattr(runner, "RUN_STATE_PATH", run_state_path)
         monkeypatch.setattr(runner, "RESPONSE_PATH",
                             selfpatch._repo_root() / "no_such_response.yaml")
         monkeypatch.setattr(runner, "REQUEST_PATH",
@@ -425,7 +434,7 @@ class TestTerminalRunCleanup:
         monkeypatch.setattr(runner, "clean_up_ipc_files", lambda: None)
 
         with pytest.raises(SystemExit):
-            runner.run_file_ipc("a task", None)
+            runner.run_file_ipc(None, None)
 
         assert cleared == [], "an error exit must not drop the baseline"
         assert base.exists(), "the preflight has nothing to repair from otherwise"
@@ -822,10 +831,12 @@ class TestGateFeedbackDelivery:
         capture_baseline()
         (src / "tools.py").write_text("broken(", encoding="utf-8")
 
-        def boom():
+        def boom(*args, **kwargs):
             raise OSError("baseline unreadable")
 
-        monkeypatch.setattr(selfpatch, "protection_violations", boom)
+        # Our new implementation doesn't call protection_violations(),
+        # it calls _violations_against.
+        monkeypatch.setattr(selfpatch, "_violations_against", boom)
         monkeypatch.setattr(
             runner, "_rollback_and_report",
             lambda reason: "SELF-PATCH REFUSED: %s" % reason,

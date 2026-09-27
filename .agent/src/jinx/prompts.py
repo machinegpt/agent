@@ -135,6 +135,62 @@ TOOL_DEPTH_CRITICAL_MSG: str = (
     "CRITICAL: The inner tool-calling depth limit has been reached. "
     "Do not call any more tools. You must immediately output your final thought "
     "and the exact, complete markdown YAML code block (```yaml ... ```) to persist your progress and avoid state loss.\n"
+    "Being cut off here does not mean the task is done — only set 'exit_ready: true' if the requirements "
+    "genuinely all passed. Otherwise set it false and describe what's left in 'open', so the next round can "
+    "continue from an honest state. Send this round's 'scores' entry only — it is merged with the history "
+    "on disk by round number, so the earlier rounds are preserved without you re-sending them."
+)
+
+# Protection feedback prompts
+PROTECTED_FILE_REFUSAL: str = (
+    "your edit to JINX's own source modified a protected file (%s). "
+    "These files are off-limits to self-patching to prevent the agent from "
+    "disabling its own guardrails."
+)
+
+PROTECTED_SYMBOL_REFUSAL: str = (
+    "your edit to JINX's own source changed protected brake logic "
+    "in %s (%s). It was rolled back automatically and NOT verified: "
+    "these functions are what stop a self-patch from removing its own "
+    "safety checks, so no test result can justify changing them."
+)
+
+PROTECTION_CHECK_FAILURE: str = (
+    "the protected-logic check could not be completed (%s: %s), so this "
+    "edit was neither verified nor accepted"
+)
+
+def construct_round_prompt(
+    rnd: int, min_rounds: int, state_dump: str, missing_state: bool = False,
+    lessons_text: str = "",
+) -> str:
+    """Constructs the structured user prompt for a specific execution round in the cognitive loop.
+
+    Args:
+        rnd (int): The current execution round index.
+        """
+    warning_prefix = MISSING_STATE_WARNING if missing_state else ""
+    round_label = f"ROUND {rnd} (at least {min_rounds} rounds required before exit is considered)"
+    sections = [f"{warning_prefix}{round_label}\nCURRENT STATE:\n{state_dump}"]
+    if lessons_text:
+        sections.append(lessons_text)
+    return "\n\n".join(sections)
+# ==============================================================================
+# JINX Prompt Templates & Construction Utilities
+# ==============================================================================
+
+MISSING_STATE_WARNING: str = (
+    "WARNING: You did not output the REQUIRED markdown YAML state block (```yaml ... ```) at the end of your last response!\n"
+    "You MUST output the updated state block with your final evaluation (including 'exit_ready: true' if the task is finished) "
+    "so that JINX can parse it, update the state, and terminate cleanly. Do not skip this block!\n"
+    "Use CURRENT STATE below as your starting point — send this round's 'scores' entry (the runner merges it "
+    "with the history already on disk by round number, so omitted rounds are kept).\n\n"
+)
+
+TOOL_DEPTH_CRITICAL_MSG: str = (
+    "CRITICAL: The inner tool-calling depth limit has been reached. "
+    "Do not call any more tools. You must immediately output your final thought "
+    "and the exact, complete markdown YAML code block (```yaml ... ```) to persist your progress and avoid state loss.\n"
     "Being cut off here does NOT mean the task is done — only set 'exit_ready: true' if the requirements "
     "genuinely all passed. Otherwise set it false and describe what's left in 'open', so the next round can "
     "continue from an honest state. Send this round's 'scores' entry only — it is merged with the history "

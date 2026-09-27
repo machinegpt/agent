@@ -45,6 +45,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import prompts
+
 logger = logging.getLogger("jinx.selfpatch")
 
 # The source tree JINX is allowed to self-patch.
