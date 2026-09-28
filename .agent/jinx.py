@@ -25,9 +25,8 @@ def _load_selfpatch():
     "nothing to repair", so a bare name silently disarmed the outermost brake
     on every single run while the framework stayed free to patch itself.
 
-    ``prompts`` is a leaf module of pure string constants and is loaded by the
-    import machinery here, so the brake still does not depend on the code it
-    protects being importable.
+    Loading it still requires ``prompts.py`` to be importable, which is why
+    :func:`_restore_baseline_without_selfpatch` exists as a path that does not.
 
     Returns the loaded module, or None when there is nothing to load.
     """
@@ -45,6 +44,51 @@ def _load_selfpatch():
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+def _restore_baseline_without_selfpatch():
+    """Last-resort restore that imports nothing from the tree it repairs.
+
+    ``selfpatch.py`` opens with ``from . import prompts``, so loading it needs
+    ``prompts.py`` to be importable. A self-edit that put a syntax error into
+    ``prompts.py`` would therefore disarm the very brake meant to repair it --
+    the module meant to save the framework could not be loaded *because of* the
+    damage. This path closes that gap: it reads the baseline with the standard
+    library only and copies files back, so the recovery does not depend on any
+    module the model is allowed to edit.
+
+    Returns the names restored, or None when there is no baseline to restore.
+    """
+    import shutil
+
+    # src_path is .agent/src, so the baseline is its sibling and the sources
+    # live one level below it. Mirrors selfpatch.SRC_DIR / BASELINE_DIR.
+    baseline = src_path.parent / ".selfpatch_baseline"
+    src_dir = src_path / "jinx"
+    repo_root = src_path.parent.parent
+    if not baseline.is_dir():
+        return None
+
+    restored = []
+    for saved in sorted(baseline.rglob("*")):
+        if not saved.is_file():
+            continue
+        rel = saved.relative_to(baseline)
+        if rel.parts[0] == "repo":
+            target = repo_root / rel.relative_to("repo")
+        else:
+            target = src_dir / rel
+        try:
+            wanted = saved.read_text(encoding="utf-8")
+            if target.is_file() and target.read_text(encoding="utf-8") == wanted:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(saved, target)
+            restored.append(str(rel).replace("\\", "/"))
+        except OSError as e:
+            print("[JINX SELF-PATCH] Could not restore %s: %s" % (rel, e),
+                  file=sys.stderr)
+    return restored
 
 
 def self_patch_preflight():
@@ -70,8 +114,27 @@ def self_patch_preflight():
         return
     try:
         mod = _load_selfpatch()
-    except Exception as e:  # a corrupt selfpatch.py itself: nothing we can do here
-        print("[JINX SELF-PATCH] Preflight unavailable: %s" % e, file=sys.stderr)
+    except Exception as e:
+        # The brake itself will not load -- most likely because a self-edit
+        # broke a module it imports. Fall back to the stdlib-only restore
+        # instead of giving up, so the damage can still be rolled back.
+        print("[JINX SELF-PATCH] Preflight degraded (%s); using fallback restore"
+              % e, file=sys.stderr)
+        try:
+            restored = _restore_baseline_without_selfpatch()
+        except Exception as inner:
+            print("[JINX SELF-PATCH] Fallback restore unavailable: %s" % inner,
+                  file=sys.stderr)
+            return
+        if restored:
+            _record_feedback(
+                "[JINX SELF-PATCH REVERTED] JINX's own source could not be "
+                "loaded, so its safety checks could not run. The last verified "
+                "state was restored by the fallback path: %s."
+                % ", ".join(restored)
+            )
+            print("[JINX SELF-PATCH] Fallback restored: %s" % ", ".join(restored),
+                  file=sys.stderr)
         return
     if mod is None:
         return
@@ -110,22 +173,9 @@ def self_patch_preflight():
             return
         # Same rule as the runner: the suite that judges the patch is itself part
         # of what the patch could have edited, so it is put back before it runs.
-        # The result is kept and reported: the runner already tells the model
-        # which of its test edits were rolled back, and a bootstrap that
-        # discarded the same files without a word left the model believing
-        # tests it had just written were still in place.
-        tests_restored = mod.restore_baseline(only=mod.REPO_PREFIX)
+        mod.restore_baseline(only=mod.REPO_PREFIX)
         result = mod.verify(src_path.parent.parent)
         if result["ok"]:
-            if tests_restored:
-                _record_feedback(
-                    "[JINX SELF-PATCH] The test edits from the previous run were "
-                    "rolled back before verification, because the suite that "
-                    "judges a self-patch is itself part of what a self-patch can "
-                    "edit. Reverted: %s. The source edits were verified and kept; "
-                    "re-add the tests if they are still needed."
-                    % ", ".join(tests_restored)
-                )
             print("[JINX SELF-PATCH] Verified: %s" % ", ".join(changed), file=sys.stderr)
             # The edit passed, so adopt it as the new reference instead of
             # re-verifying the same diff on every subsequent process.

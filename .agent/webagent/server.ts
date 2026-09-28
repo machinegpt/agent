@@ -55,11 +55,19 @@ const AGENT_MARKERS = ["JINX.yaml"];
 // transition uses them.
 const IPC_FILES = ["jinx_request.yaml", "jinx_response.yaml", "jinx_run_state.yaml"];
 
-// Cap on a file inlined into the payload. A long run's jinx_run_state.yaml grows
-// with the tool-result cache, so a hard skip made the most interesting file
-// vanish exactly when a session got busy; truncating keeps it visible.
+// Cap on a file inlined into the payload. A long run's history grows with the
+// tool-result cache, so a hard skip made the most interesting files vanish
+// exactly when a session got busy; truncating keeps them visible.
 const MAX_INLINE_FILE_BYTES = 1024 * 1024;
 const TRUNCATION_NOTICE = "\n... [truncated by the dashboard at %d bytes] ...\n";
+
+// The runner deletes the IPC files between transitions, so a file that existed
+// at existsSync() can be gone by the time it is read. That is normal churn, not
+// a failure, and must not fail the whole snapshot.
+function isVanished(e: unknown): boolean {
+  const code = (e as NodeJS.ErrnoException)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
 
 function readCapped(filepath: string): string {
   const stat = fs.statSync(filepath);
@@ -228,7 +236,10 @@ function getLiveSessionData() {
     try {
       const stat = fs.statSync(filepath);
       if (stat.isFile()) {
-        if (stat.size < MAX_INLINE_FILE_BYTES) {
+        // The IPC files are handled below, presence-only. They must be skipped
+        // here too, not just overwritten afterwards: a sub-megabyte
+        // jinx_request.yaml otherwise takes this branch and is published whole.
+        if (!IPC_FILES.includes(file) && stat.size < MAX_INLINE_FILE_BYTES) {
           files[file] = fs.readFileSync(filepath, "utf8");
         }
       } else if (stat.isDirectory() && file === "src") {
@@ -236,7 +247,13 @@ function getLiveSessionData() {
         // scan that keeps only files found directly in src/ matches nothing and
         // silently hides the whole framework.
         for (const rel of collectSourceFiles(filepath)) {
-          files[`src/${rel}`] = fs.readFileSync(path.join(filepath, rel), "utf8");
+          // Same cap as every other entry: a large .py would otherwise inflate
+          // every single /api/live-session response and be re-shipped on each poll.
+          // A read error unrelated to the file disappearing keeps the previous
+          // behaviour: the entry is simply absent.
+          try {
+            files[`src/${rel}`] = readCapped(path.join(filepath, rel));
+          } catch (e) {}
         }
       }
     } catch (e) {}
@@ -247,12 +264,25 @@ function getLiveSessionData() {
   // deadlock and cleanup. Listing them unconditionally keeps the panel stable
   // and makes the current phase readable, instead of entries appearing and
   // vanishing underneath the user between polls.
+  //
+  // Their *contents* are deliberately not published. jinx_request.yaml holds the
+  // full message history, tool call parameters and the tool_result_cache;
+  // jinx_run_state.yaml holds history and tool results. /api/live-session is
+  // reachable without a token whenever DASHBOARD_BIND_HOST opts into network
+  // access, so serving those bytes would hand any client on the network the
+  // task text, file contents and tool arguments. Presence is the part the panel
+  // actually needs to explain the phase.
   for (const name of IPC_FILES) {
     if (name in files) continue;
     const fp = path.join(agentDir, name);
-    files[name] = fs.existsSync(fp)
-      ? readCapped(fp)
-      : "(not present — no transition is currently outstanding)";
+    try {
+      const stat = fs.statSync(fp);
+      files[name] = `(present — ${stat.size} bytes, contents withheld)`;
+    } catch (e) {
+      files[name] = isVanished(e)
+        ? "(not present — no transition is currently outstanding)"
+        : "(unreadable)";
+    }
   }
 
   // Check for JINX-native agent first

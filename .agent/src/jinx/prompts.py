@@ -167,8 +167,12 @@ TOOL_DEPTH_CRITICAL_MSG: str = (
 HISTORY_ELISION_NOTICE: str = (
     "[context note] %d earlier message(s) from this session were elided from "
     "the history window to bound prompt size; %d of them involved tool "
-    "traffic. Their substance is preserved in the score history in CURRENT "
-    "STATE (see 'scores'). Do not assume this window is the whole session."
+    "traffic. CURRENT STATE (see 'scores') preserves only each round's "
+    "summary -- approach, requirements and pass counts -- not the contents of "
+    "tool results, so an elided tool result is NOT recoverable from the state "
+    "block. If you need a result that is no longer in this window, call that "
+    "tool again rather than assuming you already have its output. Do not "
+    "assume this window is the whole session."
 )
 
 # One failing check inside a self-patch verification report.
