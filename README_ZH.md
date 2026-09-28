@@ -1,3 +1,5 @@
+![Screenshot](images/agent.jpg)
+
 [English](README.md) | [Русский](README_RU.md) | [中文](README_ZH.md)
 
 <p align="center">

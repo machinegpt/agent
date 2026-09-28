@@ -35,13 +35,21 @@ import {
   parseAgentFolder,
   createDefaultLiveSession
 } from "./utils";
+import {
+  isTerminalStatus,
+  terminalKeyOf,
+  hasArchivedTerminal,
+  mergeLiveSession,
+  archiveTerminalSession,
+  dropDuplicateTerminalRuns
+} from "./session-logic";
 import { useLanguage } from "./context/LanguageContext";
 
 export default function App() {
   const { language, setLanguage, t } = useLanguage();
 
   const [sessions, setSessions] = useState<AgentSession[]>(() => {
-    const saved = getSavedSessions();
+    const saved = dropDuplicateTerminalRuns(getSavedSessions());
     if (saved.length > 0) {
       return saved;
     }
@@ -58,9 +66,8 @@ export default function App() {
   // Initialized to a sentinel so the first poll establishes a baseline without
   // archiving. Reset on unmount so React Strict Mode doesn't trigger spurious archives.
   const prevStatusRef = useRef<string | null>(null);
-  const archivedTerminalKeysRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    return () => { prevStatusRef.current = null; archivedTerminalKeysRef.current.clear(); };
+    return () => { prevStatusRef.current = null; };
   }, []);
 
   const [activeTab, setActiveTab] = useState<"summary" | "thoughts" | "files" | "console" | "diffs">(() => {
@@ -128,22 +135,6 @@ export default function App() {
     apiTokenRef.current = apiToken;
   }, [apiToken]);
 
-  // Pure function: merges a new live session into the session list.
-  // Extracted from applyLiveSessionData to avoid re-creating it on every poll tick.
-  const mergeLiveSession = useCallback((prev: AgentSession[], newSession: AgentSession): AgentSession[] => {
-    const existingIdx = prev.findIndex((s) => s.id === newSession.id);
-    if (existingIdx >= 0) {
-      const merged = [...prev];
-      merged[existingIdx] = newSession;
-      return merged;
-    }
-    // Remove ALL idle live- sessions (live-session, live-session-1, etc.)
-    // to prevent duplicates when JINX restarts with a new task
-    return [newSession, ...prev.filter(
-      (s) => !(s.id.startsWith("live-") && s.status === "idle")
-    )];
-  }, []);
-
   // Reusable handler for live session data from either SSE or polling.
   const applyLiveSessionData = useCallback((data: any) => {
     if (data.exists) {
@@ -155,8 +146,17 @@ export default function App() {
       const currentStatus = newSession.status;
 
       // Terminal states that should be archived into a dedicated session entry.
-      const isTerminal = currentStatus === "completed" || currentStatus === "error";
-      const terminalKey = `${newSession.id}:${currentStatus}`;
+      const isTerminal = isTerminalStatus(currentStatus);
+      const terminalKey = terminalKeyOf(newSession);
+
+      // A finished run lives in exactly one place: the archive taken when it
+      // finished. The server keeps serving that same terminal payload on every
+      // subsequent poll (the .agent files are still on disk), and the live slot
+      // id gets recycled by the next task, so re-merging it would put a second
+      // copy of the same run into the history list. Checked against the session
+      // list itself rather than an in-memory Set, because the archive is
+      // persisted to localStorage and must still be recognised after a reload.
+      const alreadyArchived = (list: AgentSession[]) => isTerminal && hasArchivedTerminal(list, terminalKey);
 
       // First poll: establish baseline without archiving.
       if (prevStatusRef.current === null) {
@@ -164,7 +164,9 @@ export default function App() {
         // If the live session is already terminal on cold start, still surface
         // it — but don't create a separate archive (avoids duplicates on reload).
         if (isTerminal) {
-          const nextSessions = mergeLiveSession(sessionsRef.current, newSession);
+          const nextSessions = alreadyArchived(sessionsRef.current)
+            ? sessionsRef.current
+            : mergeLiveSession(sessionsRef.current, newSession);
           setSessions(nextSessions);
           if (!nextSessions.find((s) => s.id === activeSessionIdRef.current)) {
             setActiveSessionId(newSession.id);
@@ -172,21 +174,25 @@ export default function App() {
           return;
         }
       } else if (isTerminal && prevStatusRef.current !== currentStatus) {
-        if (archivedTerminalKeysRef.current.has(terminalKey)) {
-          prevStatusRef.current = currentStatus;
-          return;
-        }
         // Genuine transition to a terminal state — archive as a dedicated
-        // session and spin up a fresh live slot.
-        const archivedId = `${currentStatus}-${Date.now()}`;
-        setSessions((prev) => {
-          const archived = { ...newSession, id: archivedId, copyCount: 0 };
-          const defaultLive = createDefaultLiveSession();
-          archivedTerminalKeysRef.current.add(terminalKey);
-          return [defaultLive, archived, ...prev.filter((s) => s.id !== newSession.id)];
+        // session and spin up a fresh live slot. The duplicate check lives
+        // inside the updater so it runs against the authoritative list: two
+        // payloads landing in the same tick both see the same state, and the
+        // second one is a no-op instead of a second archive of the same run.
+        setSessions((prev) => archiveTerminalSession(prev, newSession, Date.now(), createDefaultLiveSession));
+        // Select the archive only if this poll actually created one. Reading it
+        // back from the committed list rather than guessing the id keeps the
+        // active selection valid when the updater decided to do nothing.
+        queueMicrotask(() => {
+          setSessions((current) => {
+            const archive = current.find((s) => s.terminalKey === terminalKey);
+            if (archive) {
+              setActiveSessionId(archive.id);
+              setActiveTab("summary");
+            }
+            return current;
+          });
         });
-        setActiveSessionId(archivedId);
-        setActiveTab("summary");
         prevStatusRef.current = currentStatus;
         return;
       }
@@ -194,8 +200,11 @@ export default function App() {
 
       // Use functional updater to avoid race conditions on rapid polls.
       setSessions((prev) => {
-        const nextSessions = mergeLiveSession(prev, newSession);
-        return nextSessions;
+        // Same guard as the cold-start branch: once the run is archived, the
+        // live slot must stay idle rather than be refilled with a payload the
+        // server will keep replaying for the rest of the session.
+        if (alreadyArchived(prev)) return prev;
+        return mergeLiveSession(prev, newSession);
       });
       // After merge, ensure the active session is valid.
       // Note: can't read the just-set value synchronously, so use a microtask.

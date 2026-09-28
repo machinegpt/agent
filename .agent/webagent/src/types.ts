@@ -75,4 +75,10 @@ export interface AgentSession {
   debt?: string[];
   open?: string[];
   copyCount?: number; // how many times this backup was re-uploaded
+  /**
+   * Set on an archived run to `${originalLiveId}:${status}`. Persisted with the
+   * session so duplicate detection still works after a reload, when the
+   * in-memory guard is gone. See src/session-logic.ts.
+   */
+  terminalKey?: string;
 }

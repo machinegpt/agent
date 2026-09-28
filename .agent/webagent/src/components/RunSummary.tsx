@@ -125,14 +125,16 @@ export default function RunSummary({ session }: RunSummaryProps) {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {/* Scope Facts */}
           {session.facts && session.facts.length > 0 && (
-            <div className="bg-[#0c0c0e]/95 border border-emerald-500/10 rounded-lg p-5 shadow-xl flex flex-col">
+            <div className="bg-[#0c0c0e]/95 border border-emerald-500/10 rounded-lg p-5 shadow-xl flex flex-col min-w-0">
               <h4 className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-emerald-400 mb-3 flex items-center gap-1.5 font-mono">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
                 {language === "ru" ? "Выявленные Факты" : "Scope Facts"}
               </h4>
-              <ul className="space-y-2 flex-1 text-xs text-neutral-300 leading-normal font-mono list-inside list-disc">
+              <ul className="space-y-2 flex-1 min-w-0 text-xs text-neutral-300 leading-normal font-mono list-inside list-disc">
                 {session.facts.map((fact, idx) => (
-                  <li key={idx} className="marker:text-emerald-500 pl-1">{fact}</li>
+                  <li key={idx} className="marker:text-emerald-500 pl-1 min-w-0 break-words [overflow-wrap:anywhere]">
+                    {fact}
+                  </li>
                 ))}
               </ul>
             </div>
@@ -140,14 +142,16 @@ export default function RunSummary({ session }: RunSummaryProps) {
 
           {/* Open Requirements */}
           {session.open && session.open.length > 0 && (
-            <div className="bg-[#0c0c0e]/95 border border-amber-500/10 rounded-lg p-5 shadow-xl flex flex-col">
+            <div className="bg-[#0c0c0e]/95 border border-amber-500/10 rounded-lg p-5 shadow-xl flex flex-col min-w-0">
               <h4 className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-amber-400 mb-3 flex items-center gap-1.5 font-mono">
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
                 {language === "ru" ? "Открытые Задачи" : "Open Requirements"}
               </h4>
-              <ul className="space-y-2 flex-1 text-xs text-neutral-300 leading-normal font-mono list-inside list-disc">
+              <ul className="space-y-2 flex-1 min-w-0 text-xs text-neutral-300 leading-normal font-mono list-inside list-disc">
                 {session.open.map((req, idx) => (
-                  <li key={idx} className="marker:text-amber-500 pl-1">{req}</li>
+                  <li key={idx} className="marker:text-amber-500 pl-1 min-w-0 break-words [overflow-wrap:anywhere]">
+                    {req}
+                  </li>
                 ))}
               </ul>
             </div>
@@ -155,14 +159,16 @@ export default function RunSummary({ session }: RunSummaryProps) {
 
           {/* Design Debt */}
           {session.debt && session.debt.length > 0 && (
-            <div className="bg-[#0c0c0e]/95 border border-rose-500/10 rounded-lg p-5 shadow-xl flex flex-col">
+            <div className="bg-[#0c0c0e]/95 border border-rose-500/10 rounded-lg p-5 shadow-xl flex flex-col min-w-0">
               <h4 className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-rose-400 mb-3 flex items-center gap-1.5 font-mono">
                 <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
                 {language === "ru" ? "Технический Долг" : "Unresolved Debt"}
               </h4>
-              <ul className="space-y-2 flex-1 text-xs text-neutral-300 leading-normal font-mono list-inside list-disc">
+              <ul className="space-y-2 flex-1 min-w-0 text-xs text-neutral-300 leading-normal font-mono list-inside list-disc">
                 {session.debt.map((debtItem, idx) => (
-                  <li key={idx} className="marker:text-rose-500 pl-1">{debtItem}</li>
+                  <li key={idx} className="marker:text-rose-500 pl-1 min-w-0 break-words [overflow-wrap:anywhere]">
+                    {debtItem}
+                  </li>
                 ))}
               </ul>
             </div>

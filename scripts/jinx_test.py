@@ -111,6 +111,22 @@ class VerificationPhase:
         raise NotImplementedError
 
 
+def _content_signature(text: str) -> str:
+    """Plugin content with the generated timestamp line neutralised.
+
+    ``sync_all`` stamps every plugin with ``# Generated At: <now>``. Comparing
+    raw text would therefore report a difference on every single run even when
+    the generated plugin is otherwise byte-identical, and an unconditional write
+    would turn each test run into a modification of tracked files. Dropping the
+    timestamp line makes the comparison answer the question that actually
+    matters: did the generated verification logic change?
+    """
+    return "\n".join(
+        line for line in text.splitlines()
+        if not line.startswith("# Generated At:")
+    )
+
+
 class AISynthesisEngine:
     """An advanced, self-healing, AI-agent discoverable test synthesis engine.
     
@@ -312,8 +328,18 @@ class Verify{name.capitalize()}Phase(VerificationPhase):
         return success
 '''
             
-            # Write to file
+            # Write to file, but only when the generated logic actually changed.
+            # An unconditional write would re-stamp the `# Generated At:` header
+            # on every run and leave the working tree dirty for no reason.
             try:
+                existing = ""
+                if plugin_file.exists():
+                    with open(plugin_file, "r", encoding="utf-8") as f:
+                        existing = f.read()
+                if _content_signature(existing) == _content_signature(content):
+                    if verbose:
+                        print(f"  {COLOR_GREEN}[=]{COLOR_RESET} Unchanged verification module: {plugin_file.name}")
+                    continue
                 with open(plugin_file, "w", encoding="utf-8") as f:
                     f.write(content)
                 if verbose:
