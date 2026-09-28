@@ -12,9 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Tool schema definitions for JINX LLM tool-use declarations."""
+"""Tool schema access for JINX LLM tool-use declarations.
 
+The declarations themselves are model-facing prose and therefore live in
+:mod:`jinx.prompts`, next to the rest of the prompt contract. This module is the
+accessor: it hands each caller its own copy so a consumer that mutates the
+returned structure cannot corrupt the shared template.
+"""
+
+import copy
 from typing import Any, Dict, List
+
+from .prompts import TOOL_SCHEMA
 
 
 def tool_schema() -> List[Dict[str, Any]]:
@@ -26,59 +35,4 @@ def tool_schema() -> List[Dict[str, Any]]:
     Returns:
         List[Dict[str, Any]]: The array of valid tool declaration schemas.
     """
-    return [
-        {
-            "name": "bash_exec",
-            "description": "Execute a bash or shell script in the environment.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "script": {
-                        "type": "string",
-                        "description": "The script to execute"
-                    }
-                },
-                "required": ["script"]
-            }
-        },
-        {
-            "name": "file_read",
-            "description": "Read the contents of a file.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path to the file"
-                    },
-                    "start_line": {
-                        "type": "integer",
-                        "description": "Optional 1-indexed starting line to read (inclusive)"
-                    },
-                    "end_line": {
-                        "type": "integer",
-                        "description": "Optional 1-indexed ending line to read (inclusive)"
-                    }
-                },
-                "required": ["path"]
-            }
-        },
-        {
-            "name": "file_write",
-            "description": "Write or overwrite a file with new content.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path to the file"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "The full content to write"
-                    }
-                },
-                "required": ["path", "content"]
-            }
-        }
-    ]
+    return copy.deepcopy(TOOL_SCHEMA)

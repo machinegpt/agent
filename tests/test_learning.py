@@ -510,6 +510,104 @@ class TestVerificationInputsAreProtected:
             encoding="utf-8")
         assert runner._enforce_self_patch_gate({"history": []}) is None
 
+    def test_a_new_test_file_is_reported_after_restoration(self, sandbox_src,
+                                                           monkeypatch) -> None:
+        """A test the model added is rolled back, so the model must be told.
+
+        The suite is restored before verification runs, which silently deletes a
+        test file the model just wrote. Without a message it goes on believing
+        that coverage exists, and may cite it as evidence in a later round.
+        """
+        import jinx.runner as runner
+
+        src, _ = sandbox_src
+        repo = selfpatch._repo_root()
+        tests = repo / "tests"
+        tests.mkdir(parents=True)
+        new_test = tests / "test_added_by_the_model.py"
+        (tests / "test_thing.py").write_text("def test_ok():\n    assert True\n",
+                                             encoding="utf-8")
+        capture_baseline()
+
+        monkeypatch.setattr(
+            selfpatch, "verify",
+            lambda *a, **k: {"ok": True, "summary": "PASS", "checks": []},
+        )
+        # A benign source edit is what gets verified.
+        (src / "tools.py").write_text(
+            (src / "tools.py").read_text(encoding="utf-8")
+            + "\n\ndef helper():\n    return 1\n",
+            encoding="utf-8")
+        new_test.write_text("def test_brand_new():\n    assert True\n", encoding="utf-8")
+
+        feedback = runner._enforce_self_patch_gate({"history": []})
+
+        assert feedback, "the model is not told its new test file was removed"
+        assert "test_added_by_the_model.py" in feedback
+        assert not new_test.exists(), "the new test file must actually be gone"
+
+    def test_a_verified_patch_without_test_edits_stays_silent(self, sandbox_src,
+                                                              monkeypatch) -> None:
+        """The new notice must not fire for the ordinary case.
+
+        `_enforce_self_patch_gate` returning None is the signal that there is
+        nothing to tell the model, so a message on every clean patch would turn
+        the notice into noise.
+        """
+        import jinx.runner as runner
+
+        src, _ = sandbox_src
+        capture_baseline()
+        monkeypatch.setattr(
+            selfpatch, "verify",
+            lambda *a, **k: {"ok": True, "summary": "PASS", "checks": []},
+        )
+        (src / "tools.py").write_text(
+            (src / "tools.py").read_text(encoding="utf-8")
+            + "\n\ndef helper():\n    return 1\n",
+            encoding="utf-8")
+
+        assert runner._enforce_self_patch_gate({"history": []}) is None
+
+    def test_a_failing_rollback_reaches_the_model_instead_of_crashing(self, sandbox_src,
+                                                                     monkeypatch) -> None:
+        """A restore that raises must not escape the gate as a bare exception.
+
+        `restore_baseline` re-reads every baseline file, and a source file that
+        is no longer valid UTF-8 raises UnicodeDecodeError. That is a ValueError,
+        not an OSError, so it slips past the guard in `run_file_ipc` and kills the
+        run with no message at all.
+        """
+        import jinx.runner as runner
+
+        src, _ = sandbox_src
+        capture_baseline()
+        (src / "tools.py").write_text(
+            (src / "tools.py").read_text(encoding="utf-8")
+            + "\n\ndef helper():\n    return 1\n",
+            encoding="utf-8")
+        monkeypatch.setattr(
+            selfpatch, "verify",
+            lambda *a, **k: {"ok": False, "summary": "1 failed",
+                             "checks": [{"name": "pytest", "tail": "boom"}]},
+        )
+
+        real_restore = selfpatch.restore_baseline
+
+        def exploding(only=None):
+            # Only the full rollback raises; the repo-scoped restore on the way in
+            # must still succeed, or this never reaches the failed-verify branch.
+            if only is not None:
+                return real_restore(only=only)
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "not utf-8")
+
+        monkeypatch.setattr(selfpatch, "restore_baseline", exploding)
+
+        feedback = runner._enforce_self_patch_gate({"history": []})
+
+        assert feedback, "a failed rollback must still produce a message"
+        assert "ROLLBACK FAILED" in feedback
+
 
 def _baseline_files_keys():
     return set(selfpatch._baseline_files())
@@ -1176,3 +1274,81 @@ class TestSelfPatchEndToEnd:
         assert "tools.py" in restored
         assert target.read_text(encoding="utf-8") == original
         compile(target.read_text(encoding="utf-8"), str(target), "exec")
+
+# ==============================================================================
+# The outermost brake: the bootstrap preflight
+# ==============================================================================
+
+
+class TestBootstrapPreflightCanActuallyLoadTheBrake:
+    """The preflight is the only layer that still runs when the framework
+    no longer imports, so it is the last thing standing between a bad
+    self-edit and a permanently unbootstrappable agent.
+
+    It was inert. ``jinx.py`` loaded ``selfpatch.py`` straight from its
+    file under the bare name ``_jinx_selfpatch``, which leaves
+    ``__package__`` empty; ``selfpatch.py`` opens with ``from . import
+    prompts``, so the load raised ``ImportError: attempted relative
+    import with no known parent package``. The preflight caught that in a
+    bare ``except Exception``, printed a line to stderr and returned --
+    on every single invocation, with no other symptom.
+    """
+
+    @staticmethod
+    def _entrypoint(monkeypatch):
+        """Loads ``.agent/jinx.py`` as a module without letting it act.
+
+        The entrypoint runs its preflight at import time, so the env flag
+        the preflight already honours is used to keep the import inert
+        while still giving the test the real function.
+        """
+        import importlib.util
+
+        monkeypatch.setenv("JINX_SELF_PATCH", "0")
+        path = Path(__file__).resolve().parent.parent / ".agent" / "jinx.py"
+        if not path.is_file():
+            pytest.skip("entrypoint not available")
+        spec = importlib.util.spec_from_file_location("_jinx_entrypoint", path)
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        return entry
+
+    def test_the_brake_module_cannot_load_outside_its_package(self) -> None:
+        """Pins the root cause: the module is not standalone-importable."""
+        import importlib.util
+
+        real = Path(__file__).resolve().parent.parent / ".agent" / "src" / "jinx"
+        if not (real / "selfpatch.py").is_file():
+            pytest.skip("framework source not available")
+
+        spec = importlib.util.spec_from_file_location(
+            "_jinx_selfpatch", real / "selfpatch.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        with pytest.raises(ImportError):
+            spec.loader.exec_module(mod)
+
+    def test_the_preflight_can_load_a_brake_it_can_act_on(self, monkeypatch) -> None:
+        """The property that was actually lost, and the reason D1 mattered.
+
+        A loader that raises is a loader that returns nothing, and the
+        preflight treats "nothing" as "nothing to do".
+        """
+        entry = self._entrypoint(monkeypatch)
+
+        loader = getattr(entry, "_load_selfpatch", None)
+        assert callable(loader), (
+            "the preflight has no separable loader, so the load that "
+            "disables it cannot be tested"
+        )
+
+        monkeypatch.setenv("JINX_SELF_PATCH", "1")
+        mod = loader()
+        assert mod is not None, "the preflight silently loaded nothing"
+
+        # Everything self_patch_preflight() goes on to call must exist.
+        for name in (
+            "BASELINE_DIR", "baseline_changed", "capture_baseline",
+            "protection_violations", "restore_baseline", "verify",
+        ):
+            assert hasattr(mod, name), "preflight is missing %s" % name

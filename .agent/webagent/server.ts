@@ -51,6 +51,52 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
 
 const AGENT_MARKERS = ["JINX.yaml"];
 
+// The File-IPC handshake the runner and the host exchange, in the order a
+// transition uses them.
+const IPC_FILES = ["jinx_request.yaml", "jinx_response.yaml", "jinx_run_state.yaml"];
+
+// Cap on a file inlined into the payload. A long run's jinx_run_state.yaml grows
+// with the tool-result cache, so a hard skip made the most interesting file
+// vanish exactly when a session got busy; truncating keeps it visible.
+const MAX_INLINE_FILE_BYTES = 1024 * 1024;
+const TRUNCATION_NOTICE = "\n... [truncated by the dashboard at %d bytes] ...\n";
+
+function readCapped(filepath: string): string {
+  const stat = fs.statSync(filepath);
+  if (stat.size < MAX_INLINE_FILE_BYTES) {
+    return fs.readFileSync(filepath, "utf8");
+  }
+  const buf = Buffer.alloc(MAX_INLINE_FILE_BYTES);
+  const fd = fs.openSync(filepath, "r");
+  try {
+    fs.readSync(fd, buf, 0, MAX_INLINE_FILE_BYTES, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return buf.toString("utf8") + TRUNCATION_NOTICE.replace("%d", String(stat.size));
+}
+
+// Every .py under a directory, as paths relative to it, skipping caches.
+function collectSourceFiles(root: string, prefix = ""): string[] {
+  const out: string[] = [];
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    if (entry.name === "__pycache__" || entry.name.startsWith(".")) continue;
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      out.push(...collectSourceFiles(path.join(root, entry.name), rel));
+    } else if (entry.isFile() && entry.name.endsWith(".py")) {
+      out.push(rel);
+    }
+  }
+  return out.sort();
+}
+
 function findAgentDir(): string | null {
   const pathsToTry = [
     path.join(process.cwd(), ".agent"),
@@ -182,19 +228,31 @@ function getLiveSessionData() {
     try {
       const stat = fs.statSync(filepath);
       if (stat.isFile()) {
-        if (stat.size < 1024 * 1024) {
+        if (stat.size < MAX_INLINE_FILE_BYTES) {
           files[file] = fs.readFileSync(filepath, "utf8");
         }
       } else if (stat.isDirectory() && file === "src") {
-        const srcFiles = fs.readdirSync(filepath);
-        for (const sf of srcFiles) {
-          const sfp = path.join(filepath, sf);
-          if (fs.statSync(sfp).isFile() && sf.endsWith(".py")) {
-            files[`src/${sf}`] = fs.readFileSync(sfp, "utf8");
-          }
+        // Walk recursively. The real layout is src/jinx/*.py, so a single-level
+        // scan that keeps only files found directly in src/ matches nothing and
+        // silently hides the whole framework.
+        for (const rel of collectSourceFiles(filepath)) {
+          files[`src/${rel}`] = fs.readFileSync(path.join(filepath, rel), "utf8");
         }
       }
     } catch (e) {}
+  }
+
+  // The File-IPC handshake files are the live state of a run, and they only
+  // exist while a transition is outstanding: the runner deletes them on success,
+  // deadlock and cleanup. Listing them unconditionally keeps the panel stable
+  // and makes the current phase readable, instead of entries appearing and
+  // vanishing underneath the user between polls.
+  for (const name of IPC_FILES) {
+    if (name in files) continue;
+    const fp = path.join(agentDir, name);
+    files[name] = fs.existsSync(fp)
+      ? readCapped(fp)
+      : "(not present — no transition is currently outstanding)";
   }
 
   // Check for JINX-native agent first

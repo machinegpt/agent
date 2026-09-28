@@ -183,7 +183,7 @@ def _validate_tool_use_block(block: Dict[str, Any]) -> Tuple[Optional[str], Opti
         logger.error("Malformed tool_use block: id=%r name=%r", tool_use_id, name)
         return None, None, None, {
             "type": "tool_result", "tool_use_id": tool_use_id or "",
-            "content": "Error: Malformed tool_use block (missing id or name)."
+            "content": prompts.MALFORMED_TOOL_BLOCK_MSG
         }
 
     if params is None:
@@ -193,7 +193,7 @@ def _validate_tool_use_block(block: Dict[str, Any]) -> Tuple[Optional[str], Opti
         logger.error("Malformed tool_use block input: %r", params)
         return None, None, None, {
             "type": "tool_result", "tool_use_id": tool_use_id,
-            "content": "Error: Malformed tool_use block (input must be an object)."
+            "content": prompts.INVALID_TOOL_BLOCK_INPUT_MSG
         }
 
     return tool_use_id, name, params, None
@@ -523,17 +523,9 @@ def _rollback_and_report(reason: str) -> str:
         restored = selfpatch.restore_baseline()
     except Exception as e:
         logger.error("Self-patch rollback failed: %s", e, exc_info=True)
-        return (
-            "SELF-PATCH REFUSED and ROLLBACK FAILED: %s\nThe rollback itself "
-            "raised %s: %s. Treat JINX's source as untrustworthy and ask a human "
-            "before continuing — the next run's preflight will retry the repair "
-            "from the baseline." % (reason, type(e).__name__, e)
-        )
+        return prompts.SELF_PATCH_ROLLBACK_FAILED % (reason, type(e).__name__, e)
     logger.warning("Self-patch protection gate reverted %d file(s)", len(restored))
-    return (
-        "SELF-PATCH REFUSED: %s\nFiles rolled back: %s"
-        % (reason, ", ".join(restored) or "none")
-    )
+    return prompts.SELF_PATCH_REFUSED % (reason, ", ".join(restored) or "none")
 
 
 def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> Optional[str]:
@@ -601,13 +593,11 @@ def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> Optional[str]:
     # framework. Source changes are deliberately left alone here: they are the
     # thing under test, and a failing patch is reverted below anyway.
     try:
-        selfpatch.restore_baseline(only=selfpatch.REPO_PREFIX)
+        tests_restored = selfpatch.restore_baseline(only=selfpatch.REPO_PREFIX)
     except Exception as e:
         logger.error("Could not restore the test files: %s", e, exc_info=True)
         return _rollback_and_report(
-            "the test files that decide whether this patch is acceptable could "
-            "not be restored (%s: %s), so it was not verified against a trusted "
-            "suite" % (type(e).__name__, e)
+            prompts.TEST_SUITE_RESTORE_FAILURE % (type(e).__name__, e)
         )
 
     result = selfpatch.verify(AGENT_DIR.parent)
@@ -616,23 +606,28 @@ def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> Optional[str]:
         # Adopt the verified edit as the new reference so the same diff is not
         # re-verified on every later round.
         selfpatch.capture_baseline()
+        if tests_restored:
+            # The tests were put back before verification, so a new or edited test
+            # file the model added is now gone. Staying silent would leave it
+            # believing the coverage it just wrote still exists.
+            return prompts.TEST_FILES_RESTORED % ", ".join(tests_restored)
         return None
 
-    restored = selfpatch.restore_baseline()
-    message = (
-        "SELF-PATCH REVERTED: your edit to the files JINX verifies (%s) failed "
-        "verification (%s). The change was rolled back automatically, so the "
-        "framework is intact — the round was not wasted, it produced evidence. "
-        "Read the failure below, decide whether the idea is still right, and if "
-        "so apply it in a smaller or more targeted form.\n%s"
-        % (
-            ", ".join(changed),
-            result["summary"],
-            "\n".join("[%s] %s" % (c["name"], c["tail"]) for c in result["checks"]),
-        )
+    # Route the rollback through the shared handler. `restore_baseline` reads
+    # every baseline file, and a source file that is no longer valid UTF-8 raises
+    # UnicodeDecodeError -- which is a ValueError, not an OSError, so it escapes
+    # the (IPCError, OSError, JinxError) guard in `run_file_ipc` and kills the run
+    # with no message to the model at all. The refusal branches already prove the
+    # shared path is the correct one here.
+    revert_notice = prompts.SELF_PATCH_REVERTED % (
+        ", ".join(changed),
+        result["summary"],
+        "\n".join(
+            prompts.CHECK_FAILURE_LINE % (c["name"], c["tail"])
+            for c in result["checks"]
+        ),
     )
-    logger.warning("Self-patch gate reverted %d file(s)", len(restored))
-    return message
+    return _rollback_and_report(revert_notice)
 
 
 def _finish_run() -> None:
@@ -774,13 +769,7 @@ def summarize_dropped_history(
     tool_msgs = sum(1 for d in rounds if _has_unanswered_tool_use(d) or _has_orphan_tool_result(d))
     return {
         "role": "user",
-        "content": (
-            "[context note] %d earlier message(s) from this session were elided from "
-            "the history window to bound prompt size; %d of them involved tool "
-            "traffic. Their substance is preserved in the score history in CURRENT "
-            "STATE (see 'scores'). Do not assume this window is the whole session."
-            % (len(rounds), tool_msgs)
-        ),
+        "content": prompts.HISTORY_ELISION_NOTICE % (len(rounds), tool_msgs),
     }
 
 
@@ -1466,7 +1455,7 @@ def _slice_file_content(result_content: str, params: Dict[str, Any]) -> str:
         return "\n".join(lines[s_line - 1:e_line])
     except (ValueError, TypeError) as e:
         logger.error("Failed to parse line slice params: %s", e)
-        return f"Error: Failed to slice file content: {e}"
+        return prompts.FILE_SLICE_FAILURE_MSG % e
 
 
 _STDIN_QUEUE: "_queue.Queue[Optional[str]]" = _queue.Queue()

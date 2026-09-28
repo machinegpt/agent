@@ -15,6 +15,38 @@ src_path = Path(__file__).resolve().parent / "src"
 sys.path.insert(0, str(src_path))
 
 
+def _load_selfpatch():
+    """Loads ``selfpatch.py`` from its file, without importing the package first.
+
+    The module name must be package-qualified. ``selfpatch.py`` opens with
+    ``from . import prompts``, and loading it under a bare name leaves
+    ``__package__`` empty, so the import machinery raises "attempted relative
+    import with no known parent package". The caller treats a raised loader as
+    "nothing to repair", so a bare name silently disarmed the outermost brake
+    on every single run while the framework stayed free to patch itself.
+
+    ``prompts`` is a leaf module of pure string constants and is loaded by the
+    import machinery here, so the brake still does not depend on the code it
+    protects being importable.
+
+    Returns the loaded module, or None when there is nothing to load.
+    """
+    import importlib.util
+
+    module_path = src_path / "jinx" / "selfpatch.py"
+    if not module_path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("jinx.selfpatch", module_path)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    # Registered before exec so the relative import inside the module resolves
+    # against the real package rather than re-executing the file twice.
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def self_patch_preflight():
     """Revert a self-edit that broke the framework BEFORE importing it.
 
@@ -24,30 +56,24 @@ def self_patch_preflight():
     import could therefore never catch the exact failure it exists to prevent --
     it would be disarmed by the first self-patch bad enough to matter.
 
-    ``selfpatch.py`` deliberately imports nothing from the rest of the package, so
-    it is loaded here directly from its file, before and independently of the code
-    it protects. This is the outermost layer of the brake, and it is the only one
-    that still runs when the framework itself no longer imports.
+    ``selfpatch.py`` is loaded here directly from its file, before and
+    independently of the rest of the code it protects. This is the outermost
+    layer of the brake, and it is the only one that still runs when the
+    framework itself no longer imports.
 
     The baseline only exists once a run has started, so this is a no-op in the
     normal case and costs one stat() per source file.
     """
-    import importlib.util
     import os
 
     if os.environ.get("JINX_SELF_PATCH", "1") in ("0", "false", "False"):
         return
-    module_path = src_path / "jinx" / "selfpatch.py"
-    if not module_path.is_file():
-        return
     try:
-        spec = importlib.util.spec_from_file_location("_jinx_selfpatch", module_path)
-        if spec is None or spec.loader is None:
-            return
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        mod = _load_selfpatch()
     except Exception as e:  # a corrupt selfpatch.py itself: nothing we can do here
         print("[JINX SELF-PATCH] Preflight unavailable: %s" % e, file=sys.stderr)
+        return
+    if mod is None:
         return
 
     try:
@@ -84,9 +110,22 @@ def self_patch_preflight():
             return
         # Same rule as the runner: the suite that judges the patch is itself part
         # of what the patch could have edited, so it is put back before it runs.
-        mod.restore_baseline(only=mod.REPO_PREFIX)
+        # The result is kept and reported: the runner already tells the model
+        # which of its test edits were rolled back, and a bootstrap that
+        # discarded the same files without a word left the model believing
+        # tests it had just written were still in place.
+        tests_restored = mod.restore_baseline(only=mod.REPO_PREFIX)
         result = mod.verify(src_path.parent.parent)
         if result["ok"]:
+            if tests_restored:
+                _record_feedback(
+                    "[JINX SELF-PATCH] The test edits from the previous run were "
+                    "rolled back before verification, because the suite that "
+                    "judges a self-patch is itself part of what a self-patch can "
+                    "edit. Reverted: %s. The source edits were verified and kept; "
+                    "re-add the tests if they are still needed."
+                    % ", ".join(tests_restored)
+                )
             print("[JINX SELF-PATCH] Verified: %s" % ", ".join(changed), file=sys.stderr)
             # The edit passed, so adopt it as the new reference instead of
             # re-verifying the same diff on every subsequent process.

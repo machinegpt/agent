@@ -1,7 +1,7 @@
 # ==============================================================================
 # AI-Generated Enterprise Verification Plugin
 # Module: jinx.prompts
-# Generated At: 2026-09-27T17:29:47Z
+# Generated At: 2026-09-28T11:25:50Z
 #
 # This file is dynamically managed by the JINX AI Synthesis Engine.
 # Public classes and methods are verified automatically.
@@ -48,11 +48,18 @@ class VerifyPromptsPhase(VerificationPhase):
             # Verify existence of required prompt constants
             assert hasattr(target_module, "MISSING_STATE_WARNING"), "MISSING_STATE_WARNING is missing from prompts.py"
             assert hasattr(target_module, "TOOL_DEPTH_CRITICAL_MSG"), "TOOL_DEPTH_CRITICAL_MSG is missing from prompts.py"
+            # Reported when a self-patch passed verification but the model's own
+            # test files were restored first, so the coverage it just wrote is gone.
+            assert hasattr(target_module, "TEST_FILES_RESTORED"), "TEST_FILES_RESTORED is missing from prompts.py"
             suite.print_badge("Prompt Constants: PRESENT", True)
 
             # Verify content of prompt constants
             assert "REQUIRED markdown YAML state block" in target_module.MISSING_STATE_WARNING
             assert "inner tool-calling depth limit" in target_module.TOOL_DEPTH_CRITICAL_MSG
+            # The notice must name the files it reverted, or the model cannot tell
+            # which of its tests disappeared.
+            assert "%s" in target_module.TEST_FILES_RESTORED, "TEST_FILES_RESTORED must report the affected paths"
+            assert "restored" in target_module.TEST_FILES_RESTORED.lower()
             suite.print_badge("Prompt Constants: CORRECT", True)
 
             # Verify existence of construct_round_prompt function

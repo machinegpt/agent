@@ -12,7 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Prompt definitions and constructor constants for the JINX Sovereign Agent Framework."""
+"""Prompt definitions and constructor constants for the JINX Sovereign Agent Framework.
+
+This module is the single home for every piece of text JINX sends to the model:
+the system prompt, the per-round user prompt, the tool declarations offered in
+each request, and every notice, warning, diagnostic and refusal injected
+mid-run. No other module hard-codes model-facing prose; they import it from
+here instead, so a wording change is a one-file change and the whole prompt
+contract can be reviewed in one place.
+
+Two exceptions are deliberate, and the second is enforced by the self-patch gate
+rather than by convention:
+
+* ``state.py`` — the state-block rejection and score-merge diagnostics are
+  built inside ``merge_state``, which is protected brake logic, so they stay
+  where they are. Moving them out would mean editing a function JINX refuses to
+  edit.
+* ``selfpatch.py`` (``guard_tool_call``'s refusal text) and ``learning.py``
+  (``LEARNED_RULES_HEADER``) are protected files that JINX refuses to rewrite
+  at all. See ``selfpatch.PROTECTED_FILES``.
+"""
+
+from typing import Any, Dict, List
 
 
 SYSTEM_PROMPT: str = """You are JINX, a single-agent cognitive loop. You execute tasks through disciplined iterative refinement.
@@ -141,6 +162,18 @@ TOOL_DEPTH_CRITICAL_MSG: str = (
     "on disk by round number, so the earlier rounds are preserved without you re-sending them."
 )
 
+# History-window notice. Prepended to a request whose bounded window dropped
+# earlier messages, so the model does not mistake the window for the session.
+HISTORY_ELISION_NOTICE: str = (
+    "[context note] %d earlier message(s) from this session were elided from "
+    "the history window to bound prompt size; %d of them involved tool "
+    "traffic. Their substance is preserved in the score history in CURRENT "
+    "STATE (see 'scores'). Do not assume this window is the whole session."
+)
+
+# One failing check inside a self-patch verification report.
+CHECK_FAILURE_LINE: str = "[%s] %s"
+
 # Protection feedback prompts
 PROTECTED_FILE_REFUSAL: str = (
     "your edit to JINX's own source modified a protected file (%s). "
@@ -159,6 +192,122 @@ PROTECTION_CHECK_FAILURE: str = (
     "the protected-logic check could not be completed (%s: %s), so this "
     "edit was neither verified nor accepted"
 )
+
+# Self-patch gate feedback. The gate reports the rollback separately from the
+# reason, because the two can disagree: a partially failed restore leaves files
+# on disk that the model believes were undone, and saying so is the only way it
+# can find out.
+SELF_PATCH_ROLLBACK_FAILED: str = (
+    "SELF-PATCH REFUSED and ROLLBACK FAILED: %s\nThe rollback itself "
+    "raised %s: %s. Treat JINX's source as untrustworthy and ask a human "
+    "before continuing — the next run's preflight will retry the repair "
+    "from the baseline."
+)
+
+SELF_PATCH_REFUSED: str = (
+    "SELF-PATCH REFUSED: %s\nFiles rolled back: %s"
+)
+
+TEST_SUITE_RESTORE_FAILURE: str = (
+    "the test files that decide whether this patch is acceptable could "
+    "not be restored (%s: %s), so it was not verified against a trusted "
+    "suite"
+)
+
+# Reported on a patch that PASSED verification. The suite is the yardstick, so
+# the model's own test edits are reverted before it runs; without this the model
+# would go on believing coverage it just wrote still exists.
+TEST_FILES_RESTORED: str = (
+    "SELF-PATCH VERIFIED: your edit to the framework was accepted.\n"
+    "NOTE: the test files are the yardstick, so they were restored to the "
+    "baseline before verification ran. These are back at their baseline state "
+    "and no longer contain your changes: %s\n"
+    "Your source change is kept, but any test you added or edited for it is "
+    "gone. Do not assume that coverage still exists."
+)
+
+SELF_PATCH_REVERTED: str = (
+    "SELF-PATCH REVERTED: your edit to the files JINX verifies (%s) failed "
+    "verification (%s). The change was rolled back automatically, so the "
+    "framework is intact — the round was not wasted, it produced evidence. "
+    "Read the failure below, decide whether the idea is still right, and if "
+    "so apply it in a smaller or more targeted form.\n%s"
+)
+
+# Tool-result notices. Not instructions, but handed straight back to the model
+# as `tool_result` content, so they belong to the same contract. Exception
+# messages raised at the runner itself (IPCError, SerializationError, ...) are
+# not model-facing and stay with their raisers.
+MALFORMED_TOOL_BLOCK_MSG: str = "Error: Malformed tool_use block (missing id or name)."
+
+INVALID_TOOL_BLOCK_INPUT_MSG: str = "Error: Malformed tool_use block (input must be an object)."
+
+FILE_SLICE_FAILURE_MSG: str = "Error: Failed to slice file content: %s"
+
+# ==============================================================================
+# Tool Declarations (the `tools` field of every llm_generate request)
+# ==============================================================================
+# The schema is prose aimed at the model, so it lives here with the rest of the
+# prompt contract. `jinx.tools.tool_schema` hands out a deep copy of it, so a
+# caller mutating the result cannot corrupt the shared template.
+
+TOOL_SCHEMA: List[Dict[str, Any]] = [
+    {
+        "name": "bash_exec",
+        "description": "Execute a bash or shell script in the environment.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "script": {
+                    "type": "string",
+                    "description": "The script to execute"
+                }
+            },
+            "required": ["script"]
+        }
+    },
+    {
+        "name": "file_read",
+        "description": "Read the contents of a file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file"
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "Optional 1-indexed starting line to read (inclusive)"
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "Optional 1-indexed ending line to read (inclusive)"
+                }
+            },
+            "required": ["path"]
+        }
+    },
+    {
+        "name": "file_write",
+        "description": "Write or overwrite a file with new content.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The full content to write"
+                }
+            },
+            "required": ["path", "content"]
+        }
+    }
+]
+
 
 def construct_round_prompt(
     rnd: int, min_rounds: int, state_dump: str, missing_state: bool = False,
