@@ -1352,3 +1352,97 @@ class TestBootstrapPreflightCanActuallyLoadTheBrake:
             "protection_violations", "restore_baseline", "verify",
         ):
             assert hasattr(mod, name), "preflight is missing %s" % name
+
+
+    def test_a_failed_load_does_not_leave_a_half_built_module(self, tmp_path,
+                                                               monkeypatch) -> None:
+        """A failed load must not poison sys.modules for the rest of the process.
+
+        ``_load_selfpatch`` registers the module before executing it, because the
+        relative import inside needs the package context. If execution then
+        raises, the entry survives -- the normal import machinery deletes it on
+        failure, manual ``spec.loader`` loading does not. The husk is worse than
+        an exception: it can carry ``BASELINE_DIR`` while later definitions are
+        missing, so the next import in this process gets it instead of
+        re-executing a file the fallback path has since repaired.
+        """
+        import importlib
+        import importlib.util
+
+        entry = self._entrypoint(monkeypatch)
+        loader = getattr(entry, "_load_selfpatch", None)
+        assert callable(loader), "the loader disappeared"
+
+        src = tmp_path / ".agent" / "src"
+        pkg = src / "jinx"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "prompts.py").write_text("X = 1\n", encoding="utf-8")
+        (pkg / "selfpatch.py").write_text(
+            "from . import prompts\nBASELINE_DIR = None\n"
+            "def verify(*a):\n    return {}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(entry, "src_path", src)
+
+        # This test deliberately registers a stub 'jinx.selfpatch' in
+        # sys.modules. scripts/jinx_test.py calls pytest.main() in-process and
+        # then imports jinx.selfpatch again for its verification phase, so a
+        # leftover entry here would be answered with this stub and every
+        # symbol check after it would read MISSING. Save and restore instead of
+        # popping blindly: the real module may already be loaded.
+        def tracked(name):
+            return (name == "jinx" or name.startswith("jinx.")
+                    or name == "missing_dependency_for_test")
+
+        saved = {n: m for n, m in list(sys.modules.items()) if tracked(n)}
+
+        try:
+            self._assert_failed_load_leaves_no_husk(entry, loader, pkg, monkeypatch)
+        finally:
+            # Restore the whole prior state. Removing only the sandbox entries
+            # is not enough: unrelated modules such as jinx.runner are imported
+            # for real by earlier tests and carry process-wide caches, so
+            # dropping them would make the next import start cold.
+            for name in [n for n in list(sys.modules) if tracked(n)]:
+                del sys.modules[name]
+            sys.modules.update(saved)
+
+    def _assert_failed_load_leaves_no_husk(self, entry, loader, pkg,
+                                            monkeypatch) -> None:
+        def purge():
+            for name in [n for n in list(sys.modules)
+                         if n == "jinx.selfpatch"]:
+                sys.modules.pop(name, None)
+
+        # A module whose execution raises partway through. The husk it leaves
+        # behind is the whole point: it can carry an early definition while
+        # everything after the failure is missing, so a later import gets a
+        # module that looks loaded but is not.
+        pkg.joinpath("selfpatch.py").write_text(
+            "from . import missing_dependency_for_test\n"
+            "BASELINE_DIR = None\n",
+            encoding="utf-8",
+        )
+        sys.modules["missing_dependency_for_test"] = None
+        monkeypatch.setitem(sys.modules, "missing_dependency_for_test", None)
+
+        purge()
+        with pytest.raises(Exception):
+            loader()
+
+        assert "jinx.selfpatch" not in sys.modules, (
+            "a failed load left a half-built module in sys.modules; a later "
+            "import would get the husk rather than the repaired file"
+        )
+
+        # Repair the file and load again, as the fallback path enables.
+        pkg.joinpath("selfpatch.py").write_text(
+            "from . import prompts\nBASELINE_DIR = None\n"
+            "def verify(*a):\n    return {}\n",
+            encoding="utf-8",
+        )
+        purge()
+        retried = loader()
+        assert retried is not None
+        assert hasattr(retried, "verify"), "the retry returned a husk"

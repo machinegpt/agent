@@ -36,17 +36,24 @@ app.use(express.json({ limit: "10mb" }));
 // BIND_HOST, so local development keeps working without extra setup.
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (!API_TOKEN) return next();
-  const header = (req.headers.authorization || "").trim();
-  const scheme = "bearer ";
-  if (!header.toLowerCase().startsWith(scheme)) {
-    res.setHeader("WWW-Authenticate", 'Bearer realm="dashboard"'); return res.status(401).json({ error: "Unauthorized" });
-  }
-  const token = header.slice(scheme.length).trim();
-  if (!token || !timingSafeEqual(token, API_TOKEN)) {
+  if (!isAuthorized(req)) {
     res.setHeader("WWW-Authenticate", 'Bearer realm="dashboard"');
     return res.status(401).json({ error: "Unauthorized" });
   }
   next();
+}
+
+// Whether this request presented the configured token. With no token configured
+// there is nothing to present, so the answer stays false and the caller decides:
+// route access remains open, but the sensitive transcript fields stay redacted
+// unless the operator has deliberately configured a token.
+function isAuthorized(req: express.Request): boolean {
+  if (!API_TOKEN) return false;
+  const header = (req.headers.authorization || "").trim();
+  const scheme = "bearer ";
+  if (!header.toLowerCase().startsWith(scheme)) return false;
+  const token = header.slice(scheme.length).trim();
+  return !!token && timingSafeEqual(token, API_TOKEN);
 }
 
 const AGENT_MARKERS = ["JINX.yaml"];
@@ -202,7 +209,7 @@ app.get("/api/auth-check", (req, res) => {
 });
 
 // Core data-fetching function shared by the REST endpoint and SSE stream.
-function getLiveSessionData() {
+function getLiveSessionData(authorized = false) {
   const agentDir = findAgentDir();
 
   if (!agentDir) {
@@ -504,9 +511,11 @@ function getLiveSessionData() {
           os: process.platform,
         },
         plan,
-        thoughts,
-        rpcLog,
-        terminalLog,
+        ...redactUnlessAuthorized(authorized),
+        ...(authorized ? { thoughts, rpcLog, terminalLog } : {}),
+        // `files` is filtered inside getLiveSessionData: the IPC files are
+        // reported presence-only regardless of authorization, because the raw
+        // bytes are the sensitive part and the panel does not need them.
         diffs,
         diffsError,
         files,
@@ -525,10 +534,32 @@ function getLiveSessionData() {
   };
 }
 
+// The thoughts/rpcLog/terminalLog fields are built from the run state's
+// `history`, which carries the model's message text, the parameters of every
+// tool call and the full content of every tool result -- including the contents
+// of whatever files the agent read. requireAuth is a no-op unless
+// DASHBOARD_API_TOKEN is set, and DASHBOARD_BIND_HOST alone puts the server on
+// the network, so publishing those fields to an unauthenticated client hands a
+// remote caller the task text and any file the run has touched.
+//
+// Withholding them is the safe default: the panel still shows the phase, the
+// plan, the round scores and the file list, so it stays useful. Set
+// DASHBOARD_API_TOKEN to opt back in to the full transcript. The `files` map
+// is filtered separately, further down, for the same reason.
+function redactUnlessAuthorized(verified: boolean) {
+  if (verified) return {};
+  return {
+    thoughts: [],
+    rpcLog: [],
+    terminalLog: [],
+    transcriptRedacted: true,
+  };
+}
+
 // REST endpoint — returns a snapshot of the current live session.
 app.get("/api/live-session", requireAuth, (req, res) => {
   try {
-    const data = getLiveSessionData();
+    const data = getLiveSessionData(isAuthorized(req));
     res.json(data);
   } catch (error: any) {
     const message = error?.message || (error ? String(error) : "Failed to load live agent session");
@@ -550,7 +581,7 @@ app.get("/api/live-session/stream", requireAuth, (req, res) => {
 
   const send = () => {
     try {
-      const data = getLiveSessionData();
+      const data = getLiveSessionData(isAuthorized(req));
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     } catch (e) {
       res.write(`data: ${JSON.stringify({ exists: false, message: String(e) })}\n\n`);

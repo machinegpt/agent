@@ -42,7 +42,17 @@ def _load_selfpatch():
     # Registered before exec so the relative import inside the module resolves
     # against the real package rather than re-executing the file twice.
     sys.modules[spec.name] = mod
-    spec.loader.exec_module(mod)
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        # The normal import machinery removes a module whose execution failed.
+        # Manual spec loading does not, so a half-built selfpatch would stay
+        # cached: BASELINE_DIR may be set while later definitions are missing,
+        # and the next import in this process would get that husk instead of
+        # re-executing a file the fallback path has since repaired. Leaving
+        # sys.modules clean is what lets recovery take effect at all.
+        sys.modules.pop(spec.name, None)
+        raise
     return mod
 
 
