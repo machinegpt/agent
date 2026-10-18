@@ -121,14 +121,21 @@ class VerifyIpcResiliencePhase(VerificationPhase):
                 ):
                     success = False
 
-                state.write_text("", encoding="utf-8")
-                response.unlink(missing_ok=True)
-                target_module.run_file_ipc("do the thing", 3)
-                response.write_text(
-                    yaml.safe_dump({
-                        "content": [{
-                            "type": "text",
-                            "text": """Round done.
+                fake_jinx: dict = {}
+                with mock.patch.object(target_module, "read_jinx", lambda: fake_jinx), \
+                     mock.patch.object(target_module, "write_jinx", lambda data: fake_jinx.update(data)), \
+                     mock.patch.object(target_module.selfpatch, "SELF_PATCH_ENABLED", False), \
+                     mock.patch.object(target_module, "REQUEST_PATH", request), \
+                     mock.patch.object(target_module, "RESPONSE_PATH", response), \
+                     mock.patch.object(target_module, "RUN_STATE_PATH", state):
+                    state.write_text("", encoding="utf-8")
+                    response.unlink(missing_ok=True)
+                    target_module.run_file_ipc("do the thing", 3)
+                    response.write_text(
+                        yaml.safe_dump({
+                            "content": [{
+                                "type": "text",
+                                "text": """Round done.
 
 ```yaml
 id: JINX
@@ -151,18 +158,18 @@ state:
   deadlock: false
 ```
 """,
-                        }]
-                    }),
-                    encoding="utf-8",
-                )
-                target_module.run_file_ipc(None, None)
-                next_after_state_block = yaml.safe_load(request.read_text(encoding="utf-8")) or {}
-                label = next_after_state_block.get("messages", [])[-1].get("content")
-                if not _assert(
-                    "ipc: min_override survives a merged state block",
-                    isinstance(label, str) and "at least 3 rounds" in label,
-                ):
-                    success = False
+                            }]
+                        }),
+                        encoding="utf-8",
+                    )
+                    target_module.run_file_ipc(None, None)
+                    next_after_state_block = yaml.safe_load(request.read_text(encoding="utf-8")) or {}
+                    label = next_after_state_block.get("messages", [])[-1].get("content")
+                    if not _assert(
+                        "ipc: min_override survives a merged state block",
+                        isinstance(label, str) and "at least 3 rounds" in label,
+                    ):
+                        success = False
 
         finally:
             for path in (tmp_dir / "jinx_request.yaml", tmp_dir / "jinx_response.yaml", tmp_dir / "jinx_run_state.yaml"):
