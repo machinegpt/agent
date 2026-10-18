@@ -31,6 +31,24 @@ rather than by convention:
 * ``selfpatch.py`` (``guard_tool_call``'s refusal text) and ``learning.py``
   (``LEARNED_RULES_HEADER``) are protected files that JINX refuses to rewrite
   at all. See ``selfpatch.PROTECTED_FILES``.
+
+JINX runs as a child process of an editor CLI (Claude Code, OpenCode, ...), and
+the text below is written for that host:
+
+* What the editor already provides — how its own tools behave, permission
+  prompts, read-before-edit, output formatting — is not restated. The prompts
+  carry only what is specific to the loop: the state block, its merge and exit
+  rules, and how the three declared tools map onto the editor's own.
+* The system prompt travels in every ``llm_generate`` request and the host
+  reads it each time, so its length is paid per request, not per run. Guidance
+  that only matters after a failed round (``REASONING_PROTOCOL``) or only when
+  a condition fires (the reasoning notes) is delivered at that point instead of
+  up front.
+* Each rule is stated once, and every claim about runner behaviour has to match
+  ``runner.py`` and ``state.py``. Re-check the prose here when either changes.
+
+Several phrases are pinned by the test suite (``tests/`` and the
+``verify_prompts`` plugin); the constants that carry them say so.
 """
 
 from typing import Any, Dict, List, Tuple
@@ -38,107 +56,77 @@ from typing import Any, Dict, List, Tuple
 from . import reasoning
 
 
+# Pinned by tests: the first line (it is the protected brake-logic anchor), the
+# headings and phrases "SELF-IMPROVEMENT", "lessons", ".agent/src/jinx/*.py" and
+# "You may NOT redefine the brake logic".
 SYSTEM_PROMPT: str = """You are JINX, a single-agent cognitive loop. You execute tasks through disciplined iterative refinement.
 
-LOOP PROTOCOL (enforced externally — each call is one real round):
+ENVIRONMENT
+You run inside an editor CLI (Claude Code, OpenCode). A round is every reply up to and including the first one that makes no tool calls; the runner reads the state block of that last reply, merges it into JINX.yaml and decides whether the loop continues. Nobody reads intermediate prose live, so keep it to a sentence or two.
+- Only tool_use blocks change anything; describing an edit does not. The editor runs bash_exec, file_read and file_write with its own shell, read and write tools in the project root, under its permission rules. A denial or error comes back as the result: adapt, don't repeat the call.
+- Put every independent call in one reply. The depth cap (20) counts replies that call tools, not calls, and fewer replies keep CURRENT STATE inside your window.
+- You see only the last few messages, so keep paths, line numbers, working commands and constraints in `facts`.
+- Scale to the task: a question or chat message needs a checked answer and the earliest allowed exit, not new files or extra approaches.
 
-GATE BEFORE TRY: Write exactly what the previous round failed on. No silent retries.
-TRY: Choose an approach genuinely different from all prior approaches. Systematically inspect the `approach_graph` of all previous failing rounds in `scores` to perform structural deduction. Identify which nodes, relations, and paths failed, and construct a new strategy that targets completely different components, files, or relationships (aiming for minimal structural intersection/overlap with prior failing graphs).
-TEST: You have access to bash_exec, file_read, and file_write tools.
-  CRITICAL: Never describe changes in conversational text; doing so does NOT modify disk. You MUST explicitly call `file_write` to create/edit files and `bash_exec` to run commands. Text descriptions are non-operational.
-SCORE: Per-requirement pass/fail. Not holistic.
-GATE BEFORE COMMIT: Functional end-to-end verification required.
-You cannot finish on round 1 even if everything passes — at least 2 rounds of evidence are always required before exit is possible, regardless of the configured minimum.
+ROUND PROTOCOL (enforced externally)
+1. PRIOR FAILURE: name exactly what the last round failed on (`prior_failure`). No silent retries.
+2. PLAN, HYPOTHESIS: before the first tool call, decide `plan` (file or function to change + the command or assertion that proves it; "create <path>" for new files) and `hypothesis` ("if I <change>, <requirement> passes because <mechanism>": falsifiable, mechanism named).
+3. TRY: after a failure, change the approach structurally (other files, mechanism or entry point; compare the failing rounds' `approach_graph` and `approach`); rewording is not a new approach. After a pass, don't rewrite working code: attack it (edge cases, bad input, the project's own tests) and fix only what breaks.
+4. TEST: run real commands and read their output; never score from expectation, and write no state block until you have seen it. Then set `prediction_check`: hit, miss or partial, naming the belief it confirmed or refuted.
+5. SCORE: pass or fail per requirement, never holistic. Define the requirements in round 1 (what "done" means, named by outcome, e.g. `unit_tests_pass`) and keep the exact keys: renaming one breaks deadlock clustering, which matches keys literally.
+6. COMMIT GATE: the deliverable works end to end, not just in parts. Exit is impossible on round 1: it needs at least 2 scored rounds.
 
-STATE PERSISTENCE — READ CAREFULLY, THIS IS WHERE MOST FAILURES HAPPEN:
-Your state lives in JINX.yaml on disk. You MUST return an updated state block at the end of every response.
+STATE BLOCK
+End the round with exactly one ```yaml block, the last fenced block of the reply. It is validated whole: one bad field discards all of it, flags included. Quote strings containing ': ' or ' #', indent with spaces, use real booleans, and replace every schema placeholder with real values.
+- `scores` merges by round number: send only this round's entry (a re-sent older round overwrites the stored one).
+- `facts`, `debt`, `open` are replaced by what you send: send the full current list (omit a key to keep it as stored; duplicates collapse; `facts` keeps its last 60).
+- Always include `exit_ready` and `deadlock`.
+- `protocol.loop.min` is the number of rounds before exit is considered; once sent it stays in force (until then the round label shows the default, normally 10). Use 2 unless the work is risky or multi-part (then 3-5).
 
-- `scores` is merged by round number, so you only need to send THIS round's entry. Any entry whose `round`
-  already exists replaces it; rounds you omit are preserved on disk. Deadlock detection and exit criteria
-  still see the complete history — they read it from disk, not from what you re-send. Re-sending older
-  rounds is still accepted and simply overwrites them, so never rely on it to keep history alive.
-- `facts`, `debt`, and `open` are different: each is REPLACED by whatever you send, so send the full list
-  from CURRENT STATE each round, not just new items. Near-duplicates are collapsed automatically and
-  `facts` is capped (oldest dropped first), so there is no benefit to padding it with restatements.
-- `requirements` keys (e.g. `req_name` below) must be the exact same strings every round for the same
-  requirement. Renaming a requirement between rounds breaks deadlock clustering, which matches failures by
-  literal key name.
-- `exit_ready` and `deadlock` must always be included explicitly as real booleans (`true`/`false`, not
-  strings) — never omit them.
-- Your ENTIRE state block is validated as one unit. One malformed field anywhere inside it — including deep
-  inside `approach_graph` — causes the WHOLE block to be rejected and discarded, not just that field. When
-  in doubt, leave `approach_graph` out entirely rather than send an incomplete one.
-- Output EXACTLY ONE ```yaml fenced code block, and it must be the LAST fenced block in your response. If
-  you show any other ```yaml/```json/```yml block earlier (e.g. while reading a config file during TEST),
-  that is fine, but never let one appear after your actual state block.
+EXIT AND DEADLOCK
+- `exit_ready: true` ends the run only if the round is at least `protocol.loop.min`, the latest entry is all_pass, 2+ rounds are scored and pass_count has stopped rising (a rise within the last 3 rounds blocks exit, so add requirements only for a real gap). Set it as soon as that holds. If the runner refuses, the next round prompt says why.
+- `deadlock: true` only if 3+ structurally different approaches failed the same requirement, or you are blocked on something only the user can supply (say what in `open`).
 
-APPROACH KNOWLEDGE GRAPH (optional — include only when it helps):
-When a requirement has failed more than once, you may model your technical approach as a semantic knowledge
-graph under `approach_graph` so deadlock detection can tell genuinely different strategies apart from
-superficial rewordings. If you include it, every node needs both `id` and `type`, and every edge needs
-`source`, `target`, and `relation` — incomplete graphs reject the entire state block (see above), so omit
-it on rounds where you can't fill it out correctly.
-- `nodes`: key entities (files, tools, actions, or concepts), each with a unique `id` and a `type` (one of
-  'file', 'tool', 'action', 'concept').
-- `edges`: directed links between those nodes — `source` node ID, `target` node ID, and a `relation` label
-  (e.g. 'reads', 'modifies', 'tests', 'depends_on').
+APPROACH GRAPH (optional; useful once a requirement has failed twice)
+`approach_graph` in a score entry lets deadlock detection tell a real change from a rewording. `nodes`: {id, type (file, tool, action or concept)}. `edges`: {source, target, relation} between node ids. Without a graph, approaches are compared by their exact `approach` string, so keep it identical when you retry the same strategy. One incomplete node or edge rejects the whole block: omit the graph unless it is complete.
 
-SELF-IMPROVEMENT — TWO SEPARATE THINGS, DON'T CONFUSE THEM:
-1. `lessons` (YOUR CALL, ALWAYS SAFE): send a `lessons` list in your state block to record a
-   durable rule distilled from what you actually observed this round. Unlike `facts`/`debt`/`open`,
-   lessons are ADDITIVE and survive into future tasks in a separate ledger, so a rule worth keeping
-   must be stated as a general, reusable imperative, not a note about this task. Examples:
-   "state blocks are validated as one unit, so never leave approach_graph half-filled",
-   "measure a notice against the same window you actually send, not the one you persist".
-   Send only NEW lessons; duplicates are collapsed automatically. Each round, the lessons you were
-   shown are credited or blamed by whether that round passed, so a rule that keeps failing stops
-   being shown. Do not pad this list — unproven rules start at zero credit and are dropped at the cap.
-2. Editing your own code under `.agent` (POWERFUL, GATED): you MAY edit `.agent/src/jinx/*.py` to
-   improve your own results, and that is a legitimate strategy. It is verified automatically: after
-   any round that touches framework source, the runner executes the full test suite. If anything
-   fails, your edit is REVERTED and you are told exactly what broke — you will not be left with a
-   silently broken framework. Rules:
-   - Always run the tests yourself before you consider such an edit finished.
-   - You may NOT redefine the brake logic: `merge_state`, `StateBlock`, `atomic_write_yaml`,
-     `_resolve_jinx_path` in state.py, or `check_exit`, `check_deadlock`, `_resolve_min_rounds`,
-     `_handle_llm_response` in runner.py. Writes that do are refused outright, and selfpatch.py and
-     learning.py are wholly off limits. These detect a broken framework; an agent that can rewrite
-     them cannot be verified by them.
-   - Prefer additive, backward-compatible changes. A change that makes the suite green by weakening
-     an assertion is worse than no change.
+SELF-IMPROVEMENT, two separate things
+1. `lessons` (always safe): durable rules for future tasks, kept in a separate ledger. Each is a short, general imperative learned from what you observed, never a note about this task ("run the narrowest failing test before the full suite", not "the bug was in auth.py"). Send only NEW ones; rules that keep failing stop being shown. Don't pad.
+2. Editing `.agent/src/jinx/*.py` (gated): allowed when it is the shortest path to the requirements. After a round that touches framework source the runner runs pytest and the jinx_test suite and reverts the edit if either fails; test files you add or edit are reset first. You may NOT redefine the brake logic: `merge_state`, `StateBlock`, `atomic_write_yaml`, `_resolve_jinx_path` (state.py); `check_exit`, `check_deadlock`, `_resolve_min_rounds`, `_handle_llm_response` (runner.py); `SYSTEM_PROMPT` (prompts.py). Such writes are refused, and selfpatch.py and learning.py are off limits entirely. Prefer additive changes; never weaken an assertion to get a green suite.
 
-REQUIRED — end every response with exactly one markdown YAML code block containing the updated state. The
-schema below shows the SHAPE of each field, not data to copy — replace every value with this task's real
-current state. Send only this round's `scores` entry; send `facts`/`debt`/`open` as the full list, and
-`lessons` as NEW entries only:
+FINAL ANSWER
+On the reply where you set `exit_ready: true`, make the prose above the block the answer for the user, in the language of the task: the outcome first, how you verified it, then anything left in `open` or `debt`.
 
-FULL FORMAT (preferred for complex tasks with multiple requirements):
+SCHEMA: the shape of each field, not data to copy. `plan`, `hypothesis`, `prediction_check` and `cause` are optional but feed the notes you get back.
 ```yaml
 id: JINX
 protocol:
   loop:
-    min: 2
+    min: <int>
 state:
-  task: <string — restate the task as you understand it>
-  facts: [<every known scope fact/constraint so far, not just new ones>]
+  task: <the task as you understand it>
+  facts:
+  - <fact, constraint, path or working command>
   scores:
-  - round: 1
-    approach: <short name for round 1's strategy>
-    prior_failure: <what failed before round 1; "none" if this is round 1>
-    requirements: {<requirement_name>: <true|false>}
-    pass_count: <int — how many requirements passed>
-    all_pass: <true|false>
-  - round: 2
-    approach: <short name for round 2's strategy — must differ from round 1's>
-    prior_failure: <exactly what round 1 failed on>
-    requirements: {<requirement_name>: <true|false>}
-    pass_count: <int>
-    all_pass: <true|false>
-  debt: [<every shortcut taken so far, not just new ones>]
-  open: [<every unresolved issue so far, not just new ones>]
-  lessons: [<only NEW durable rules learned this round, each a general imperative, not a task note>]
-  exit_ready: <true|false — true only once all_pass is true on the latest round AND you are not still improving>
-  deadlock: <true|false — true only if 3+ genuinely different approaches failed the same requirement>
+  - round: <this round's number>
+    approach: <short strategy name>
+    prior_failure: <what the last round failed on, or none>
+    plan: <what you change + the command that proves it>
+    hypothesis: <if I change X, Y passes because Z>
+    prediction_check: <hit|miss|partial + the belief confirmed or refuted>
+    cause: <one label from the round prompt, only after a failed round>
+    requirements:
+      <requirement_name>: <true|false>
+    pass_count: <int, the number of true requirements>
+    all_pass: <true only if every requirement is true>
+  debt:
+  - <shortcut taken; an empty list is written as []>
+  open:
+  - <unresolved issue; an empty list is written as []>
+  lessons:
+  - <NEW durable rule; leave the key out when there is none>
+  exit_ready: <true|false>
+  deadlock: <true|false>
 ```
 """
 
@@ -146,54 +134,55 @@ state:
 # JINX Prompt Templates & Construction Utilities
 # ==============================================================================
 
+# Pinned by tests: "REQUIRED markdown YAML state block".
 MISSING_STATE_WARNING: str = (
-    "WARNING: You did not output the REQUIRED markdown YAML state block (```yaml ... ```) at the end of your last response!\n"
-    "You MUST output the updated state block with your final evaluation (including 'exit_ready: true' if the task is finished) "
-    "so that JINX can parse it, update the state, and terminate cleanly. Do not skip this block!\n"
-    "Use CURRENT STATE below as your starting point — send this round's 'scores' entry (the runner merges it "
-    "with the history already on disk by round number, so omitted rounds are kept).\n\n"
+    "WARNING: your last response had no parseable REQUIRED markdown YAML state block, "
+    "so nothing from it was recorded: no scores, facts or exit_ready. A block that fails "
+    "to parse as YAML counts as missing: quote strings containing ': ' or ' #' and indent "
+    "with spaces. Start from CURRENT STATE below and end this response with the block: "
+    "this round's `scores` entry only, and the full `facts`, `debt` and `open` lists.\n\n"
 )
 
+# Pinned by tests: "inner tool-calling depth limit".
 TOOL_DEPTH_CRITICAL_MSG: str = (
-    "CRITICAL: The inner tool-calling depth limit has been reached. "
-    "Do not call any more tools. You must immediately output your final thought "
-    "and the exact, complete markdown YAML code block (```yaml ... ```) to persist your progress and avoid state loss.\n"
-    "Being cut off here does not mean the task is done — only set 'exit_ready: true' if the requirements "
-    "genuinely all passed. Otherwise set it false and describe what's left in 'open', so the next round can "
-    "continue from an honest state. Send this round's 'scores' entry only — it is merged with the history "
-    "on disk by round number, so the earlier rounds are preserved without you re-sending them."
+    "CRITICAL: the inner tool-calling depth limit has been reached. No more tools this "
+    "round. Reply now with one sentence of status and the complete state block "
+    "(```yaml ... ```): this round's `scores` entry only, and the full `facts`, `debt` and "
+    "`open` lists.\n"
+    "Being cut off does not mean the task is done: set `exit_ready: true` only if every "
+    "requirement genuinely passed. Otherwise set it false and put what is left in `open`, "
+    "so the next round continues from an honest state. Next round, put independent calls "
+    "in one reply to stay under the cap."
 )
 
 # History-window notice. Prepended to a request whose bounded window dropped
 # earlier messages, so the model does not mistake the window for the session.
+# Pinned by tests: the "[context note] %d earlier message(s)" shape, the word
+# "elided", and exactly two %d (messages elided, of which tool traffic).
 HISTORY_ELISION_NOTICE: str = (
-    "[context note] %d earlier message(s) from this session were elided from "
-    "the history window to bound prompt size; %d of them involved tool "
-    "traffic. CURRENT STATE (see 'scores') preserves only each round's "
-    "summary -- approach, requirements and pass counts -- not the contents of "
-    "tool results, so an elided tool result is NOT recoverable from the state "
-    "block. If you need a result that is no longer in this window, call that "
-    "tool again rather than assuming you already have its output. Do not "
-    "assume this window is the whole session."
+    "[context note] %d earlier message(s) from this session were elided from the history "
+    "window to bound prompt size (%d involved tool calls). Tool output is not kept in "
+    "CURRENT STATE, so an elided result is gone: call the tool again instead of assuming "
+    "you still have it. If CURRENT STATE is no longer in view, the task and saved state "
+    "are in `.agent/JINX.yaml`: read it (never write it) rather than rebuild `facts` from memory."
 )
 
 # One failing check inside a self-patch verification report.
 CHECK_FAILURE_LINE: str = "[%s] %s"
 
-# Protection feedback prompts
+# Protection feedback prompts. Each reads as the clause after "SELF-PATCH REFUSED: ".
 PROTECTED_FILE_REFUSAL: str = (
-    "your edit to JINX's own source modified a protected file (%s). "
-    "These files are off-limits to self-patching to prevent the agent from "
-    "disabling its own guardrails."
+    "your edit to JINX's own source modified %s, a protected file: it holds JINX's own "
+    "guardrails, so it is off limits to self-patching."
 )
 
 PROTECTED_SYMBOL_REFUSAL: str = (
-    "your edit to JINX's own source changed protected brake logic "
-    "in %s (%s). It was rolled back automatically and NOT verified: "
-    "these functions are what stop a self-patch from removing its own "
-    "safety checks, so no test result can justify changing them."
+    "your edit changed protected brake logic in %s (%s). It was rolled back and NOT "
+    "tested: no passing test can justify changing the checks that decide whether a "
+    "self-patch is safe. Change other code instead."
 )
 
+# Pinned by tests: "could not be completed".
 PROTECTION_CHECK_FAILURE: str = (
     "the protected-logic check could not be completed (%s: %s), so this "
     "edit was neither verified nor accepted"
@@ -203,52 +192,60 @@ PROTECTION_CHECK_FAILURE: str = (
 # reason, because the two can disagree: a partially failed restore leaves files
 # on disk that the model believes were undone, and saying so is the only way it
 # can find out.
+# Pinned by tests: "ROLLBACK FAILED", and the exception text must reach the model.
 SELF_PATCH_ROLLBACK_FAILED: str = (
-    "SELF-PATCH REFUSED and ROLLBACK FAILED: %s\nThe rollback itself "
-    "raised %s: %s. Treat JINX's source as untrustworthy and ask a human "
-    "before continuing — the next run's preflight will retry the repair "
-    "from the baseline."
+    "SELF-PATCH REFUSED and ROLLBACK FAILED: %s\nThe rollback itself raised %s: %s. "
+    "JINX's source may be damaged: stop editing framework files, set `deadlock: true` "
+    "and describe what you know in `open` so the user can step in. The next run's "
+    "preflight retries the repair from the baseline."
 )
 
+# Pinned by tests: "SELF-PATCH REFUSED".
 SELF_PATCH_REFUSED: str = (
     "SELF-PATCH REFUSED: %s\nFiles rolled back: %s"
 )
 
 TEST_SUITE_RESTORE_FAILURE: str = (
-    "the test files that decide whether this patch is acceptable could "
-    "not be restored (%s: %s), so it was not verified against a trusted "
-    "suite"
+    "the test files that judge this patch could not be restored (%s: %s), so it was "
+    "not verified against a trusted suite"
 )
 
 # Reported on a patch that PASSED verification. The suite is the yardstick, so
 # the model's own test edits are reverted before it runs; without this the model
 # would go on believing coverage it just wrote still exists.
+# Pinned by tests: a %s for the paths, and the word "restored".
 TEST_FILES_RESTORED: str = (
-    "SELF-PATCH VERIFIED: your edit to the framework was accepted.\n"
-    "NOTE: the test files are the yardstick, so they were restored to the "
-    "baseline before verification ran. These are back at their baseline state "
-    "and no longer contain your changes: %s\n"
-    "Your source change is kept, but any test you added or edited for it is "
-    "gone. Do not assume that coverage still exists."
+    "SELF-PATCH VERIFIED: your framework edit was accepted.\n"
+    "The tests are the yardstick, so they were restored to the baseline before the suite "
+    "ran; your changes to these files are gone: %s\n"
+    "Your source change stays, but any test you added or edited for it no longer exists."
 )
 
+# Pinned by tests: "SELF-PATCH REVERTED".
 SELF_PATCH_REVERTED: str = (
-    "SELF-PATCH REVERTED: your edit to the files JINX verifies (%s) failed "
-    "verification (%s). The change was rolled back automatically, so the "
-    "framework is intact — the round was not wasted, it produced evidence. "
-    "Read the failure below, decide whether the idea is still right, and if "
-    "so apply it in a smaller or more targeted form.\n%s"
+    "SELF-PATCH REVERTED: your edit to %s failed verification (%s) and was rolled back; "
+    "the framework is intact. Read the failure below; if the idea is still right, retry "
+    "it smaller or more targeted, and run the failing check yourself before you finish.\n%s"
 )
 
 # Tool-result notices. Not instructions, but handed straight back to the model
 # as `tool_result` content, so they belong to the same contract. Exception
 # messages raised at the runner itself (IPCError, SerializationError, ...) are
 # not model-facing and stay with their raisers.
-MALFORMED_TOOL_BLOCK_MSG: str = "Error: Malformed tool_use block (missing id or name)."
+MALFORMED_TOOL_BLOCK_MSG: str = (
+    "Error: malformed tool_use block: it needs a string `id` and a string `name`. "
+    "Nothing was executed; resend the call."
+)
 
-INVALID_TOOL_BLOCK_INPUT_MSG: str = "Error: Malformed tool_use block (input must be an object)."
+INVALID_TOOL_BLOCK_INPUT_MSG: str = (
+    "Error: malformed tool_use block: `input` must be an object of named parameters "
+    "(for example {script: ...}). Nothing was executed; resend the call."
+)
 
-FILE_SLICE_FAILURE_MSG: str = "Error: Failed to slice file content: %s"
+FILE_SLICE_FAILURE_MSG: str = (
+    "Error: could not apply start_line/end_line (%s). Use 1-indexed integers, or omit "
+    "them to read the whole file."
+)
 
 # The test-evidence block. `jinx.evidence` decides which failures exist and how
 # they group by cause; every phrase the model reads in the digest is assembled
@@ -260,17 +257,16 @@ EVIDENCE_SKIPPED_COUNT: str = ", %d skipped"
 EVIDENCE_CAUSE_COUNT: str = "%d distinct cause(s):"
 EVIDENCE_GROUP_LINE: str = "- %s | %s | %d test(s): %s"
 EVIDENCE_MORE_EXAMPLES: str = ", ..."
-EVIDENCE_MORE_CAUSES: str = "- ...and %d more cause(s), each above the budget"
+EVIDENCE_MORE_CAUSES: str = "- ...and %d more cause(s) not shown"
 EVIDENCE_UNDERCOUNTED: str = (
-    "WARNING: the run reported %s failure(s) but only %s could be parsed "
-    "from the captured output; the tail was truncated, so causes listed "
-    "here are partial."
+    "WARNING: %s failure(s) reported but only %s parsed (the output tail was truncated), "
+    "so the causes above are partial: rerun the failing tests alone to see the rest."
 )
 EVIDENCE_UNPARSED_WITH_TAIL: str = (
-    "TEST EVIDENCE: %s failed but produced no parseable failure line.\n%s"
+    "TEST EVIDENCE: %s failed with no parseable failure line. Raw output tail:\n%s"
 )
 EVIDENCE_UNPARSED: str = (
-    "TEST EVIDENCE: %s failed but produced no parseable failure line."
+    "TEST EVIDENCE: %s failed with no parseable failure line."
 )
 
 # Marker spliced into an elided history so the model sees a gap it cannot read,
@@ -279,66 +275,75 @@ HISTORY_ELISION_MARKER: str = "... %d line(s) elided by JINX to fit the budget .
 
 # Sent back when the state block was valid but carried fewer score entries than
 # the loop already stored, which the merge resolves in favour of what is on disk.
+# It is appended to the round prompt on nearly every round after the first, so
+# it is kept to one line.
+# Pinned by tests: "merged by round"; four arguments (%d, %s, %d, %d).
 STATE_SCORES_MERGED: str = (
-    "State accepted. Score history merged by round: %d entr%s on "
-    "disk, %d sent this round — %d preserved from earlier rounds. "
-    "You may send only the current round's entry from now on."
+    "State accepted; scores merged by round: %d entr%s on disk (%d sent, %d kept from earlier)."
 )
 
 # Refusal returned when a tool call tries to rewrite brake logic. Kept apart from
 # PROTECTED_SYMBOL_REFUSAL, which is the message for a change that was already
 # written and then rolled back: one is a refusal, the other an explanation.
+# Pinned by tests: the word "refused".
 PROTECTED_EDIT_REFUSAL: str = (
-    "Self-patch refused: '%s' defines protected JINX logic (%s). These are "
-    "the mechanisms that detect a broken framework, so the agent may not "
-    "rewrite them. Change non-brake code in the same file instead, or have "
-    "a human set JINX_ALLOW_PROTECTED_EDITS=1 to override deliberately."
+    "Self-patch refused: '%s' would change protected JINX logic (%s). Those checks "
+    "detect a broken framework, so the agent may not rewrite them. Nothing was written. "
+    "Change other code instead, or have the user set JINX_ALLOW_PROTECTED_EDITS=1."
 )
 
 # Sent back when a submitted state block fails validation. Distinct from
-# MISSING_STATE_WARNING, which covers a block that was never sent at all.
+# MISSING_STATE_WARNING, which covers a block that was never sent at all (a block
+# that does not even parse as YAML lands there, not here). The reason names the
+# failing fields, built by state.py from STATE_FIELD_ERROR below.
+# Pinned by tests: "REJECTED" and "flags were NOT honoured".
 STATE_BLOCK_REJECTED: str = (
-    "Your previous state block was REJECTED and discarded; the state on "
-    "disk is unchanged. Reason: %s: %s. Re-send a corrected block. Common "
-    "causes: an unquoted ':' or '#' inside a scalar value, a tab used for "
-    "indentation, or a key nested one level too deep. Because the block "
-    "was rejected, your exit_ready/deadlock flags were NOT honoured."
+    "Your previous state block was REJECTED and discarded; the state on disk is "
+    "unchanged and your exit_ready/deadlock flags were NOT honoured. Reason: %s: %s. "
+    "Fix exactly those fields against SCHEMA and re-send the block. Usual causes: a "
+    "list item containing ': ' left unquoted (YAML reads it as a mapping, not text), a "
+    "verdict that is not true/false, a key nested one level too deep, or an incomplete "
+    "approach_graph node or edge (omit the graph if unsure)."
 )
 
+# One failing field inside the STATE_BLOCK_REJECTED reason: where, what is wrong,
+# and what was actually received. `state.py` joins up to three of them with "; ".
+STATE_FIELD_ERROR: str = "%s: %s (got %s)"
+STATE_FIELD_ERRORS_MORE: str = "+%d more"
+# The reason when the validator gave nothing to name (an exception with no fields).
+STATE_REASON_UNKNOWN: str = "no further detail"
+
+# Spliced into an oversized string of a past tool call when the history window is
+# re-sent, so the model sees how much was left out instead of a silent cut.
+HISTORY_INPUT_TRUNCATED: str = " ...[%d more chars omitted from history]"
+
 REASONING_NOTES_HEADER: str = (
-    "REASONING NOTES (computed from the score history above, not from this round):"
+    "REASONING NOTES (computed from your score history, not from this round):"
 )
 
 
 # Learned rules header used when injecting durable lessons into the prompt. Moved
-# here so every model-facing phrase lives in prompts.py.
+# here so every model-facing phrase lives in prompts.py. It is charged against
+# JINX_LESSONS_BUDGET_CHARS, so every character here is a character fewer for rules.
+# Pinned by tests: "LEARNED RULES".
 LEARNED_RULES_HEADER: str = (
-    "LEARNED RULES (durable, carried over from earlier sessions; "
-    "verified rules float up, rules that kept failing are no longer shown):"
+    "LEARNED RULES (from earlier runs; apply them where they fit):"
 )
 
-# Why the four optional fields below exist. The loop protocol already demands
-# structural deduction between rounds, but the state it persists keeps only a
-# pass/fail flag per requirement, so a wrong belief about the code and a clumsy
-# implementation of a correct idea are indistinguishable once the round is over.
-# These two blocks are the editable half of that contract: the protocol says what
-# to reason with, the notes say what the run's own history says about how well
-# that reasoning has been working.
-REASONING_PROTOCOL: str = """REASONING PROTOCOL - the loop scores predictions, not prose.
-
-PLAN (before your first tool call this round): one line naming the file or function you will change and the exact command, test or assertion that will prove it. A round with no falsifiable plan can only be narrated, not scored. Put it in this round's scores entry as `plan`.
-HYPOTHESIS (same entry, `hypothesis`): a falsifiable prediction - "if I <change>, <requirement> passes because <mechanism>". Name the mechanism. A prediction without one cannot be refuted, and a refutation is the only thing here that teaches you anything.
-PREDICTION CHECK (same entry, `prediction_check`): after TEST, set it to `hit`, `miss` or `partial` and name the belief the outcome confirmed or refuted. A miss is the most valuable line in the state: it marks the part of your model of this code that is wrong, and that is exactly what the next round has to change.
-CAUSE (same entry, `cause`): classify the PREVIOUS round's failure with exactly one label:
-  wrong_target - right idea, wrong file/function/entry point
-  wrong_mechanism - right place, but the code does not work the way you assumed
-  wrong_hypothesis - the prediction above was refuted: your model is wrong, not your code
-  incomplete_test - possibly right, but never exercised by a real command or test
-  env_issue - the tool, dependency or environment failed, not the logic
-  scope_misread - you solved a different problem than the requirement asked
-  unknown - none of the above; append the reason to the same field
-The cause decides what may NOT stay the same next round: wrong_target => move the target; wrong_mechanism => change the mechanism; wrong_hypothesis => re-read the code before editing; incomplete_test => run the test before touching code; env_issue => fix the environment first.
-The four fields are optional, but the loop measurably reasons better with them: `hypothesis` and `prediction_check` are what produce the PREDICTION RECORD, and `cause` is what turns "pick a different approach" into a decision instead of a guess.
+# Appended to the round prompt only when the latest score entry failed, which is
+# exactly when `cause` is due: the label classifies the PREVIOUS round's failure,
+# and `plan`, `hypothesis` and `prediction_check` are already defined once in
+# SYSTEM_PROMPT. The taxonomy is what turns "pick a different approach" into a
+# decision, and the consequence after each label is what the cause note
+# (reasoning.render_cause_note) holds the model to on the next round.
+REASONING_PROTOCOL: str = """REASONING PROTOCOL - the last round failed. Set `cause` in this round's `scores` entry to ONE label for that failure; it decides what must not stay the same:
+  wrong_target - right idea, wrong file, function or entry point => move the target
+  wrong_mechanism - right place, but the code does not work the way you assumed => change the mechanism
+  wrong_hypothesis - your prediction was refuted: your model is wrong, not your code => re-read the code before editing
+  incomplete_test - possibly right, never exercised by a real command or test => run the test before touching code
+  env_issue - the tool, dependency or environment failed, not the logic => fix the environment first
+  scope_misread - you solved a different problem than the requirement asked => re-read the requirement
+  unknown - none of these; add the reason after the label
 """
 
 # ==============================================================================
@@ -347,17 +352,31 @@ The four fields are optional, but the loop measurably reasons better with them: 
 # The schema is prose aimed at the model, so it lives here with the rest of the
 # prompt contract. `jinx.tools.tool_schema` hands out a deep copy of it, so a
 # caller mutating the result cannot corrupt the shared template.
+#
+# Names and parameter names are part of the host protocol (README section 1) and
+# of the runner (`file_write` is guarded by its `path` and `content`); only the
+# descriptions are free. They say what the editor's own tools do not: that the
+# result is plain text, that `file_write` replaces the whole file, and that line
+# numbers some editors prefix to a read are not part of the file.
 
 TOOL_SCHEMA: List[Dict[str, Any]] = [
     {
         "name": "bash_exec",
-        "description": "Execute a bash or shell script in the environment.",
+        "description": (
+            "Run a shell script in the project root (the editor's shell tool): tests, "
+            "builds, git, search, targeted patches. The result is plain text with no "
+            "status field: when pass/fail matters, print it (`cmd; echo exit=$?`), and "
+            "bound big output with head, tail or grep."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "script": {
                     "type": "string",
-                    "description": "The script to execute"
+                    "description": (
+                        "The script to run. Each call is a fresh shell: do not rely on "
+                        "variables set by an earlier call"
+                    )
                 }
             },
             "required": ["script"]
@@ -365,21 +384,24 @@ TOOL_SCHEMA: List[Dict[str, Any]] = [
     },
     {
         "name": "file_read",
-        "description": "Read the contents of a file.",
+        "description": (
+            "Read a text file (the editor's read tool). Use start_line/end_line on large "
+            "files. Any line numbers the editor prefixes are not file content."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file"
+                    "description": "File path, relative to the project root or absolute"
                 },
                 "start_line": {
                     "type": "integer",
-                    "description": "Optional 1-indexed starting line to read (inclusive)"
+                    "description": "Optional 1-indexed first line to read (inclusive)"
                 },
                 "end_line": {
                     "type": "integer",
-                    "description": "Optional 1-indexed ending line to read (inclusive)"
+                    "description": "Optional 1-indexed last line to read (inclusive)"
                 }
             },
             "required": ["path"]
@@ -387,17 +409,22 @@ TOOL_SCHEMA: List[Dict[str, Any]] = [
     },
     {
         "name": "file_write",
-        "description": "Write or overwrite a file with new content.",
+        "description": (
+            "Create a file or overwrite it completely. `content` must be the entire new "
+            "file: never a fragment or an '...unchanged...' placeholder, and no line-number "
+            "prefixes. For a small change to a large file, patch it in place with "
+            "bash_exec and review the diff."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file"
+                    "description": "File path, relative to the project root or absolute"
                 },
                 "content": {
                     "type": "string",
-                    "description": "The full content to write"
+                    "description": "The complete new content of the file"
                 }
             },
             "required": ["path", "content"]
@@ -419,6 +446,11 @@ TOOL_SCHEMA: List[Dict[str, Any]] = [
 # no model-facing string is ever built by string arithmetic in the caller. An
 # empty list or empty string means the note does not apply, which is how the
 # reasoning side decides whether to call at all.
+#
+# The whole block shares one character budget (reasoning.MAX_NOTE_CHARS) and an
+# over-budget note is dropped, not cut, so every note is written to be short:
+# a shorter note is a later note that still fits. The notes speak in terms of what
+# to do, not of the framework function that noticed the problem.
 
 # The clause a truncated name list ends with. A list that reads as complete when
 # it was cut is a small lie told to a model deciding where to look.
@@ -447,70 +479,74 @@ def note_name_list_plain(names: List[str], limit: int) -> str:
 
 
 def note_calibration(hit: int, miss: int, partial: int, checked: int, rate: int) -> str:
-    """How well the model's own predictions about this code have held."""
+    """How well the model's own predictions about this code have held.
+
+    Only the counts reach this function, so the advice is about the whole record
+    and never claims anything about the latest prediction in particular.
+    """
     note = (
-        "PREDICTION RECORD: %d hit, %d miss, %d partial across %d scored round(s) "
-        "(%d%% of the predictions you made about this code held)."
+        "PREDICTION RECORD: %d hit, %d miss, %d partial over %d scored round(s) "
+        "(%d%% of your predictions about this code held)."
         % (hit, miss, partial, checked, rate)
     )
     if miss > hit:
         return note + (
-            " More were refuted than confirmed, so the model you are carrying into"
-            " this round is the thing under test: re-read the real implementation"
-            " of the path you are about to change instead of reasoning about it"
-            " from memory, and make this round's hypothesis about something you"
-            " have just observed rather than something you expect."
+            " More were refuted than confirmed: re-read the real implementation of the"
+            " path you are about to change, and base this round's hypothesis on what you"
+            " just observed, not on what you expect."
         )
     return note + (
-        " The mechanism named in your latest hypothesis is worth extending,"
-        " so keep that reasoning and widen its scope rather than restarting"
-        " from a new idea."
+        " Your model of this code mostly holds: keep reasoning from the mechanisms that"
+        " were confirmed instead of restarting from a new idea."
     )
 
 
 def note_deadlock_risk(items: List[Tuple[str, int]]) -> str:
     """The one cluster about to abort the run, named by requirement."""
     body = "; ".join(
-        "requirement '%s' has now failed under %d structurally different"
-        " approaches, and one more distinct approach on it aborts the run"
-        " as a deadlock, so change the CATEGORY of approach for that"
-        " requirement now instead of reworking the details of the last one"
-        % (req, clusters)
+        "requirement '%s' has failed under %d structurally different approaches and"
+        " one more aborts the run as a deadlock: change the category of approach"
+        " (other files, mechanism or entry point) now, not the details of the last"
+        " attempt" % (req, clusters)
         for req, clusters in items
     )
     return "DEADLOCK RISK: " + body + "."
 
 
 def note_repeated_cause(rounds_text: str, label: str, repeats: int) -> str:
-    """Two consecutive rounds that failed the same way under different names."""
-    note = "REPEATED CAUSE: rounds %s both failed with cause '%s'" % (rounds_text, label)
+    """Consecutive failing rounds labelled with the same cause.
+
+    Phrased as a fact about the labels, not about which round failed: the label
+    in a round's entry classifies the previous round's failure, but a model that
+    writes it on the failing round's own entry is read the same way.
+    """
+    note = "REPEATED CAUSE: `cause` is '%s' in rounds %s" % (label, rounds_text)
     if repeats >= 3:
-        note += ", which is %d rounds running" % repeats
+        note += " (%d rounds in a row)" % repeats
     return note + (
-        ". The class of mistake did not change, so rewording the approach is not"
-        " a new strategy: act on the constraint that label implies, or correct"
-        " the label if it was misclassified."
+        ". Rewording the approach does not change a repeated class of mistake: do what"
+        " that label requires, or correct the label if it was wrong."
     )
 
 
 def note_regression(parts: List[str]) -> str:
     """Work an earlier round had already achieved and this one lost."""
     return (
-        "REGRESSION: %s. Nothing else in the loop will notice, because check_exit"
-        " reads only all_pass of the latest round: restore what was lost before"
-        " starting new work." % "; ".join(parts)
+        "REGRESSION: %s. Restore what was lost before any new work; exit only looks"
+        " at whether the latest round passes, so nothing else will flag it."
+        % "; ".join(parts)
     )
 
 
 def regression_part_broken(named: str) -> str:
     """A requirement that was true earlier and is false now."""
-    return "%s passed in an earlier round and is failing in your latest entry" % named
+    return "%s passed in an earlier round and fails in your latest entry" % named
 
 
 def regression_part_count(latest: int, best: int) -> str:
     """A lower pass count on the same requirement set."""
     return (
-        "your latest round scored %d requirements against a best of %d"
+        "your latest round passed %d requirements against a best of %d"
         " on the same requirement set" % (latest, best)
     )
 
@@ -525,17 +561,17 @@ def note_attribution(items: List[Tuple[str, int, str]]) -> str:
     for req, count, kind in items:
         if kind == "one_cluster":
             parts.append(
-                "requirement '%s' has %d differently worded attempts but your"
-                " approach graphs put all of them in one cluster, so check_deadlock"
-                " cannot see the later attempts as new approaches and its abort will"
-                " not fire" % (req, count)
+                "requirement '%s' has %d differently worded attempts, but their approach"
+                " graphs are so alike that they count as one approach, so deadlock"
+                " detection cannot see the later attempts as new (make each graph show"
+                " what actually changed)" % (req, count)
             )
         else:
             parts.append(
-                "requirement '%s' has %d structurally distinct approach graphs while"
-                " your approach sentences describe a single attempt, so the graphs"
-                " claim a variety of approaches that the text does not support and"
-                " the cluster count is counting rewrites of one idea" % (req, count)
+                "requirement '%s' has %d structurally distinct approach graphs, but your"
+                " approach descriptions read as a single attempt, so the graphs overstate"
+                " how different the attempts were (make each graph match what actually"
+                " changed)" % (req, count)
             )
     return "APPROACH ATTRIBUTION: " + "; ".join(parts) + "."
 
@@ -543,58 +579,59 @@ def note_attribution(items: List[Tuple[str, int, str]]) -> str:
 def note_requirement_keys(dropped: str, flickering: str) -> str:
     """Requirement keys that were being measured and then were not."""
     parts = [
-        "%s was scored in earlier rounds and is missing from your latest entry, so"
-        " its earlier passes no longer count toward exit and its earlier failures"
-        " no longer feed the deadlock check" % dropped
+        "scored earlier but missing from your latest entry: %s (a dropped requirement"
+        " can no longer block exit, which reads only the latest entry)" % dropped
     ]
     if flickering:
         parts.append(
-            "%s also flipped between pass and fail while it was being measured, so"
-            " one requirement's history is split across two incompatible records"
-            % flickering
+            "unstable before being dropped (flipped between pass and fail): %s, so"
+            " re-verify it" % flickering
         )
     return (
-        "REQUIREMENT KEYS DROPPED: %s. Either keep measuring them under one"
-        " spelling, or retire them explicitly in the state block rather than"
-        " letting them fall out." % "; ".join(parts)
+        "REQUIREMENT KEYS DROPPED: %s. Keep scoring every requirement under the same"
+        " key each round, or say in `facts` why one no longer applies."
+        % "; ".join(parts)
     )
 
 
-# The four conditions check_exit applies, phrased as what is missing rather than
-# as a rule, because the plateau rule appears in no prompt and a run refused for
-# improving would otherwise be refused with no explanation.
+# The conditions check_exit applies, phrased as what is missing rather than as a
+# rule. They are evaluated on the history as it stands BEFORE the current round's
+# entry exists, so each one is worded as a fact about the record so far; the note
+# built from them says as much, so a blocker that this round's own entry will
+# clear (a second scored round, a passing entry) is not mistaken for a verdict.
 def exit_blocker_min_rounds(min_rounds: int, rnd: int) -> str:
     return (
-        "the loop runs at least %d rounds before exit is considered and this is round %d"
+        "exit is not considered before round %d and this is round %d"
         % (min_rounds, rnd)
     )
 
 
 def exit_blocker_evidence(count: int) -> str:
     return (
-        "exit needs at least two scored rounds of evidence and the history holds %d"
+        "exit needs 2 scored rounds in total and only %d is on record before this round"
         % count
     )
 
 
 def exit_blocker_not_all_pass() -> str:
-    return "your latest round is not all_pass"
+    return "the latest recorded round is not all_pass"
 
 
 def exit_blocker_plateau(last3: int, prior_best: int) -> str:
     return (
-        "the last three rounds still beat every earlier round (%d"
-        " > %d requirements passed), and the loop only stops at a"
-        " plateau" % (last3, prior_best)
+        "pass_count is still rising (%d in the last three recorded rounds against a"
+        " best of %d before them) and exit waits for it to plateau"
+        % (last3, prior_best)
     )
 
 
 def note_exit(blockers: List[str]) -> str:
-    """Why a run that looks finished will not be allowed to stop."""
+    """Why a run that looks finished may not be allowed to stop."""
     return (
-        "EXIT NOT AVAILABLE: this round reads as finished, but check_exit will not"
-        " stop the run - %s. Work the first blocker rather than re-sending the"
-        " same state and expecting a different verdict." % "; ".join(blockers)
+        "EXIT CHECK on the history so far, before this round's entry: exit_ready would"
+        " not stop the run because %s. Work the first blocker that still applies once"
+        " your entry is added; re-sending the same state will not change the verdict."
+        % "; ".join(blockers)
     )
 
 
@@ -603,14 +640,13 @@ def note_exit(blockers: List[str]) -> str:
 # symbol that has moved since the fact was written.
 def citation_unreadable(path_text: str) -> str:
     return (
-        "a fact cites %s, which is not a file this loop can read under"
-        " the working directory, the package, or the system temp"
-        " directory" % path_text
+        "a fact cites %s, which cannot be found under the working directory, the"
+        " package or the system temp directory" % path_text
     )
 
 
 def citation_past_end(path_text: str, cited: int, length: int) -> str:
-    return "a fact cites %s:%d in a file of %d lines" % (path_text, cited, length)
+    return "a fact cites %s:%d but the file has only %d lines" % (path_text, cited, length)
 
 
 def citation_symbol_moved(path_text: str, cited: int, symbol: str, start: int) -> str:
@@ -622,13 +658,9 @@ def citation_symbol_moved(path_text: str, cited: int, symbol: str, start: int) -
 
 def note_citation(problems: List[str]) -> str:
     return (
-        "STALE CITATION: %s. A file the loop cannot find is a claim it cannot check"
-        " rather than one it has disproved - name the path the way the file sits in"
-        " the tree, so the next round can settle it. The substance of a fact is"
-        " often still right, but a pointer the model has not checked is how a wrong"
-        " line number becomes load-bearing evidence; re-read the file and correct"
-        " the fact rather than reasoning from the citation."
-        % "; ".join(problems)
+        "STALE CITATION: %s. Re-read the file and correct the fact (give the path as"
+        " it sits in the tree); don't reason from a line number you have not just"
+        " checked." % "; ".join(problems)
     )
 
 
@@ -642,17 +674,16 @@ def note_plan(named: str, all_pass: bool) -> str:
     """A path the previous round's plan named that the loop cannot see."""
     if all_pass:
         return (
-            "PLAN NOT IN TREE: your last plan named %s, which is not under %s, and"
-            " that round scored every requirement as passing. If the pass depended"
-            " on that change, the change is not where this loop can see it - find out"
-            " what was actually written before treating the requirement as done."
+            "PLAN NOT IN TREE: your last plan named %s, which is not under %s, yet that"
+            " round passed every requirement. If the pass depended on that change,"
+            " check what was actually written before trusting it."
             % (named, PLAN_PROBE_ROOTS)
         )
     return (
-        "PLAN NOT IN TREE: your last plan named %s, which is not under %s, so what"
-        " that round changed to fix the failing requirements was somewhere this loop"
-        " cannot see, or was never written. Name a path this loop can check in the"
-        " plan." % (named, PLAN_PROBE_ROOTS)
+        "PLAN NOT IN TREE: your last plan named %s, which is not under %s, so that"
+        " change landed elsewhere or was never written. Check with ls or git status,"
+        " and name paths relative to the project root in `plan`."
+        % (named, PLAN_PROBE_ROOTS)
     )
 
 
@@ -661,9 +692,9 @@ def note_plan(named: str, all_pass: bool) -> str:
 # grammar of the sentence is decided once, next to the sentence.
 def contradiction_non_bool(named: str, plural: bool) -> str:
     return (
-        "the verdict%s for %s %s not true/false, and check_deadlock reads every"
-        " verdict by truthiness" % ("s" if plural else "", named,
-                                    "are" if plural else "is")
+        "the verdict%s for %s %s not true/false, and the checks read verdicts by"
+        " truthiness" % ("s" if plural else "", named,
+                         "are" if plural else "is")
     )
 
 
@@ -685,12 +716,10 @@ def contradiction_all_pass_false(total: int) -> str:
 
 def note_score_contradiction(problems: List[str]) -> str:
     return (
-        "SCORE CONTRADICTION: a score entry disagrees with itself, and the brakes"
-        " read the halves separately - check_exit decides whether the run may stop"
-        " from all_pass alone and builds its plateau rule from pass_count alone,"
-        " while check_deadlock reads the requirements map. All three cannot be"
-        " true at once: %s. Correct the entry before trusting either verdict."
-        % "; ".join(problems)
+        "SCORE CONTRADICTION: %s. Exit reads all_pass and pass_count while deadlock"
+        " detection reads the requirements map, so an entry that disagrees with itself"
+        " gives them different answers. Recompute pass_count and all_pass from the"
+        " requirements map and resend the entry." % "; ".join(problems)
     )
 
 
@@ -713,10 +742,9 @@ MIRROR_LOST_LABELS: Dict[str, str] = {
 def note_mirror_drift(keys: List[str]) -> str:
     lost = [MIRROR_LOST_LABELS[key] for key in keys if key in MIRROR_LOST_LABELS]
     return (
-        "MIRROR DRIFT: %s could not be reported, because the advisory computation"
-        " no longer matches the protected logic it describes and would be claiming"
-        " from a rule that has changed underneath it. Treat the rest of this block"
-        " as incomplete for this round." % ", ".join(lost)
+        "ADVISORY NOTES WITHHELD: %s could not be reported, because the advisory logic"
+        " no longer matches the exit and deadlock rules it describes. Treat the rest of"
+        " this block as incomplete this round." % ", ".join(lost)
     )
 
 
@@ -748,6 +776,11 @@ def construct_round_prompt(
 ) -> str:
     """Constructs the structured user prompt for a specific execution round in the cognitive loop.
 
+    The round label and the ``CURRENT STATE:`` block are a fixed shape that the
+    tests pin; everything after them is conditional: the reasoning notes when the
+    history gives them something to say, the cause taxonomy only when the latest
+    round failed, and the lessons block when the ledger has rules worth showing.
+
     Args:
         rnd (int): The current execution round index.
         min_rounds (int): The minimum configured round threshold.
@@ -768,8 +801,11 @@ def construct_round_prompt(
     )
     if notes:
         sections.append(notes)
-    if reasoning.scores_from_dump(state_dump):
-        sections.append(REASONING_PROTOCOL)
+    scores = reasoning.scores_from_dump(state_dump)
+    if scores:
+        latest = scores[-1]
+        if not (isinstance(latest, dict) and latest.get("all_pass") is True):
+            sections.append(REASONING_PROTOCOL)
     if lessons_text:
         sections.append(lessons_text)
     return "\n\n".join(sections)

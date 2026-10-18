@@ -345,6 +345,56 @@ def write_jinx(data: Dict[str, Any]) -> None:
     StateManager.persist_state(data)
 
 
+# A rejection reason names at most this many failing fields and quotes at most
+# this many characters of each received value, so one bad block cannot make the
+# diagnostic larger than the state it is about.
+REASON_MAX_FIELDS: int = 3
+REASON_INPUT_CHARS: int = 40
+
+
+def _error_path(loc: Any, prefix: str = "") -> str:
+    """Renders a pydantic location the way the model wrote it: state.scores[0].all_pass."""
+    path = prefix
+    for part in loc or ():
+        if isinstance(part, int):
+            path += "[%d]" % part
+        else:
+            path += ("." if path else "") + str(part)
+    return path or "state"
+
+
+def _describe_validation_error(exc: Exception, prefix: str = "") -> str:
+    """Names the failing fields of a rejected block, for the model.
+
+    ``str(exc)`` of a pydantic error is a multi-line report whose first line is
+    only a count ("2 validation errors for StateBlock"). Reporting that line told
+    the model its block was wrong but never where, so the next attempt could only
+    guess. This names up to ``REASON_MAX_FIELDS`` fields with what was wrong and a
+    clipped quote of what was received. Anything that is not a pydantic error
+    falls back to the exception's first line.
+    """
+    try:
+        errors = exc.errors()  # type: ignore[attr-defined]
+    except Exception:
+        errors = []
+    if not errors:
+        lines = str(exc).strip().splitlines()
+        return (lines[0] if lines else prompts.STATE_REASON_UNKNOWN)[:200]
+
+    parts: List[str] = []
+    for err in errors[:REASON_MAX_FIELDS]:
+        got = repr(err.get("input"))
+        if len(got) > REASON_INPUT_CHARS:
+            got = got[:REASON_INPUT_CHARS] + "..."
+        parts.append(
+            prompts.STATE_FIELD_ERROR
+            % (_error_path(err.get("loc"), prefix), err.get("msg") or "invalid", got)
+        )
+    if len(errors) > REASON_MAX_FIELDS:
+        parts.append(prompts.STATE_FIELD_ERRORS_MORE % (len(errors) - REASON_MAX_FIELDS))
+    return "; ".join(parts)
+
+
 def merge_state(
     jinx: Dict[str, Any], update: Dict[str, Any],
     diagnostics: Optional[List[str]] = None,
@@ -367,7 +417,9 @@ def merge_state(
     from a rejected block would let a malformed response terminate the loop or
     claim success on stale state.
     """
+    path_prefix = ""
     if "state" in update and isinstance(update["state"], dict):
+        path_prefix = "state"
         # Merge protocol section into jinx top-level so _resolve_min_rounds can read it
         if "protocol" in update and isinstance(update["protocol"], dict):
             jinx.setdefault("protocol", {}).update(update["protocol"])
@@ -384,7 +436,7 @@ def merge_state(
         if diagnostics is not None:
             diagnostics.append(
                 prompts.STATE_BLOCK_REJECTED
-                % (type(e).__name__, str(e).splitlines()[0][:200])
+                % (type(e).__name__, _describe_validation_error(e, path_prefix))
             )
         if outcome is not None:
             outcome["applied"] = False

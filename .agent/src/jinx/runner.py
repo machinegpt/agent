@@ -767,7 +767,13 @@ def _is_run_state_stale(run_state: Dict[str, Any], timeout_seconds: int = BACKGR
 
 
 def _extract_last_tool_calls(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Extracts the latest tool_use blocks from the accumulated history."""
+    """Extracts the latest tool_use blocks that have no result yet.
+
+    A call that already has a ``tool_result`` further down the history was answered
+    without being dispatched (refused as a protected self-patch, or malformed), so
+    re-issuing it would run exactly what the guard turned down.
+    """
+    answered = set()
     for msg in reversed(history):
         if not isinstance(msg, dict):
             continue
@@ -778,9 +784,14 @@ def _extract_last_tool_calls(history: List[Dict[str, Any]]) -> List[Dict[str, An
         for block in content:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") == "tool_use":
+            if block.get("type") == "tool_result":
+                answered.add(block.get("tool_use_id"))
+            elif block.get("type") == "tool_use":
                 tool_use_id, name, params, err = _validate_tool_use_block(block)
-                if err is None and tool_use_id is not None and name is not None:
+                if (
+                    err is None and tool_use_id is not None and name is not None
+                    and tool_use_id not in answered
+                ):
                     calls.append({"id": tool_use_id, "name": name, "params": params})
         if calls:
             return calls
@@ -789,6 +800,11 @@ def _extract_last_tool_calls(history: List[Dict[str, Any]]) -> List[Dict[str, An
 
 HISTORY_WINDOW: int = int(os.getenv("JINX_HISTORY_WINDOW", "6"))
 HISTORY_PERSIST_WINDOW: int = int(os.getenv("JINX_HISTORY_PERSIST_WINDOW", "8"))
+# A past tool call can carry a whole file (``file_write``), and the window ships it
+# again in every request until it scrolls out. Strings in the ``tool_use`` inputs of
+# the REQUEST window are cut to this many characters; 0 disables the cut. The run
+# state keeps full inputs, because a call that has to be re-issued needs them.
+HISTORY_TOOL_INPUT_CHARS: int = int(os.getenv("JINX_HISTORY_TOOL_INPUT_CHARS", "1500"))
 # Bound on the memoized tool results kept in the run state. Large enough to cover
 # a deep tool loop, small enough that the cache never dominates the file.
 TOOL_RESULT_CACHE_CAP: int = int(os.getenv("JINX_TOOL_RESULT_CACHE_CAP", "64"))
@@ -827,9 +843,10 @@ def compact_history_for_request(
     """Keeps only the most recent exchange, dropping orphaned tool blocks.
 
     The window is advanced past a leading ``tool_result`` block so the model
-    never receives a result whose request is not in the window. This bounds both
-    what is sent and what is persisted, which is what keeps the run-state file
-    from growing without limit across a long task.
+    never receives a result whose request is not in the window, and a trailing
+    ``tool_use`` is cut because its result does not exist yet. This is the window
+    that is sent; ``_persist_window`` bounds what is kept in the run state, which
+    is what keeps that file from growing without limit across a long task.
     """
     limit = HISTORY_WINDOW if max_messages is None else max_messages
     if limit <= 0 or len(history) <= limit:
@@ -845,6 +862,63 @@ def compact_history_for_request(
     while idx < len(window) and _has_orphan_tool_result(window[idx]):
         idx += 1
     return window[idx:]
+
+
+def _persist_window(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The newest ``HISTORY_PERSIST_WINDOW`` messages, as kept in the run state.
+
+    Unlike ``compact_history_for_request`` this keeps a trailing assistant
+    ``tool_use``. While the loop waits for the host to run the tools, that message
+    is the only record of what was asked: a stale-wait retry re-issues it
+    (``_extract_last_tool_calls``) and the ``tool_result`` appended later has to
+    follow it. Trimming it here, as the request window rightly does, left every
+    later result without its request; each of them then counted as an orphan, and
+    after a handful of tool replies the whole window was discarded. Only a leading
+    orphan ``tool_result`` is dropped.
+    """
+    limit = HISTORY_PERSIST_WINDOW
+    window = list(history[-limit:]) if 0 < limit < len(history) else list(history)
+    idx = 0
+    while idx < len(window) and _has_orphan_tool_result(window[idx]):
+        idx += 1
+    return window[idx:]
+
+
+def _shrink_tool_inputs(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Copies ``messages`` with oversized ``tool_use`` string inputs shortened.
+
+    The model wrote those inputs and the host already ran them, so a request only
+    needs enough to recognise the call. The marker says how much was left out; the
+    ``id``, ``name`` and ``input`` object stay valid. Nothing is mutated, so the
+    history that is persisted and re-issued keeps the full inputs.
+    """
+    cap = HISTORY_TOOL_INPUT_CHARS
+    if cap <= 0:
+        return list(messages)
+    shrunk: List[Dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            shrunk.append(msg)
+            continue
+        blocks: List[Any] = []
+        changed = False
+        for block in content:
+            params = block.get("input") if isinstance(block, dict) else None
+            if (
+                isinstance(block, dict) and block.get("type") == "tool_use"
+                and isinstance(params, dict)
+                and any(isinstance(v, str) and len(v) > cap for v in params.values())
+            ):
+                block = dict(block, input={
+                    k: v[:cap] + prompts.HISTORY_INPUT_TRUNCATED % (len(v) - cap)
+                    if isinstance(v, str) and len(v) > cap else v
+                    for k, v in params.items()
+                })
+                changed = True
+            blocks.append(block)
+        shrunk.append(dict(msg, content=blocks) if changed else msg)
+    return shrunk
 
 
 def summarize_dropped_history(
@@ -868,6 +942,24 @@ def summarize_dropped_history(
         "role": "user",
         "content": prompts.HISTORY_ELISION_NOTICE % (len(rounds), tool_msgs),
     }
+
+
+def _request_messages(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The ``messages`` of an ``llm_generate`` request: the send window plus a notice.
+
+    Every such request is built here, the final no-tools one included, so the model
+    is always told how much earlier context it is not seeing. Inputs of past tool
+    calls are shortened (``_shrink_tool_inputs``). The notice is measured against
+    the send window and is never persisted.
+    """
+    send_window = compact_history_for_request(history)
+    kept = {id(m) for m in send_window}
+    dropped = [m for m in history if id(m) not in kept]
+    messages = _shrink_tool_inputs(send_window)
+    notice = summarize_dropped_history(dropped, send_window)
+    if notice:
+        messages.insert(0, notice)
+    return messages
 
 
 def _update_tool_result_cache(
@@ -909,18 +1001,23 @@ def _update_tool_result_cache(
 
 def write_llm_request(
         history: List[Dict[str, Any]], rnd: int, tool_depth: int, min_rounds: int,
-        retry: bool = False, applied_lessons: Optional[List[str]] = None
+        retry: bool = False, applied_lessons: Optional[List[str]] = None,
+        min_override: Optional[int] = None
     ) -> None:
     """Writes the current prompt/history state and requests LLM generation.
 
-    Only the bounded history window is both sent and persisted. The full
-    transcript is not written to disk, because nothing ever reads it back: the
-    request uses the window, exit and deadlock detection read the score history
-    in ``JINX.yaml``, and tool dispatch only needs the most recent calls.
+    Only bounded history windows are sent and persisted. The full transcript is
+    not written to disk, because nothing ever reads it back: the request uses the
+    send window, exit and deadlock detection read the score history in
+    ``JINX.yaml``, and a retry only needs the most recent tool calls.
 
     When messages fall outside the window a one-line notice is prepended to the
     request only. It is deliberately not persisted, so the synthetic note cannot
     accumulate one entry per round.
+
+    ``min_override`` is the ``--min`` value from the command line. Each round is a
+    new process, so the override only lasts if it is written to the run state;
+    None keeps whatever the run state already holds.
     """
     carried: Dict[str, Any] = {}
     try:
@@ -933,20 +1030,11 @@ def write_llm_request(
 
     processed_ids: List[str] = carried.get("processed_tool_use_ids", []) or []
     result_cache: Dict[str, str] = carried.get("tool_result_cache", {}) or {}
+    override = min_override if min_override is not None else carried.get("min_override")
 
-    persist_window = compact_history_for_request(history, HISTORY_PERSIST_WINDOW)
-    send_window = compact_history_for_request(history)
-
-    # The notice describes what the MODEL was not shown, so the baseline must be
-    # the send window. The persist window is deliberately larger, so measuring
-    # against it would silently omit the messages that live in the gap between the
-    # two and under-report the elided count on every round.
-    kept = {id(m) for m in send_window}
-    dropped = [m for m in history if id(m) not in kept]
-    messages = list(send_window)
-    notice = summarize_dropped_history(dropped, send_window)
-    if notice:
-        messages.insert(0, notice)
+    # The notice describes what the MODEL was not shown, so it is measured against
+    # the send window; the persist window is deliberately larger.
+    messages = _request_messages(history)
 
     # A self-patch reverted by the bootstrap preflight leaves its explanation in
     # the run state. It is surfaced here because this is the one funnel every
@@ -968,7 +1056,7 @@ def write_llm_request(
         raise IPCError(f"Failed to write request: {e}") from e
 
     run_state = {
-        "rnd": rnd, "tool_depth": tool_depth, "history": persist_window,
+        "rnd": rnd, "tool_depth": tool_depth, "history": _persist_window(history),
         "waiting_for": "llm_generate", "min_rounds": min_rounds,
         "processed_tool_use_ids": processed_ids,
         "tool_result_cache": result_cache,
@@ -982,6 +1070,8 @@ def write_llm_request(
         ),
         "updated_at": time.time()
     }
+    if override is not None:
+        run_state["min_override"] = override
     try:
         Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
     except JinxError as e:
@@ -1032,7 +1122,7 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
         try:
             write_llm_request(
                 [{"role": "user", "content": user_msg}], 1, 0, min_rounds,
-                applied_lessons=applied,
+                applied_lessons=applied, min_override=min_override,
             )
         except (IPCError, OSError, JinxError) as e:
             logger.error("Failed to write initial LLM request: %s", e, exc_info=True)
@@ -1227,8 +1317,9 @@ def _handle_llm_response(
         outcome: Dict[str, Any] = {}
         jinx = merge_state(jinx, update, diagnostics=diagnostics, outcome=outcome)
         write_jinx(jinx)
-        # Re-resolve min_rounds so protocol changes from LLM take effect mid-session
-        min_rounds = _resolve_min_rounds(jinx, None)
+        # Re-resolve min_rounds so protocol changes from LLM take effect mid-session.
+        # A --min override is kept in the run state and still wins.
+        min_rounds = _resolve_min_rounds(jinx, run_state.get("min_override"))
         scores = jinx["state"].get("scores", [])
 
         # Honour exit/deadlock ONLY from state that actually passed validation. A
@@ -1385,7 +1476,7 @@ def _write_tool_request(
 
     run_state.update({
         "tool_depth": tool_depth,
-        "history": compact_history_for_request(history, HISTORY_PERSIST_WINDOW),
+        "history": _persist_window(history),
         "waiting_for": "tool_calls", "updated_at": time.time(),
         "tool_result_cache": result_cache,
     })
@@ -1403,7 +1494,7 @@ def _write_llm_request_no_tools(
     """Writes an LLM request with empty tools list (for final summary)."""
     request_payload = {
         "type": "llm_generate", "system": SYSTEM_PROMPT,
-        "messages": compact_history_for_request(history), "tools": []
+        "messages": _request_messages(history), "tools": []
     }
     try:
         Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
@@ -1412,7 +1503,7 @@ def _write_llm_request_no_tools(
 
     run_state.update({
         "waiting_for": "llm_generate",
-        "history": compact_history_for_request(history, HISTORY_PERSIST_WINDOW),
+        "history": _persist_window(history),
         "updated_at": time.time()
     })
     try:

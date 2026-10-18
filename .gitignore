@@ -55,6 +55,9 @@ tests/jinx_test_report.json
 .agent/jinx_request.yaml
 .agent/jinx_response.yaml
 .agent/jinx_run_state.yaml
+# Per-session subtree (JINX_SESSION). Claims, bus notes and per-session manifest,
+# baseline and IPC live here; deleting it forgets every session at once.
+.agent/ipc/
 # Durable cross-run lesson ledger: accumulated knowledge, regenerated as the
 # agent learns. Delete it to reset what JINX believes it has learned.
 .agent/lessons.yaml
