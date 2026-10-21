@@ -51,7 +51,7 @@ Several phrases are pinned by the test suite (``tests/`` and the
 ``verify_prompts`` plugin); the constants that carry them say so.
 """
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import reasoning
 
@@ -81,18 +81,19 @@ End the round with exactly one ```yaml block, the last fenced block of the reply
 - `scores` merges by round number: send only this round's entry (a re-sent older round overwrites the stored one).
 - `facts`, `debt`, `open` are replaced by what you send: send the full current list (omit a key to keep it as stored; duplicates collapse; `facts` keeps its last 60).
 - Always include `exit_ready` and `deadlock`.
-- `protocol.loop.min` is the number of rounds before exit is considered; once sent it stays in force (until then the round label shows the default, normally 10). Use 2 unless the work is risky or multi-part (then 3-5).
+- `protocol.loop.min` is the number of rounds before exit is considered. Size it in round 1: until you do, the label shows the default (normally 10), and sizing is accepted through round 2. Use 2 for a question or a one-step change, 3-5 for code changes and for work that is risky or multi-part. The count only goes up: a later, lower value is ignored, and the runner adds rounds itself after a failed round or a round that ran nothing new. The round label always shows the count in force, so read it each round.
 
 EXIT AND DEADLOCK
-- `exit_ready: true` ends the run only if the round is at least `protocol.loop.min`, the latest entry is all_pass, 2+ rounds are scored and pass_count has stopped rising (a rise within the last 3 rounds blocks exit, so add requirements only for a real gap). Set it as soon as that holds. If the runner refuses, the next round prompt says why.
-- `deadlock: true` only if 3+ structurally different approaches failed the same requirement, or you are blocked on something only the user can supply (say what in `open`).
+- `exit_ready: true` ends the run only if the round is at least the count on the label, the latest entry is all_pass, 2+ rounds are scored and pass_count has stopped rising (a rise within the last 3 rounds blocks exit, so add requirements only for a real gap). A pass right after a failed round has to be confirmed by one more round that re-verifies it with a fresh command, and a round that ran nothing new while requirements fail cannot end the run. Set it as soon as that holds. If the runner refuses, the next round prompt says why.
+- `deadlock: true` counts only from the round on the label, and only if 3+ structurally different approaches failed the same requirement, or you are blocked on something only the user can supply (say what in `open`). An earlier claim is refused and the loop goes on: keep working the failing requirement.
+- Repeating an approach, or a command that returns the same result, is not progress. The prompt will say so, and the next attempt must differ in file, mechanism or entry point.
 
 APPROACH GRAPH (optional; useful once a requirement has failed twice)
 `approach_graph` in a score entry lets deadlock detection tell a real change from a rewording. `nodes`: {id, type (file, tool, action or concept)}. `edges`: {source, target, relation} between node ids. Without a graph, approaches are compared by their exact `approach` string, so keep it identical when you retry the same strategy. One incomplete node or edge rejects the whole block: omit the graph unless it is complete.
 
 SELF-IMPROVEMENT, two separate things
 1. `lessons` (always safe): durable rules for future tasks, kept in a separate ledger. Each is a short, general imperative learned from what you observed, never a note about this task ("run the narrowest failing test before the full suite", not "the bug was in auth.py"). Send only NEW ones; rules that keep failing stop being shown. Don't pad.
-2. Editing `.agent/src/jinx/*.py` (gated): allowed when it is the shortest path to the requirements. After a round that touches framework source the runner runs pytest and the jinx_test suite and reverts the edit if either fails; test files you add or edit are reset first. You may NOT redefine the brake logic: `merge_state`, `StateBlock`, `atomic_write_yaml`, `_resolve_jinx_path` (state.py); `check_exit`, `check_deadlock`, `_resolve_min_rounds`, `_handle_llm_response` (runner.py); `SYSTEM_PROMPT` (prompts.py). Such writes are refused, and selfpatch.py and learning.py are off limits entirely. Prefer additive changes; never weaken an assertion to get a green suite.
+2. Editing `.agent/src/jinx/*.py` (gated): allowed when it is the shortest path to the requirements. After a round that touches framework source the runner runs pytest and the jinx_test suite and reverts the edit if either fails; test files you add or edit are reset first. You may NOT redefine the brake logic: `merge_state`, `StateBlock`, `atomic_write_yaml`, `_resolve_jinx_path`, `_apply_protocol` (state.py); `check_exit`, `check_deadlock`, `_resolve_min_rounds`, `_handle_llm_response` and the round-count helpers `_declared_base`, `_round_floors`, `_round_verdict`, `_close_round`, `_finish_round`, `_record_tool_results`, `_ledger_of` with their constants (runner.py); `SYSTEM_PROMPT` (prompts.py). Such writes are refused, and selfpatch.py and learning.py are off limits entirely. Prefer additive changes; never weaken an assertion to get a green suite.
 
 FINAL ANSWER
 On the reply where you set `exit_ready: true`, make the prose above the block the answer for the user, in the language of the task: the outcome first, how you verified it, then anything left in `open` or `debt`.
@@ -312,6 +313,19 @@ STATE_FIELD_ERROR: str = "%s: %s (got %s)"
 STATE_FIELD_ERRORS_MORE: str = "+%d more"
 # The reason when the validator gave nothing to name (an exception with no fields).
 STATE_REASON_UNKNOWN: str = "no further detail"
+
+# Sent instead of honouring a `deadlock: true` that arrived before the round from
+# which a deadlock may end the run. A model that is tired of a task says "deadlock"
+# long before there is any evidence for it, so the claim is refused and the flag is
+# cleared; the loop goes on. Filled with a dict: `rnd` (this round) and `floor` (the
+# first round at which a claim counts).
+DEADLOCK_REFUSED: str = (
+    "DEADLOCK CLAIM NOT ACCEPTED: a deadlock does not end the run before round "
+    "%(floor)d, and this was round %(rnd)d, so the flag was cleared. Keep working: run "
+    "the failing check, read its output and change the approach (file, mechanism or "
+    "entry point), not its wording. If something only the user can supply blocks you, "
+    "say what in `open` and claim again from round %(floor)d."
+)
 
 # Spliced into an oversized string of a past tool call when the history window is
 # re-sent, so the model sees how much was left out instead of a silent cut.
@@ -635,6 +649,50 @@ def note_exit(blockers: List[str]) -> str:
     )
 
 
+def note_confirm() -> str:
+    """A pass that came right after a failure and has not been re-verified yet."""
+    return (
+        "UNCONFIRMED PASS: the last round passed right after a failed one. Exit needs"
+        " one more round that re-verifies it: run a fresh check that did not produce"
+        " the pass (the project's own tests, an edge case, bad input) and fix what"
+        " breaks. A round that runs no command confirms nothing."
+    )
+
+
+def note_repeat_attempt(rounds: List[str], approach: str, streak: int) -> str:
+    """Consecutive failing rounds that restated one attempt and gained nothing.
+
+    ``streak`` is how many rounds repeat the attempt. The wording escalates with it
+    and never offers a way to stop: the one thing it asks for is a different
+    attempt, and each step says more precisely what "different" has to mean.
+    """
+    if len(rounds) <= 4:
+        rounds_text = ", ".join(rounds[:-1]) + " and " + rounds[-1]
+    else:
+        rounds_text = "%s to %s" % (rounds[0], rounds[-1])
+    head = (
+        "REPEATED ATTEMPT: rounds %s used the same approach ('%s') and gained nothing."
+        % (rounds_text, approach)
+    )
+    if streak <= 2:
+        return head + (
+            " Do not run it a third time: change the file, mechanism or entry point,"
+            " not the details."
+        )
+    if streak == 3:
+        return head + (
+            " Before the next edit re-read the requirement and the failing output,"
+            " record in `facts` the assumption that output contradicts, then pick an"
+            " approach that differs in file, mechanism or entry point."
+        )
+    return head + (
+        " %d rounds in a row: this approach is exhausted. Re-derive the plan from the"
+        " requirement text, list two other mechanisms in `facts` and try the one that"
+        " shares least with the rounds above; revert to the last working state if"
+        " there is one." % streak
+    )
+
+
 # One stale citation. Three shapes, kept apart because they need different
 # corrections: a file that cannot be found, a line past the end of it, and a
 # symbol that has moved since the fact was written.
@@ -748,6 +806,132 @@ def note_mirror_drift(keys: List[str]) -> str:
     )
 
 
+# ------------------------------------------------------------------------------
+# Round-count and repetition notices. Unlike the reasoning notes above, which are
+# computed from the score history alone, these report what the RUNNER observed
+# while the round ran (which commands were issued, what they returned, whether
+# anything new was done) and how the number of required rounds moved because of
+# it. The runner decides whether each applies; the wording is assembled here.
+# ------------------------------------------------------------------------------
+
+# From this many identical results the notice stops asking and starts forbidding.
+REPEAT_CALL_HARD: int = 5
+
+
+def note_repeated_call(items: List[Tuple[str, int]]) -> str:
+    """The same call returning the same result again, which cannot change anything.
+
+    Appended to the tool results of the batch that produced the repeat, because
+    that is the moment the model is deciding what to run next; a note in the next
+    round's prompt arrives after the whole loop of identical calls has been spent.
+    """
+    body = "; ".join(
+        "%s has returned the identical result %d times" % (label, count)
+        for label, count in items[:3]
+    )
+    note = (
+        "REPEATED CALL: %s. Running it again cannot change the outcome: change what"
+        " you run (another file, command, flag or input) or change the code it tests"
+        " first." % body
+    )
+    if any(count >= REPEAT_CALL_HARD for _, count in items):
+        note += (
+            " Do not issue that call again until something it depends on has changed."
+        )
+    return note
+
+
+def note_dead_round(streak: int) -> str:
+    """A round that ran nothing new although work was due.
+
+    ``streak`` counts consecutive dead rounds. The text escalates from "do the
+    check" to "stop planning and execute", and offers no way out: the only thing a
+    dead round can be followed by is a round that does something.
+    """
+    head = (
+        "DEAD ROUND: your last round ran nothing new (no new command, edit or output)"
+        " while requirements were failing or a pass was unconfirmed, so it did not"
+        " count toward the round count and could not end the run."
+    )
+    if streak <= 1:
+        return head + (
+            " This round: run the failing check, read its output and change what it"
+            " points at."
+        )
+    if streak == 2:
+        return head + (
+            " 2 in a row: re-run the failing check now and plan from its actual"
+            " output, not from the last plan."
+        )
+    return head + (
+        " %d in a row: stop re-planning and execute. Run the failing check, read the"
+        " first error, make one concrete edit, run the check again." % streak
+    )
+
+
+def note_round_count(
+    old: int, new: int, base: int, dead: int, failed_round: int
+) -> str:
+    """Why the number of required rounds went up since the last prompt.
+
+    ``base`` is the count the model sized (and only ever raised), ``dead`` how many
+    rounds that ran nothing new are being charged on top of it, and
+    ``failed_round`` the failed round a later pass has to be confirmed after (0 when
+    that is not what sets the count). Only the terms that apply are listed.
+    """
+    parts = ["your plan is %d" % base]
+    if dead:
+        parts.append("+%d for round(s) that ran nothing new" % dead)
+    if failed_round:
+        parts.append(
+            "a pass after the failure in round %d needs one more confirming round"
+            % failed_round
+        )
+    return "ROUND COUNT RAISED from %d to %d (%s). It only goes up; plan for it." % (
+        old, new, "; ".join(parts)
+    )
+
+
+def note_unsized(default: int) -> str:
+    """The model has not sized the loop and the window for doing it is closing."""
+    return (
+        "LOOP NOT SIZED: `protocol.loop.min` was not set, so the default of %d rounds"
+        " applies. Set it in this round's block: sizing is accepted through round 2,"
+        " and after that the count can only be raised." % default
+    )
+
+
+def note_adaptive(min_rounds: int, info: Dict[str, Any]) -> str:
+    """The runner-observed notices for the round about to start, or ''.
+
+    ``info`` carries plain numbers computed by the runner: ``last_dead`` and
+    ``dead_streak`` (was the round that just ended dead, and how many in a row),
+    ``shown`` (the count the previous prompt displayed), ``base``, ``dead`` (rounds
+    charged), ``failing`` (the round that just ended failed), ``failed_round`` and
+    ``unsized``. Missing keys read as "does not apply", so a caller that knows
+    nothing about them gets an empty string.
+
+    The count is reported as raised only after a round that did not fail. After a
+    failure the count moves with every round (a pass has to be confirmed after it),
+    the job is the fix, and a "raised" line on every failing round would be noise.
+    """
+    lines: List[str] = []
+    if info.get("last_dead"):
+        lines.append(note_dead_round(int(info.get("dead_streak") or 1)))
+    shown = info.get("shown")
+    if (
+        isinstance(shown, int) and not isinstance(shown, bool) and min_rounds > shown
+        and not info.get("failing")
+    ):
+        lines.append(note_round_count(
+            shown, min_rounds, int(info.get("base") or 0),
+            int(info.get("dead") or 0), int(info.get("failed_round") or 0),
+        ))
+    if info.get("unsized"):
+        lines.append(note_unsized(int(info.get("base") or min_rounds)))
+    return "\n".join(lines)
+
+
 def assemble_notes(header: str, parts: List[str], max_chars: int) -> str:
     """Joins the notes that fit the budget, in the order they were produced.
 
@@ -772,7 +956,7 @@ def assemble_notes(header: str, parts: List[str], max_chars: int) -> str:
 
 def construct_round_prompt(
     rnd: int, min_rounds: int, state_dump: str, missing_state: bool = False,
-    lessons_text: str = "",
+    lessons_text: str = "", adaptive: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Constructs the structured user prompt for a specific execution round in the cognitive loop.
 
@@ -789,6 +973,10 @@ def construct_round_prompt(
         lessons_text (str): Pre-rendered, already-bounded LEARNED RULES block from the
             durable cross-run ledger. Passed in pre-rendered so the cost bound lives
             in one place (``learning.render_lessons``) instead of being re-derived here.
+        adaptive (dict | None): What the runner observed while the previous round ran
+            (see ``note_adaptive``). ``min_rounds`` is already the count in force, so
+            the label needs nothing more; this only explains why it moved and what a
+            dead round has to be followed by. None keeps the prompt exactly as it was.
 
     Returns:
         str: The fully-formed, formatted user prompt string for the cognitive loop.
@@ -801,6 +989,10 @@ def construct_round_prompt(
     )
     if notes:
         sections.append(notes)
+    if adaptive:
+        observed = note_adaptive(min_rounds, adaptive)
+        if observed:
+            sections.append(observed)
     scores = reasoning.scores_from_dump(state_dump)
     if scores:
         latest = scores[-1]

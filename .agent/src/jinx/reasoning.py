@@ -1,7 +1,7 @@
 """Reasoning signals derived from the score history.
 
 The loop protocol tells the model to deduce structure from the previous rounds'
-approach graphs, but everything the state block keeps is a pass/fail flag. Ten
+approach graphs, but everything the state block keeps is a pass/fail flag. Eleven
 questions a reasoning loop has to answer are therefore unanswerable from the
 state as it stands:
 
@@ -34,8 +34,12 @@ state as it stands:
 * Do the facts still say something true? They are the largest thing in the state
   block, they are written from memory, and a fact that cites a file and a line is
   the only claim here the code itself can refute.
+* Is the model retrying the same attempt? Deadlock detection counts structurally
+  *different* approaches, so one approach repeated round after round is a single
+  cluster and never trips it, and a pass that arrives right after a failure is
+  indistinguishable from one that has been verified.
 
-This module computes all ten from the state the model itself wrote and renders
+This module computes all eleven from the state the model itself wrote and renders
 them as a bounded block for the round prompt. It adds no state, decides nothing,
 and imports nothing from the rest of the package: ``runner`` imports the prompt
 module, so importing the runner from here would be circular.
@@ -523,6 +527,101 @@ def render_attribution_note(scores: List[Any]) -> str:
     if not items:
         return ""
     return text.note_attribution(items)
+
+
+def _approach_text(entry: Any) -> str:
+    """The entry's approach sentence, lower-cased and whitespace-collapsed."""
+    return " ".join(str(_val(entry, "approach", "") or "").lower().split())
+
+
+def _same_attempt(one: Any, other: Any) -> bool:
+    """Whether two entries describe the same attempt, for repetition purposes.
+
+    Wider than the deadlock check's notion in one deliberate way. ``check_deadlock``
+    counts *structurally different* approaches, so a model that retries one idea
+    forever is a single cluster and never trips it; this is the question that does
+    catch it. Two graphs are compared by the shared similarity rule; without graphs
+    the sentences are compared, exactly or as a bag of content words, so a retry
+    that only reorders or recases the same words is still the same attempt. An
+    entry that never named its approach ("unspecified" is the default the schema
+    fills in) is not evidence of anything and never matches.
+    """
+    if _graph_of(one) and _graph_of(other):
+        return approaches_similar(one, other)
+    first, second = _approach_text(one), _approach_text(other)
+    if first in ("", "unspecified") or second in ("", "unspecified"):
+        return False
+    return first == second or _approach_fingerprint(one) == _approach_fingerprint(other)
+
+
+def repeat_streak(scores: List[Any]) -> List[Any]:
+    """The trailing failing entries that restate one attempt without gaining anything.
+
+    Walks back from the latest entry while the entries before it describe the same
+    attempt and passed no fewer requirements than the latest one did, i.e. nothing
+    was gained between them and now. A pass ends the walk: a repeat is only a
+    problem while the requirements are failing. Fewer than two entries is not a
+    repeat, so the result is ``[]`` rather than a streak of one.
+    """
+    trail: List[Any] = []
+    for entry in reversed(list(scores or [])):
+        if _val(entry, "all_pass", False):
+            break
+        trail.append(entry)
+    trail.reverse()
+    if len(trail) < 2:
+        return []
+    latest = trail[-1]
+    streak = [latest]
+    for earlier in reversed(trail[:-1]):
+        if _same_attempt(earlier, latest) and _pass_count(earlier) >= _pass_count(latest):
+            streak.insert(0, earlier)
+        else:
+            break
+    return streak if len(streak) >= 2 else []
+
+
+def render_repeat_note(scores: List[Any]) -> str:
+    """Tells the model it is retrying the same attempt, and that this cannot work.
+
+    Neither brake sees this. ``check_deadlock`` aborts on three structurally
+    *different* failed approaches, so one approach repeated for thirty rounds is a
+    single cluster and burns the whole round budget without a word being said; the
+    repeated-cause note needs the model to have labelled each failure the same way.
+    What is observable without either is the history itself: the same approach, no
+    more requirements passing than before, round after round.
+
+    The note escalates with the length of the streak (see the prompt module) and
+    only ever asks for a different attempt: it never offers a way to stop.
+    """
+    streak = repeat_streak(scores)
+    if not streak:
+        return ""
+    text = _prompts()
+    if text is None:
+        return ""
+    return text.note_repeat_attempt(
+        [str(_val(e, "round", "?")) for e in streak],
+        _approach_text(streak[-1])[:60],
+        len(streak),
+    )
+
+
+def render_confirm_note(scores: List[Any]) -> str:
+    """Says that a pass which followed a failure is not trusted until re-verified.
+
+    The runner enforces the extra round (see ``runner._round_floors``); this tells
+    the model what that round is for, so it does not spend it re-stamping the pass.
+    Derived from the score list alone: the latest entry passes and the one before it
+    did not.
+    """
+    entries = list(scores or [])
+    if len(entries) < 2:
+        return ""
+    if not _val(entries[-1], "all_pass", False) or _val(entries[-2], "all_pass", False):
+        return ""
+    text = _prompts()
+    return text.note_confirm() if text is not None else ""
 
 
 def render_requirement_note(scores: List[Any]) -> str:
@@ -1249,9 +1348,11 @@ def render_notes(
     parts = (
         render_mirror_note(status),
         render_exit_note(scores, state, min_rounds, rnd) if status["exit"] else "",
+        render_confirm_note(scores),
         render_score_contradiction_note(scores),
         render_citation_note(state),
         render_deadlock_risk_note(scores) if status["similarity"] else "",
+        render_repeat_note(scores) if status["similarity"] else "",
         render_regression_note(scores),
         render_plan_note(scores),
         render_attribution_note(scores) if status["similarity"] else "",

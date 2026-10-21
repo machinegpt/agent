@@ -86,11 +86,20 @@ PROTECTED_SYMBOLS: Tuple[Tuple[str, str], ...] = (
     ("state.py", r"^class StateBlock"),
     ("state.py", r"^def _resolve_jinx_path"),
     ("state.py", r"^def atomic_write_yaml"),
+    # How the model's protocol section is merged, and how its sizing is marked.
+    ("state.py", r"^def _apply_protocol"),
     # Exit / deadlock policy and the flags gate in both transports.
     ("runner.py", r"^def check_exit"),
     ("runner.py", r"^def check_deadlock"),
     ("runner.py", r"^def _resolve_min_rounds"),
     ("runner.py", r"^def _handle_llm_response"),
+    # The adaptive round count: what may only ever raise it, what charges a round
+    # that did nothing, and what refuses an early stop. An agent that could edit
+    # these could make the loop shorter, which is the one thing they exist to stop.
+    ("runner.py", r"^def (_ledger_of|_finish_round|_note_round_result|_discard_sizing)\b"),
+    ("runner.py", r"^def (_declared_base|_store_declared|_round_floors)\b"),
+    ("runner.py", r"^def (_close_round|_round_verdict|_record_tool_results)\b"),
+    ("runner.py", r"^(DEFAULT_MIN_ROUNDS|SIZING_ROUNDS|CONFIRM_ROUNDS|DEAD_ROUND_CAP)\b"),
     # The prompt contract itself.
     ("prompts.py", r"^SYSTEM_PROMPT"),
 )

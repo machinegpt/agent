@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.2.6--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.2.7--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-File_Based_IPC_State_Machine-0D9488?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-ReEntrant_Single_Step_Process-059669?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -161,6 +161,7 @@ rnd: 7
 tool_depth: 2
 waiting_for: llm_generate      # llm_generate | tool_calls
 min_rounds: 10
+rounds: {declared: 2, dead: 1, last_fail: 3}   # 可选的自适应轮数账本，见阶段 IV
 updated_at: 1758901234.5       # epoch 秒，每次状态变更都会更新
 processed_tool_use_ids: [call_00, call_01]   # 可选字段，详见下文
 history:                       # 最近消息的有界窗口
@@ -170,7 +171,9 @@ history:                       # 最近消息的有界窗口
 
 恢复运行时，运行器恰好要求五个键 —— `rnd`、`tool_depth`、`history`、`waiting_for` 与 `min_rounds` ——
 缺少其中任何一个都会被判定为无效的运行状态。`updated_at` 在每次写入时都会打上时间戳，并用于判定
-等待是否超时。
+等待是否超时。`rounds` 是可选的自适应轮数账本（几个整数加上最多 48 条的调用记忆，因此无论任务运行
+多久，运行状态都保持固定大小）。它在读取时会被校验：旧的、被截断的或手工编辑过的运行状态只会得到
+一个空账本，而不会崩溃。
 
 `processed_tool_use_ids` 是**可选且临时**的字段。运行器在处理工具结果后，会把每个已执行的
 `tool_use_id` 追加到该字段，并在构建下一个请求时将其读回；但新的 `llm_generate` 请求会在不包含该
@@ -297,12 +300,19 @@ flowchart LR
 
 4. **阶段 IV：多条件收敛与退出**
    每轮结束后，JINX 更新度量指标并检查退出或死锁条件：
-   * **退出条件**（`check_exit`）：当前轮次必须 `>= loop.min`，必须至少存在 2 条评分记录，且 **最后一条** 记录的 `all_pass` 必须为 `true`。一旦记录数达到 4 条或更多，最近 3 轮的最优 `pass_count` 不得高于此前所有记录的最优 `pass_count` —— 仍在改进中的循环不允许退出。
-   * **死锁条件**（`check_deadlock`）：轮次必须 `>= loop.min`，且某个需求必须在 **至少 3 个语义上不同的策略簇** 上失败。模型亦可自行声明 `deadlock: true`。
+   * **退出条件**（`check_exit`）：当前轮次必须 `>=` 当前生效的轮数（见下文*自适应轮数*），必须至少存在 2 条评分记录，且 **最后一条** 记录的 `all_pass` 必须为 `true`。一旦记录数达到 4 条或更多，最近 3 轮的最优 `pass_count` 不得高于此前所有记录的最优 `pass_count` —— 仍在改进中的循环不允许退出。此外，运行器会拒绝在*死轮*上退出（见下文）。
+   * **死锁条件**（`check_deadlock`）：轮次必须 `>=` 轮数下限，且某个需求必须在 **至少 3 个语义上不同的策略簇** 上失败。模型亦可自行声明 `deadlock: true`（只有用户才能解除的阻塞），但这样的声明只从轮数下限起才算数：更早的声明会被拒绝、其标志被清除并告知模型 —— 因为"死锁"是疲惫的模型最廉价的收工方式。
    * **硬上限**：迭代轮次总数被严格限制为 40（`HARD_CAP`）；达到后进程以状态码 `2` 退出，以防令牌消耗无度增长。
    * **工具深度上限**：单轮内最多串联 20 次工具调用（`TOOL_DEPTH_CAP`）。一旦突破，JINX 会注入恢复指令并发出一次 `tools: []` 的最终 `llm_generate`，强制要求输出状态块而非被截断。
 
-   `loop.min` 取自 `JINX.yaml` 中的 `protocol.loop.min`（默认 **10**），或由 `--min` 命令行参数覆盖；并且在每次成功合并状态后都会重新解析，因此模型输出的协议变更可以在会话中途即时生效。
+   `loop.min` 取自 `JINX.yaml` 中的 `protocol.loop.min`（默认 **10**），或由 `--min` 命令行参数覆盖；并且在两种传输方式（包括 JSON-RPC 循环）下都会在每一轮之后重新解析，因此模型输出的协议变更可以在会话中途即时生效 —— 但只能向上调整，详见下文。`protocol` 段只有在整个状态块通过校验之后才会合并进清单，而新任务会丢弃上一个任务中模型写入的估算值（人工配置的值会保留），因此为某个问题估出的轮数不会泄漏到下一个任务。
+
+   **自适应轮数。** 循环要求多少轮，会在每一轮之后根据模型自己的估算以及运行器亲自观察到的情况重新计算，并且**只升不降**：疲惫或赶时间的模型没有任何办法把循环变短，而偷懒恰恰只在这个方向上划算。每个轮次提示的标签（`ROUND n (at least m rounds ...)`）都会显示当前生效的轮数。
+   * **估算。** 模型通过 `protocol.loop.min` 估算循环长度。在它估算之前，默认值（**10**）生效。它在第 1 或第 2 轮发送的第一个值会按原样采纳（一句话的问题不需要十轮）；此后，新值只能抬高轮数，而晚于第 2 轮才发送的第一个值不能低于已配置或默认的轮数。数值会被限制在 `[2, HARD_CAP - 1]` 内。`--min N` 把估算固定为恰好 `N`；下面的规则仍然叠加其上。
+   * **死轮。** 当本该做的工作没有做时，该轮为*死轮*：在失败轮之后，没有运行、编辑或读取任何新内容（相同命令返回相同结果视为什么都没做）；在失败之后的通过轮里，一条命令也没有运行。死轮会让轮数加一（最多 `DEAD_ROUND_CAP` = 4 次），且不能结束运行；超过上限后则予以容忍，使无事可做的任务仍能完成。
+   * **确认轮。** 紧接在失败轮之后的通过，必须再经一轮重新验证（`CONFIRM_ROUNDS` = 1）才能结束运行。它只作用于退出，绝不作用于死锁下限：持续失败的运行不应该有能力把死锁推到遥不可及的地方。
+   * **重复。** 同一个工具调用第 3 次返回相同结果时，会在这些结果后面直接追加一条 `REPEATED CALL` 提示（第 5 次起禁止该调用，直到它所依赖的内容发生变化）；而同一个 `approach` 在没有更多需求通过的情况下被重复，则会在下一个提示中出现 `REPEATED ATTEMPT` 说明。措辞随连续次数升级，并且只要求*换一种*做法；没有任何提示会给出停止的出路。
+   * 提示只是建议，轮数由运行器强制执行。额外增加的轮数绝不会把总数推过 `HARD_CAP - 1`，因此退出始终可达。忽略所有提示、反复做同一件事的模型，最终仍会停在硬上限。
 
 ### 认知循环控制流
 
@@ -380,9 +390,9 @@ sequenceDiagram
                     Runner->>IPC: 写入 request (tool_calls, tool_depth+1)
                 else 纯文本回复
                     Runner->>State: merge_state + write_jinx
-                    alt exit_ready 且 check_exit()
+                    alt exit_ready、按自适应轮数的 check_exit()、且该轮不是死轮
                         Runner-->>Host: [JINX_COMPLETE]，清理，退出码 0
-                    else deadlock 标志或 check_deadlock()
+                    else check_deadlock() 或从轮数下限起提出的死锁声明
                         Runner-->>Host: [JINX_DEADLOCK]，清理，退出码 0
                     else rnd + 1 >= HARD_CAP (40)
                         Runner-->>Host: 清理，退出码 2
@@ -489,6 +499,7 @@ JINX 运行时由以下位于 `.agent/` 目录下的 Python 组件构成（核�
   * `run` —— 传输通道调度器。当 `ipc_mode == "file"` 时委派给 `run_file_ipc`，否则在同一函数内直接运行遗留的长驻 JSON-RPC 循环。
   * `parse_state_block` —— 从 markdown 围栏中提取最后一个有效状态块。语言标签是可选的，因此无标签的围栏同样会被解析；所有内容都经由 `yaml.safe_load` 处理，它也接受 JSON。
   * `check_exit` / `check_deadlock` / `_are_approaches_similar` —— 收敛性与语义聚类逻辑。
+  * `_declared_base` / `_round_floors` / `_close_round` / `_round_verdict` / `_finish_round` / `_record_tool_results` —— 自适应轮数（估算棘轮、死轮、确认轮、死锁门槛、重复调用记忆），两种传输方式共用，使其规则不会彼此偏离。
   * `Yaml` —— 隔离的 `SafeDumper`，带有能感知块标量的字符串呈现器，并提供基于临时文件的原子写入；`HARD_CAP`（40）与 `TOOL_DEPTH_CAP`（20）护栏；以及用于 IPC 清理的信号处理器。
 * **`state.py`**（状态序列化层）：
   负责 `JINX.yaml` 的全部文件操作：
@@ -506,7 +517,7 @@ JINX 运行时由以下位于 `.agent/` 目录下的 Python 组件构成（核�
   允许 JINX 修改自己的代码，同时不允许它拆掉自己的安全闸。`file_write` 接受的是裸字符串路径，因此模型一直都能重写 `.agent/src/jinx/*.py`——事实上本仓库自身的发布工作正是这样完成的。此前没有任何机制检查结果是否还能工作，本模块补上了这一环：
   * **校验与回滚** — `capture_baseline` 复制源码树，`baseline_changed` 比对差异，`restore_baseline` 执行回滚。任何改动了框架源码的轮次之后，`verify` 都会运行 `pytest` **以及** 完整的 `jinx_test` 套件；任一失败即撤销该修改，并把失败输出回灌到下一轮提示词中。一次失败的尝试只损失一轮，而不是整次运行。基线覆盖整个运行，而非单轮：运行开始时采集，某个轮次没有改动时保留，已验证的修改被采纳后重新采集。正常结束时清除；出错退出时**刻意保留**——正是它让下一次启动能够修复损坏。
   * **启动前预检** — 同一检查会在 `.agent/jinx.py` 中、在导入 JINX 之前再运行一次，并按路径直接加载 `selfpatch.py`。否则，留下语法错误的自修改会让框架根本无法启动，而本该捕捉该问题的闸门也根本无法运行。磁盘上没有基线时无从比较，此时损坏的代码树会明确报错，而不是被悄悄覆盖。
-  * **闸门保护** — `guard_tool_call` 拒绝任何会重定义 `merge_state`、`StateBlock`、`atomic_write_yaml`、`_resolve_jinx_path`、`check_exit`、`check_deadlock`、`_resolve_min_rounds`、`_handle_llm_response` 或 `SYSTEM_PROMPT` 的写入，并将 `selfpatch.py` 与 `learning.py` 整体列为禁区。拒绝发生在**派发之前**而非事后撤销，模型因此会知道自己被拒绝，而不会误以为校验机制坏了。保护比较这些定义的*函数体*与磁盘上的实际内容，而不仅仅检查名字是否存在，因此只要闸门本身逐字节未变，就可以整体重写受保护的文件。削弱、改写、删除闸门都会被拒绝，更隐蔽的做法同样会被识破：在文件末尾追加一个在导入时覆盖受保护定义的第二份定义，或是通过 `bash_exec` 动手——它根本不经过这道检查。因此在真正校验之前，机制会对磁盘上的文件与 baseline 重新做一次同样的比较；一旦发现闸门被这样动过，就直接回滚而不运行测试：一次通过的测试无法成为修改「决定测试是否通过的那段代码」的理由。
+  * **闸门保护** — `guard_tool_call` 拒绝任何会重定义 `merge_state`、`StateBlock`、`atomic_write_yaml`、`_resolve_jinx_path`、`_apply_protocol`、`check_exit`、`check_deadlock`、`_resolve_min_rounds`、`_handle_llm_response`、自适应轮数的辅助函数与常量或 `SYSTEM_PROMPT` 的写入，并将 `selfpatch.py` 与 `learning.py` 整体列为禁区。拒绝发生在**派发之前**而非事后撤销，模型因此会知道自己被拒绝，而不会误以为校验机制坏了。保护比较这些定义的*函数体*与磁盘上的实际内容，而不仅仅检查名字是否存在，因此只要闸门本身逐字节未变，就可以整体重写受保护的文件。削弱、改写、删除闸门都会被拒绝，更隐蔽的做法同样会被识破：在文件末尾追加一个在导入时覆盖受保护定义的第二份定义，或是通过 `bash_exec` 动手——它根本不经过这道检查。因此在真正校验之前，机制会对磁盘上的文件与 baseline 重新做一次同样的比较；一旦发现闸门被这样动过，就直接回滚而不运行测试：一次通过的测试无法成为修改「决定测试是否通过的那段代码」的理由。
 * **`prompts.py`**（提示词模板）：
   包含 `SYSTEM_PROMPT`、当某轮遗漏状态块时注入的 `MISSING_STATE_WARNING`、恢复指令 `TOOL_DEPTH_CRITICAL_MSG`，以及 `construct_round_prompt()`。
 
@@ -566,7 +577,7 @@ JINX 可以编辑 `.agent/src/jinx/*.py` 来改善自身效果，而在做框架
 2. 两者都通过则保留该修改；
 3. 否则**回滚源码树**，并把失败输出回灌到下一轮提示词中，使失败的尝试产出证据，而不是留下一个悄悄损坏的框架。
 
-此外，任何会重新定义闸门逻辑的写入都会在**派发之前**被拒绝，而不是先写入再回滚，因此模型会知道自己被拒绝，而不会误判校验机制已损坏。受保护的有：`merge_state`、`StateBlock`、`atomic_write_yaml`、`_resolve_jinx_path`、`check_exit`、`check_deadlock`、`_resolve_min_rounds`、`_handle_llm_response` 和 `SYSTEM_PROMPT`；`selfpatch.py` 与 `learning.py` 整体不可触碰。
+此外，任何会重新定义闸门逻辑的写入都会在**派发之前**被拒绝，而不是先写入再回滚，因此模型会知道自己被拒绝，而不会误判校验机制已损坏。受保护的有：`merge_state`、`StateBlock`、`atomic_write_yaml`、`_resolve_jinx_path`、`_apply_protocol`、`check_exit`、`check_deadlock`、`_resolve_min_rounds`、`_handle_llm_response`、自适应轮数的辅助函数（`_declared_base`、`_store_declared`、`_round_floors`、`_close_round`、`_round_verdict`、`_finish_round`、`_note_round_result`、`_record_tool_results`、`_ledger_of`、`_discard_sizing`）及其常量（`DEFAULT_MIN_ROUNDS`、`SIZING_ROUNDS`、`CONFIRM_ROUNDS`、`DEAD_ROUND_CAP`）和 `SYSTEM_PROMPT`；`selfpatch.py` 与 `learning.py` 整体不可触碰。
 
 **为什么这道防线不可省略。** `file_write` 没有任何路径限制，而且模型已经可以把 `protocol` 块合并进清单，从而在会话中途改变 `min_rounds`。没有防线保护的自主自我修改，会让"智能体改进了自己"和"智能体删掉了本会察觉此事的逻辑"变得无法区分——而后者可由任意任务中的提示词注入触发。
 
@@ -761,7 +772,7 @@ if __name__ == "__main__":
 ### 暂停处理与死锁干预
 JINX 在触达协议上限时会自动停止执行，以请求人工介入。
 * **死锁触发**：
-  若同一需求在 3 个语义不同的策略簇上失败，清单中的 `deadlock` 会被强制置为 `true`，输出 `[JINX_DEADLOCK]`，IPC 文件被删除，进程以代码 `0` 退出（循环是主动终止，而非出错 —— 可通过清单将其与成功的 `[JINX_COMPLETE]` 区分开）。
+  若同一需求在 3 个语义不同的策略簇上失败（从轮数下限起），或模型声称遇到只有用户才能解除的阻塞（同样只从轮数下限起；更早的声明会被拒绝，循环继续），清单中的 `deadlock` 会被强制置为 `true`，输出 `[JINX_DEADLOCK]`，IPC 文件被删除，进程以代码 `0` 退出（循环是主动终止，而非出错 —— 可通过清单将其与成功的 `[JINX_COMPLETE]` 区分开）。
 * **硬上限触发**：
   40 轮之后进程以代码 `2` 退出；IPC 文件同样会被清除。
 * **手动纠正工作流**：

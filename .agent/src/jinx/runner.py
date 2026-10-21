@@ -14,6 +14,7 @@
 # ==============================================================================
 """Cognitive loop orchestration, execution controller, and IDE-IPC layer for JINX."""
 
+import hashlib
 import json
 import logging
 import os
@@ -31,7 +32,9 @@ import queue as _queue
 
 from . import prompts
 from .prompts import SYSTEM_PROMPT, TOOL_DEPTH_CRITICAL_MSG, construct_round_prompt
-from .state import merge_state, read_jinx, write_jinx
+from .state import (
+    AGENT_SET_KEY, CONFIG_MIN_KEY, is_count, merge_state, read_jinx, write_jinx,
+)
 from .tools import tool_schema
 from . import evidence, learning, selfpatch
 
@@ -39,6 +42,34 @@ logger = logging.getLogger("jinx.runner")
 
 HARD_CAP: int = 40
 TOOL_DEPTH_CAP: int = 20
+
+# Adaptive round count.
+#
+# How many rounds the loop requires before it will consider an exit is not a
+# number the model sets once and walks away from. It is recomputed every round,
+# from what the runner actually observed, and it only ever goes UP: a model that is
+# tired, hurried or simply wrong has no way to make the loop shorter, which is the
+# one direction in which laziness pays. What can move it:
+#
+#   * the model's own sizing (``protocol.loop.min``), accepted freely through round
+#     ``SIZING_ROUNDS`` and ratcheted afterwards, so it can be raised but not lowered;
+#   * ``DEAD_ROUND_CAP`` at most extra rounds, one per round that ran nothing new
+#     while work was due (such a round does not count and cannot end the run);
+#   * one confirming round (``CONFIRM_ROUNDS``) after the last failed round, so a
+#     pass that arrives right after a fix has to be re-verified before it counts.
+#
+# ``--min`` pins the sizing to an exact value and wins over the model; the other
+# two still apply on top of it, because "at least N" is what the flag promises.
+# The extra rounds are bounded and never push the count past HARD_CAP - 1, so an
+# exit stays reachable. These are brake logic: selfpatch protects them.
+DEFAULT_MIN_ROUNDS: int = 10
+SIZING_ROUNDS: int = 2
+CONFIRM_ROUNDS: int = 1
+DEAD_ROUND_CAP: int = 4
+# Identical (call, result) pairs before the model is told it is repeating itself,
+# and how many of them the ledger remembers (bounded: it lives in the run state).
+REPEAT_NOTICE_AFTER: int = 3
+CALL_LEDGER_CAP: int = 48
 
 # IPC configuration (can be overridden via environment)
 IPC_TIMEOUT = int(os.getenv("JINX_IPC_TIMEOUT", "10"))
@@ -498,6 +529,44 @@ def _resolve_min_rounds(jinx: Dict[str, Any], min_override: Optional[int]) -> in
     return 10
 
 
+def _loop_of(jinx: Dict[str, Any]) -> Dict[str, Any]:
+    """The ``protocol.loop`` mapping stored in the manifest, or a throwaway ``{}``."""
+    protocol = jinx.get("protocol")
+    if isinstance(protocol, dict):
+        loop = protocol.get("loop")
+        if isinstance(loop, dict):
+            return loop
+    return {}
+
+
+def _scores_of(jinx: Dict[str, Any]) -> List[Any]:
+    """A copy of the stored score list, or ``[]`` when the manifest has none."""
+    state = jinx.get("state")
+    scores = state.get("scores") if isinstance(state, dict) else None
+    return list(scores) if isinstance(scores, list) else []
+
+
+def _discard_sizing(jinx: Dict[str, Any]) -> None:
+    """Drops the round count the previous task's model wrote, keeping a configured one.
+
+    ``merge_state`` writes the model's ``protocol.loop.min`` into the manifest, and
+    the manifest outlives the task: left in place, a count sized for a one-line
+    question would silently become the floor of the next, harder task (or the
+    reverse). Only a value the model wrote is dropped; a value a person configured
+    is restored from ``config_min`` if sizing had replaced it, and is otherwise
+    never touched.
+    """
+    loop = _loop_of(jinx)
+    if not loop.get(AGENT_SET_KEY):
+        return
+    configured = loop.pop(CONFIG_MIN_KEY, None)
+    if is_count(configured):
+        loop["min"] = configured
+    else:
+        loop.pop("min", None)
+    loop.pop(AGENT_SET_KEY, None)
+
+
 def _init_new_session(task: str, jinx: Dict[str, Any]) -> None:
     """Initializes a fresh task session in the JINX state."""
     if not isinstance(jinx.get("state"), dict):
@@ -506,11 +575,369 @@ def _init_new_session(task: str, jinx: Dict[str, Any]) -> None:
         "task": task, "facts": [], "scores": [], "debt": [],
         "open": [], "exit_ready": False, "deadlock": False
     })
+    _discard_sizing(jinx)
     write_jinx(jinx)
     # NOTE: the durable lesson ledger in .agent/lessons.yaml is deliberately left
     # untouched. A new task wipes working memory, but what was learned is exactly
     # what should carry over; resetting it here would make the store decay at the
     # same rate as the state it is supposed to outlast.
+
+
+# ------------------------------------------------------------------------------
+# Adaptive round count: the ledger and the rules that read it.
+#
+# The ledger lives in the run state (``run_state["rounds"]``) because every round
+# is a new process, and it is a handful of integers plus one bounded map, so the
+# run state stays flat however long the task runs. Nothing in it is read from the
+# model: it is built from what the runner itself saw (the tool calls, what they
+# returned, which rounds ended in which verdict).
+# ------------------------------------------------------------------------------
+
+# Run-time noise that makes two identical outcomes look different: durations,
+# addresses and timestamps. Stripped before a result is fingerprinted, so a
+# test run that fails the same way twice is recognised as doing so. It is
+# deliberately narrow: digits in general are NOT removed, because "3 failed" and
+# "2 failed" are exactly the difference this has to keep.
+_RESULT_NOISE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|seconds)\b|0x[0-9a-fA-F]+"
+    r"|\d{4}-\d\d-\d\d[T ]\d\d:\d\d:\d\d(?:\.\d+)?Z?"
+)
+
+
+def _new_ledger() -> Dict[str, Any]:
+    """An empty round ledger."""
+    return {
+        "declared": None, "shown": None, "dead": 0, "dead_streak": 0,
+        "last_fail": 0, "round_calls": 0, "round_novel": 0, "calls": {},
+    }
+
+
+def _ledger_of(run_state: Dict[str, Any]) -> Dict[str, Any]:
+    """The run state's round ledger, validated, attached to the run state and returned.
+
+    A ledger read back from disk is as untrusted as the run state around it: a
+    truncated, hand-edited or older file has to yield an empty ledger, not a crash
+    in the middle of a round, and the call memory is clipped to its bound.
+    """
+    ledger = _new_ledger()
+    raw = run_state.get("rounds")
+    if isinstance(raw, dict):
+        for key in ("dead", "dead_streak", "last_fail", "round_calls", "round_novel"):
+            value = raw.get(key)
+            ledger[key] = value if is_count(value) and value >= 0 else 0
+        for key in ("declared", "shown"):
+            value = raw.get(key)
+            ledger[key] = value if is_count(value) and value >= 0 else None
+        calls = raw.get("calls")
+        if isinstance(calls, dict):
+            for key, entry in list(calls.items())[-CALL_LEDGER_CAP:]:
+                if (
+                    isinstance(key, str) and isinstance(entry, list) and len(entry) == 3
+                    and isinstance(entry[0], str) and is_count(entry[1]) and is_count(entry[2])
+                ):
+                    ledger["calls"][key] = [entry[0], entry[1], entry[2]]
+    run_state["rounds"] = ledger
+    return ledger
+
+
+def _digest(text: str) -> str:
+    """A short, stable fingerprint. Not a security boundary, only an identity."""
+    return hashlib.blake2b(text.encode("utf-8", "replace"), digest_size=6).hexdigest()
+
+
+def _call_fingerprint(name: Any, params: Any) -> str:
+    """Identifies a tool call by its name and its full, canonicalised input."""
+    try:
+        body = json.dumps(params, sort_keys=True, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        body = repr(params)
+    return _digest("%s\n%s" % (name, body))
+
+
+def _result_text(content: Any) -> str:
+    """A tool result as text with run-time noise removed, ready to be fingerprinted."""
+    if content is None:
+        text = ""
+    elif isinstance(content, str):
+        text = content
+    else:
+        try:
+            text = Yaml.dump_to_string(content)
+        except JinxError:
+            text = repr(content)
+    text = "\n".join(line.rstrip() for line in text.splitlines())
+    return _RESULT_NOISE.sub("#", text)
+
+
+def _call_label(call: Dict[str, Any]) -> str:
+    """A short, readable name for a call, for the notice that reports a repeat."""
+    params = call.get("params")
+    detail = ""
+    if isinstance(params, dict):
+        detail = str(params.get("script") or params.get("path") or "")
+    detail = " ".join(detail.split())
+    if len(detail) > 60:
+        detail = detail[:57] + "..."
+    name = str(call.get("name") or "tool")
+    return "%s `%s`" % (name, detail) if detail else name
+
+
+def _tool_calls_in(history: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Every well-formed ``tool_use`` block in the history window, keyed by its id.
+
+    The results of a tool batch arrive in a later process, so the call that
+    produced a result is found again here, in the history the run state carries.
+    """
+    found: Dict[str, Dict[str, Any]] = {}
+    for msg in history or []:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                tool_use_id, name, params, err = _validate_tool_use_block(block)
+                if err is None and tool_use_id is not None:
+                    found[tool_use_id] = {"id": tool_use_id, "name": name, "params": params}
+    return found
+
+
+def _record_tool_results(
+    ledger: Dict[str, Any], calls_by_id: Dict[str, Dict[str, Any]],
+    results: List[Dict[str, Any]],
+) -> List[Tuple[str, int]]:
+    """Notes what a tool batch returned and reports the calls that are only repeating.
+
+    A result is *new* when its call was never seen, or was seen but returned
+    something different. It is a *repeat* when the same call returned the same
+    outcome again, and it is reported once it has done so ``REPEAT_NOTICE_AFTER``
+    times. A result that cannot be matched to the call that produced it counts as
+    new: a round is only ever called dead on positive evidence, never for lack of it.
+
+    Returns ``(label, times)`` for each call that has reached the threshold.
+    """
+    repeats: List[Tuple[str, int]] = []
+    seen = ledger["calls"]
+    for result in results or []:
+        if not isinstance(result, dict):
+            continue
+        ledger["round_calls"] += 1
+        tool_use_id = result.get("tool_use_id")
+        call = calls_by_id.get(tool_use_id) if isinstance(tool_use_id, str) else None
+        if call is None:
+            ledger["round_novel"] += 1
+            continue
+        key = _call_fingerprint(call.get("name"), call.get("params"))
+        outcome = _digest(_result_text(result.get("content")))
+        previous = seen.pop(key, None)
+        total, same = 1, 1
+        if previous is not None:
+            total = previous[2] + 1
+            if previous[0] == outcome:
+                same = previous[1] + 1
+        seen[key] = [outcome, same, total]
+        if same == 1:
+            ledger["round_novel"] += 1
+        elif same >= REPEAT_NOTICE_AFTER:
+            repeats.append((_call_label(call), same))
+    while len(seen) > CALL_LEDGER_CAP:
+        seen.pop(next(iter(seen)))
+    return repeats
+
+
+def _finish_round(ledger: Dict[str, Any], prior_scores: List[Any]) -> bool:
+    """Closes the tool tally of the round that just ended; True when it was dead.
+
+    A round is dead when work was due and none was done. Work is due in two
+    situations: the last recorded round failed (a *fixing* round, dead if nothing
+    NEW was run, edited or read: the same commands returning the same results are
+    a model going through the motions), or the last round passed straight after a
+    failure (a *confirming* round, dead only if it ran no command at all, so that
+    re-running the project's own tests still counts as confirming). Round 1 and
+    rounds after a clean pass are never dead: nothing was owed.
+
+    The tally is reset here, so the next round starts counting from zero.
+    """
+    fixing = bool(prior_scores) and not _get_val(prior_scores[-1], "all_pass", False)
+    confirming = (
+        not fixing and len(prior_scores) >= 2
+        and not _get_val(prior_scores[-2], "all_pass", False)
+    )
+    if fixing:
+        dead = ledger["round_novel"] == 0
+    elif confirming:
+        dead = ledger["round_calls"] == 0
+    else:
+        dead = False
+    if dead:
+        ledger["dead"] += 1
+        ledger["dead_streak"] += 1
+    else:
+        ledger["dead_streak"] = 0
+    ledger["round_calls"] = 0
+    ledger["round_novel"] = 0
+    return dead
+
+
+def _note_round_result(ledger: Dict[str, Any], scores: List[Any], rnd: int) -> None:
+    """Records the round a failure happened in, by the runner's own round counter.
+
+    The model's ``round`` numbers are not used: they are written by the model, and
+    the confirming round has to be measured from the failure the runner saw.
+    """
+    if scores and not _get_val(scores[-1], "all_pass", False):
+        ledger["last_fail"] = rnd
+
+
+def _declared_base(
+    jinx: Dict[str, Any], min_override: Optional[int], ledger: Dict[str, Any], rnd: int
+) -> int:
+    """The round count in force before any runner-added rounds. It only ever goes up.
+
+    ``--min`` pins it exactly. Otherwise the model's ``protocol.loop.min`` (marked
+    ``agent_set`` by ``merge_state``) sizes the loop: the first value it sends
+    through round ``SIZING_ROUNDS`` is taken as it is, because sizing a small task
+    below the default is the point of sizing; a first value sent later can only
+    raise the count, and every later value is ratcheted with ``max``. Without a
+    value from the model the count is the configured one, else the default.
+
+    The value is clamped to ``[2, HARD_CAP - 1]``: nothing can exit before round 2,
+    and a count the loop can never reach would just burn rounds to the hard cap.
+    """
+    if min_override is not None:
+        return min_override
+    loop = _loop_of(jinx)
+    if loop.get(AGENT_SET_KEY):
+        configured, sent = loop.get(CONFIG_MIN_KEY), loop.get("min")
+    else:
+        configured, sent = loop.get("min"), None
+    if not is_count(configured):
+        configured = DEFAULT_MIN_ROUNDS
+    declared = ledger.get("declared")
+    if is_count(sent):
+        sent = max(2, min(sent, HARD_CAP - 1))
+        if declared is None:
+            declared = sent if rnd <= SIZING_ROUNDS else max(configured, sent)
+        else:
+            declared = max(declared, sent)
+    ledger["declared"] = declared
+    return declared if declared is not None else configured
+
+
+def _store_declared(jinx: Dict[str, Any], min_override: Optional[int], base: int) -> None:
+    """Writes the ratcheted count back, so the manifest shows what is in force.
+
+    Without it a later, lower value from the model would sit in the manifest while
+    the runner ignored it, and anything that reads ``JINX.yaml`` would see a count
+    the loop is not using. A pinned run leaves the manifest alone.
+    """
+    if min_override is not None:
+        return
+    loop = _loop_of(jinx)
+    if loop.get(AGENT_SET_KEY) and loop.get("min") != base:
+        loop["min"] = base
+
+
+def _round_floors(base: int, ledger: Dict[str, Any]) -> Tuple[int, int]:
+    """``(floor, exit_floor)``: the round before which a deadlock, resp. an exit, is not considered.
+
+    ``floor`` is the sized count plus one round per dead round, at most
+    ``DEAD_ROUND_CAP`` of them. ``exit_floor`` also requires ``CONFIRM_ROUNDS`` more
+    rounds after the last failed one. It applies to an exit only: a deadlock is, by
+    definition, a run that is still failing, so a floor that moved with every failure
+    would put it forever out of reach.
+
+    The extra rounds are capped at ``HARD_CAP - 1`` so an exit is always reachable,
+    and the result is never below ``base``, so a pinned ``--min`` is never undercut.
+    """
+    ceiling = max(base, HARD_CAP - 1)
+    floor = min(base + min(ledger["dead"], DEAD_ROUND_CAP), ceiling)
+    exit_floor = floor
+    if ledger["last_fail"]:
+        exit_floor = max(floor, min(ledger["last_fail"] + 1 + CONFIRM_ROUNDS, ceiling))
+    return floor, exit_floor
+
+
+def _close_round(
+    jinx: Dict[str, Any], update: Optional[Dict[str, Any]], ledger: Dict[str, Any],
+    min_override: Optional[int], rnd: int, diagnostics: List[str],
+) -> Dict[str, Any]:
+    """Merges the reply's state block and re-derives the round count for the round that ended.
+
+    Shared by both transports so the rules cannot drift apart. The order matters:
+    the round is classified against the scores as they stood BEFORE this reply's
+    entry, because that is what decided whether work was due; only then is the
+    block merged, the sized count ratcheted and the floors recomputed.
+    """
+    dead = _finish_round(ledger, _scores_of(jinx))
+    outcome: Dict[str, Any] = {}
+    if update:
+        jinx = merge_state(jinx, update, diagnostics=diagnostics, outcome=outcome)
+    base = _declared_base(jinx, min_override, ledger, rnd)
+    if update:
+        _store_declared(jinx, min_override, base)
+        write_jinx(jinx)
+    scores = _scores_of(jinx)
+    applied = bool(outcome.get("applied"))
+    if applied:
+        _note_round_result(ledger, scores, rnd)
+    floor, exit_floor = _round_floors(base, ledger)
+    return {
+        "jinx": jinx, "outcome": outcome, "applied": applied, "scores": scores,
+        "dead": dead, "base": base, "floor": floor, "exit_floor": exit_floor,
+    }
+
+
+def _round_verdict(
+    jinx: Dict[str, Any], scores: List[Any], ledger: Dict[str, Any], dead: bool,
+    floor: int, exit_floor: int, rnd: int, diagnostics: List[str],
+) -> str:
+    """``"exit"``, ``"deadlock"`` or ``""`` for a round whose block was accepted.
+
+    Exit needs ``exit_ready``, ``check_exit`` at the confirmed count and a round
+    that was not dead (a dead round is bounded by ``DEAD_ROUND_CAP``, after which
+    it is tolerated, so a task with nothing new left to run can still finish).
+    A deadlock needs the evidence ``check_deadlock`` looks for, or a claim made from
+    ``floor`` on. A claim made earlier is refused, its flag cleared and the model
+    told: stopping early is the one request the loop never grants on request alone.
+    """
+    flags = jinx.setdefault("state", {})
+    counted_dead = dead and ledger["dead"] <= DEAD_ROUND_CAP
+    if flags.get("exit_ready") and not counted_dead and check_exit(scores, exit_floor, rnd):
+        return "exit"
+    claim = bool(flags.get("deadlock"))
+    if check_deadlock(scores, floor, rnd) or (claim and rnd >= floor):
+        if not claim:
+            flags["deadlock"] = True
+            write_jinx(jinx)
+        return "deadlock"
+    if claim:
+        flags["deadlock"] = False
+        write_jinx(jinx)
+        diagnostics.append(prompts.DEADLOCK_REFUSED % {"rnd": rnd, "floor": floor})
+    return ""
+
+
+def _adaptive_info(
+    jinx: Dict[str, Any], base: int, ledger: Dict[str, Any], floor: int,
+    exit_floor: int, dead: bool, next_round: int, min_override: Optional[int],
+) -> Dict[str, Any]:
+    """The runner-observed facts the next prompt reports (see ``prompts.note_adaptive``)."""
+    configured = _loop_of(jinx).get("min") if not _loop_of(jinx).get(AGENT_SET_KEY) else None
+    return {
+        "shown": ledger.get("shown"),
+        "base": base,
+        "dead": min(ledger["dead"], DEAD_ROUND_CAP),
+        "dead_streak": ledger["dead_streak"],
+        "last_dead": dead,
+        # The round that just ended failed: the count moving with it is not news, the
+        # fix is. Without this a run that keeps failing is told "raised" every round.
+        "failing": ledger["last_fail"] == next_round - 1,
+        "failed_round": ledger["last_fail"] if exit_floor > floor else 0,
+        "unsized": (
+            min_override is None and ledger.get("declared") is None
+            and not is_count(configured) and next_round <= SIZING_ROUNDS
+        ),
+    }
 
 
 def _inject_lessons(run_state: Dict[str, Any]) -> Tuple[str, List[str]]:
@@ -1002,7 +1429,7 @@ def _update_tool_result_cache(
 def write_llm_request(
         history: List[Dict[str, Any]], rnd: int, tool_depth: int, min_rounds: int,
         retry: bool = False, applied_lessons: Optional[List[str]] = None,
-        min_override: Optional[int] = None
+        min_override: Optional[int] = None, rounds: Optional[Dict[str, Any]] = None
     ) -> None:
     """Writes the current prompt/history state and requests LLM generation.
 
@@ -1018,6 +1445,10 @@ def write_llm_request(
     ``min_override`` is the ``--min`` value from the command line. Each round is a
     new process, so the override only lasts if it is written to the run state;
     None keeps whatever the run state already holds.
+
+    ``rounds`` is the adaptive round ledger (see ``_ledger_of``). It is rebuilt
+    from an explicit key list like everything else here, so a caller that has
+    updated the ledger in memory has to hand it over; None keeps the stored one.
     """
     carried: Dict[str, Any] = {}
     try:
@@ -1072,6 +1503,9 @@ def write_llm_request(
     }
     if override is not None:
         run_state["min_override"] = override
+    ledger = rounds if rounds is not None else carried.get("rounds")
+    if isinstance(ledger, dict):
+        run_state["rounds"] = ledger
     try:
         Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
     except JinxError as e:
@@ -1112,6 +1546,10 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
             "rnd": 1, "tool_depth": 0, "history": [],
             "waiting_for": "llm_generate", "min_rounds": min_rounds,
         }
+        # The count shown on the first label is what a later "raised from X" is
+        # measured against, so it is recorded with the ledger from the start.
+        ledger = _ledger_of(run_state)
+        ledger["shown"] = min_rounds
         lessons_text, applied = _inject_lessons(run_state)
 
         state_dump = Yaml.dump_to_string(jinx["state"])
@@ -1122,7 +1560,7 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
         try:
             write_llm_request(
                 [{"role": "user", "content": user_msg}], 1, 0, min_rounds,
-                applied_lessons=applied, min_override=min_override,
+                applied_lessons=applied, min_override=min_override, rounds=ledger,
             )
         except (IPCError, OSError, JinxError) as e:
             logger.error("Failed to write initial LLM request: %s", e, exc_info=True)
@@ -1313,14 +1751,17 @@ def _handle_llm_response(
     update = parse_state_block(full_text)
     jinx = read_jinx()
     diagnostics: List[str] = []
+    # The round count is recomputed every round, from the sized count and what the
+    # runner saw this round (see _close_round). A --min override is kept in the run
+    # state and still pins the sized count. Even a reply with no state block goes
+    # through this: a round that ran nothing and recorded nothing is a dead round.
+    min_override = run_state.get("min_override")
+    round_ledger = _ledger_of(run_state)
+    closed = _close_round(jinx, update, round_ledger, min_override, rnd, diagnostics)
+    jinx, scores = closed["jinx"], closed["scores"]
+    floor, min_rounds = closed["floor"], closed["exit_floor"]
     if update:
-        outcome: Dict[str, Any] = {}
-        jinx = merge_state(jinx, update, diagnostics=diagnostics, outcome=outcome)
-        write_jinx(jinx)
-        # Re-resolve min_rounds so protocol changes from LLM take effect mid-session.
-        # A --min override is kept in the run state and still wins.
-        min_rounds = _resolve_min_rounds(jinx, run_state.get("min_override"))
-        scores = jinx["state"].get("scores", [])
+        outcome: Dict[str, Any] = closed["outcome"]
 
         # Honour exit/deadlock ONLY from state that actually passed validation. A
         # rejected block must not be able to terminate the loop or claim success
@@ -1344,16 +1785,16 @@ def _handle_llm_response(
                                 if jinx["state"].get("scores") else False)
             )
 
-            flags = jinx["state"]
-            if flags.get("exit_ready") and check_exit(scores, min_rounds, rnd):
+            verdict = _round_verdict(
+                jinx, scores, round_ledger, closed["dead"], floor, min_rounds, rnd,
+                diagnostics,
+            )
+            if verdict == "exit":
                 print("[JINX_COMPLETE] Task resolved successfully!", flush=True)
                 _finish_run()
                 return
 
-            if flags.get("deadlock") or check_deadlock(scores, min_rounds, rnd):
-                if not flags.get("deadlock"):
-                    jinx["state"]["deadlock"] = True
-                    write_jinx(jinx)
+            if verdict == "deadlock":
                 print("[JINX_DEADLOCK] Loop aborted due to strategy deadlock.", flush=True)
                 _finish_run()
                 return
@@ -1373,15 +1814,22 @@ def _handle_llm_response(
     jinx = read_jinx()
     state_dump = Yaml.dump_to_string(jinx.get("state") or {})
     lessons_text, applied = _inject_lessons(run_state)
+    adaptive = _adaptive_info(
+        jinx, closed["base"], round_ledger, floor, min_rounds, closed["dead"], rnd,
+        min_override,
+    )
     user_msg = construct_round_prompt(
         rnd=rnd, min_rounds=min_rounds, state_dump=state_dump,
-        missing_state=not update, lessons_text=lessons_text,
+        missing_state=not update, lessons_text=lessons_text, adaptive=adaptive,
     )
+    round_ledger["shown"] = min_rounds
     if diagnostics:
         user_msg = user_msg + "\n" + "\n".join(diagnostics) + "\n"
     history.append({"role": "user", "content": user_msg})
     try:
-        write_llm_request(history, rnd, 0, min_rounds, applied_lessons=applied)
+        write_llm_request(
+            history, rnd, 0, min_rounds, applied_lessons=applied, rounds=round_ledger,
+        )
     except (IPCError, OSError, JinxError) as e:
         logger.error("IPC failure while writing next LLM request: %s", e, exc_info=True)
         clean_up_ipc_files()
@@ -1409,6 +1857,15 @@ def _handle_tool_response(
         # tool_result first, and the model should read the verdict as a
         # conclusion on those results rather than as an instruction preceding them.
         tool_results.append({"type": "text", "text": feedback})
+
+    # Measure what the batch returned against what the same calls returned before.
+    # A call that keeps returning the identical result cannot change anything, and
+    # the model is told so now, in the results it is about to read, rather than in
+    # the next round's prompt after the loop of identical calls has been spent.
+    round_ledger = _ledger_of(run_state)
+    repeats = _record_tool_results(round_ledger, _tool_calls_in(history), results)
+    if repeats:
+        tool_results.append({"type": "text", "text": prompts.note_repeated_call(repeats)})
 
     if tool_depth >= TOOL_DEPTH_CAP:
         logger.warning("Tool depth limit reached. Forcing state recovery.")
@@ -1445,7 +1902,7 @@ def _handle_tool_response(
         logger.debug("Unable to update tool result cache in run_state.", exc_info=True)
 
     try:
-        write_llm_request(history, rnd, tool_depth, min_rounds)
+        write_llm_request(history, rnd, tool_depth, min_rounds, rounds=round_ledger)
     except (IPCError, OSError, JinxError) as e:
         logger.error("IPC failure while writing LLM request after tool response: %s", e, exc_info=True)
         clean_up_ipc_files()
@@ -1529,6 +1986,13 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
     rnd: int = 0
     last_round_missing_state: bool = False
     history: List[Dict[str, Any]] = []
+    # The same adaptive round count as the file-IPC path. This mode is one process,
+    # so the ledger lives in memory instead of the run state, and the count is
+    # re-derived every round: it used to be resolved once, before the loop, so a
+    # protocol change from the model never took effect here.
+    round_ledger = _new_ledger()
+    adaptive: Optional[Dict[str, Any]] = None
+    pending_notes: List[str] = []
 
     logger.info("Starting JINX loop (JSON-RPC). Task: '%s'. Min rounds: %d", task, min_rounds)
 
@@ -1540,8 +2004,13 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
 
         user_msg = construct_round_prompt(
             rnd=rnd, min_rounds=min_rounds,
-            state_dump=state_dump, missing_state=last_round_missing_state
+            state_dump=state_dump, missing_state=last_round_missing_state,
+            adaptive=adaptive,
         )
+        round_ledger["shown"] = min_rounds
+        if pending_notes:
+            user_msg = user_msg + "\n" + "\n".join(pending_notes) + "\n"
+            pending_notes = []
         history.append({"role": "user", "content": user_msg})
 
         full_text: str = ""
@@ -1556,11 +2025,22 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
                         full_text += block.get("text", "")
 
                 tool_results: List[Dict[str, Any]] = []
+                calls_here: Dict[str, Dict[str, Any]] = {}
                 for block in content_blocks:
                     if block.get("type") == "tool_use":
                         tool_results.append(_execute_rpc_tool(block))
+                        call_id, call_name, call_params, call_err = _validate_tool_use_block(block)
+                        if call_err is None and call_id is not None:
+                            calls_here[call_id] = {
+                                "id": call_id, "name": call_name, "params": call_params,
+                            }
 
                 if tool_results:
+                    repeats = _record_tool_results(round_ledger, calls_here, tool_results)
+                    if repeats:
+                        tool_results.append(
+                            {"type": "text", "text": prompts.note_repeated_call(repeats)}
+                        )
                     tool_depth += 1
                     if tool_depth >= TOOL_DEPTH_CAP:
                         logger.warning("Tool depth limit reached in RPC mode.")
@@ -1582,31 +2062,35 @@ def run(task: Optional[str], min_override: Optional[int], ipc_mode: str = "file"
             sys.exit(1)
 
         update = parse_state_block(full_text)
+        round_notes: List[str] = []
+        closed = _close_round(jinx, update, round_ledger, min_override, rnd, round_notes)
+        jinx = closed["jinx"]
+        floor, min_rounds = closed["floor"], closed["exit_floor"]
         if update:
             last_round_missing_state = False
-            outcome: Dict[str, Any] = {}
-            jinx = merge_state(jinx, update, outcome=outcome)
-            write_jinx(jinx)
-            scores = jinx["state"].get("scores", [])
 
             # Same rule as the File-IPC path: a rejected block cannot terminate
             # the loop. Its flags are ignored and the round continues.
-            if not outcome.get("applied"):
+            if not closed["applied"]:
                 logger.warning("State block rejected in RPC mode; ignoring flags.")
-
-            if outcome.get("applied") and jinx["state"].get("exit_ready") \
-                    and check_exit(scores, min_rounds, rnd):
-                logger.info("Execution complete in round %d.", rnd)
-                break
-            if outcome.get("applied") and (jinx["state"].get("deadlock")
-                                           or check_deadlock(scores, min_rounds, rnd)):
-                logger.warning("Deadlock in round %d.", rnd)
-                if not jinx["state"].get("deadlock"):
-                    jinx["state"]["deadlock"] = True
-                    write_jinx(jinx)
-                break
+            else:
+                verdict = _round_verdict(
+                    jinx, closed["scores"], round_ledger, closed["dead"], floor,
+                    min_rounds, rnd, round_notes,
+                )
+                if verdict == "exit":
+                    logger.info("Execution complete in round %d.", rnd)
+                    break
+                if verdict == "deadlock":
+                    logger.warning("Deadlock in round %d.", rnd)
+                    break
         else:
             last_round_missing_state = True
+        adaptive = _adaptive_info(
+            jinx, closed["base"], round_ledger, floor, min_rounds, closed["dead"],
+            rnd + 1, min_override,
+        )
+        pending_notes = round_notes
     else:
         logger.error("HARD_CAP (%d rounds) exhausted.", HARD_CAP)
         if selfpatch.SELF_PATCH_ENABLED:

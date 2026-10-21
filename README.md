@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.2.6--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.2.7--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-File_Based_IPC_State_Machine-0D9488?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-ReEntrant_Single_Step_Process-059669?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -161,6 +161,7 @@ rnd: 7
 tool_depth: 2
 waiting_for: llm_generate      # llm_generate | tool_calls
 min_rounds: 10
+rounds: {declared: 2, dead: 1, last_fail: 3}   # optional adaptive round ledger, see Phase IV
 updated_at: 1758901234.5       # epoch seconds, written on every state change
 processed_tool_use_ids: [call_00, call_01]   # optional, see below
 history:                       # bounded window of recent messages
@@ -170,7 +171,10 @@ history:                       # bounded window of recent messages
 
 On resume the runner requires exactly five keys — `rnd`, `tool_depth`, `history`, `waiting_for` and
 `min_rounds` — and treats their absence as an invalid run state. `updated_at` is stamped on every
-write and drives stale-wait detection.
+write and drives stale-wait detection. `rounds` is the optional adaptive round ledger (a handful of
+integers plus a call memory capped at 48 entries, so the run state stays flat however long the task
+runs). It is validated on read: an older, truncated or hand-edited run state simply yields an empty
+ledger instead of a crash.
 
 `processed_tool_use_ids` is **optional and transient**. The runner appends each executed `tool_use_id`
 to it after a tool response is processed, and reads it back when building the next request, but a
@@ -307,12 +311,19 @@ flowchart LR
 
 4. **Phase IV: Multi-Criteria Convergence & Exit**
    After each round, JINX updates the metrics and checks for exit or deadlock conditions:
-   * **Exit Condition** (`check_exit`): the current round must be `>= loop.min`, at least 2 score entries must exist, and the **latest** entry must have `all_pass: true`. Once 4 or more entries exist, the best `pass_count` of the last 3 rounds must not exceed the best `pass_count` of everything before them — a still-improving loop is not allowed to exit.
-   * **Deadlock Condition** (`check_deadlock`): the round must be `>= loop.min`, and some requirement must have failed across at least **3 semantically distinct strategy clusters**. Or the model may declare `deadlock: true` itself.
+   * **Exit Condition** (`check_exit`): the current round must be `>=` the round count in force (see *Adaptive round count* below), at least 2 score entries must exist, and the **latest** entry must have `all_pass: true`. Once 4 or more entries exist, the best `pass_count` of the last 3 rounds must not exceed the best `pass_count` of everything before them — a still-improving loop is not allowed to exit. The runner additionally refuses an exit from a *dead round* (below).
+   * **Deadlock Condition** (`check_deadlock`): the round must be `>=` the round floor, and some requirement must have failed across at least **3 semantically distinct strategy clusters**. The model may also declare `deadlock: true` itself (a blocker only the user can remove), but such a claim counts only from the round floor on: an earlier claim is refused, its flag is cleared and the model is told, because "deadlock" is the cheapest way for a tired model to stop.
    * **Hard Cap**: the execution loop is strictly capped at 40 rounds (`HARD_CAP`); the process then exits with status `2` to prevent unbounded token consumption.
    * **Tool Depth Cap**: a single round may chain at most 20 tool calls (`TOOL_DEPTH_CAP`). On breach JINX injects a recovery instruction and issues one final `llm_generate` with `tools: []`, forcing a state block instead of a truncation.
 
-   `loop.min` is resolved from `protocol.loop.min` in `JINX.yaml` (default **10**) or the `--min` CLI override, and is re-resolved after every successful merge, so a protocol change emitted by the model takes effect mid-session.
+   `loop.min` is resolved from `protocol.loop.min` in `JINX.yaml` (default **10**) or the `--min` CLI override, and is re-resolved after every round in both transports (the JSON-RPC loop included), so a protocol change emitted by the model takes effect mid-session — upward only, as described next. A `protocol` section is merged into the manifest only after the whole state block has validated, and a new task discards the sizing the previous task's model wrote (a value a person configured is kept), so a count sized for one question never leaks into the next.
+
+   **Adaptive round count.** How many rounds the loop requires is recomputed after every round, from the model's own sizing and from what the runner itself observed, and it **only ever goes up**: a model that is tired or hurried has no way to make the loop shorter, which is the one direction in which laziness pays. The label of every round prompt (`ROUND n (at least m rounds ...)`) shows the count in force.
+   * **Sizing.** The model sizes the loop with `protocol.loop.min`. Until it does, the default (**10**) applies. The first value it sends in round 1 or 2 is taken as sent (a one-line question does not need ten rounds); afterwards a value can only raise the count, and a first value sent later than round 2 cannot go below the configured or default count. Values are clamped to `[2, HARD_CAP - 1]`. `--min N` pins the sizing to exactly `N`; the rules below still apply on top of it.
+   * **Dead rounds.** A round is *dead* when work was due and none was done: after a failed round, nothing new was run, edited or read (the same commands returning the same results count as nothing); after a pass that followed a failure, no command at all was run. A dead round adds one round to the count (at most `DEAD_ROUND_CAP` = 4) and cannot end the run; past the cap it is tolerated, so a task with nothing left to run can still finish.
+   * **Confirming round.** A pass right after a failed round has to be re-verified by one more round (`CONFIRM_ROUNDS` = 1) before it can end the run. It applies to an exit only, never to the deadlock floor: a run that keeps failing must not be able to push a deadlock out of reach.
+   * **Repeats.** The same tool call returning the same result 3 times gets a `REPEATED CALL` notice appended to those very results (at 5 it forbids the call until something it depends on changed), and the same `approach` restated with no further requirement passing gets a `REPEATED ATTEMPT` note in the next prompt. The wording escalates with the streak and only ever asks for a *different* approach; no notice offers a way to stop.
+   * The notices are advice; the counts are enforced by the runner. The extra rounds never push the count past `HARD_CAP - 1`, so an exit always stays reachable. A model that ignores every notice and repeats itself still ends at the hard cap.
 
 ### Cognitive Loop Control Flow
 
@@ -390,9 +401,9 @@ sequenceDiagram
                         Runner->>IPC: write request (tool_calls, tool_depth+1)
                     else pure text turn
                         Runner->>State: merge_state + write_jinx
-                        alt exit_ready and check_exit()
+                        alt exit_ready, check_exit() at the adaptive count, round not dead
                             Runner-->>Host: [JINX_COMPLETE], cleanup, exit 0
-                        else deadlock flag or check_deadlock()
+                        else check_deadlock() or a deadlock claim made from the round floor on
                             Runner-->>Host: [JINX_DEADLOCK], cleanup, exit 0
                         else rnd + 1 >= HARD_CAP (40)
                             Runner-->>Host: cleanup, exit 2
@@ -500,6 +511,7 @@ The JINX runtime is comprised of the following Python components located in `.ag
   * `run` — the transport dispatcher. Delegates to `run_file_ipc` when `ipc_mode == "file"`, otherwise runs the legacy long-lived JSON-RPC loop inline.
   * `parse_state_block` — extracts the last valid state block from markdown fences. The language tag is optional, so an untagged fence is parsed too; everything goes through `yaml.safe_load`, which also accepts JSON.
   * `check_exit` / `check_deadlock` / `_are_approaches_similar` — convergence and semantic-clustering logic.
+  * `_declared_base` / `_round_floors` / `_close_round` / `_round_verdict` / `_finish_round` / `_record_tool_results` — the adaptive round count (sizing ratchet, dead rounds, confirming round, deadlock gate, repeated-call memory), shared by both transports so their rules cannot drift apart.
   * `Yaml` — isolated `SafeDumper` with a block-scalar-aware string presenter plus atomic temp-file writes; `HARD_CAP` (40) and `TOOL_DEPTH_CAP` (20) guard rails; signal handlers for IPC cleanup.
 * **`state.py`** (Serialization Layer):
   Handles all file operations for the manifest `JINX.yaml`:
@@ -518,7 +530,7 @@ The JINX runtime is comprised of the following Python components located in `.ag
   Lets JINX edit its own code without letting it remove its own brakes. `file_write` accepts a bare string path, so the model has always been able to rewrite `.agent/src/jinx/*.py` — and has, which is how this repository's own release work happens. Nothing used to check whether the result still worked. This module adds that check:
   * **Verify and roll back** — `capture_baseline` copies the source tree, `baseline_changed` diffs it, and `restore_baseline` reverts. After any round that touched framework source, `verify` runs `pytest` **and** the full `jinx_test` suite; if either fails the edit is undone and the failure output is fed back to the model. A failed attempt costs one round instead of the whole run. The baseline lives for the whole run, not one round: it is captured when the run starts, kept while a round changes nothing, and re-captured after a verified edit is adopted. It is dropped on a clean finish, and deliberately **kept** on an error exit, because that is what lets the next invocation repair the damage.
   * **Bootstrap preflight** — the same check runs once more in `.agent/jinx.py` before JINX is imported, loading `selfpatch.py` directly from its path. Without this, a self-edit that leaves a syntax error would stop the framework from starting at all, and the gate designed to catch exactly that would be unable to run. With no baseline on disk there is nothing to compare against, so a broken tree fails loudly instead of being silently overwritten.
-  * **Brake protection** — `guard_tool_call` refuses a write that would redefine `merge_state`, `StateBlock`, `atomic_write_yaml`, `_resolve_jinx_path`, `check_exit`, `check_deadlock`, `_resolve_min_rounds`, `_handle_llm_response`, or `SYSTEM_PROMPT`, and treats `selfpatch.py` and `learning.py` as wholly off limits. Refusal happens **before** dispatch, not after, so the model is told it was refused instead of concluding verification is broken. Protection compares the *bodies* of those definitions against what is on disk, not merely their presence, so rewriting a whole protected file is allowed as long as the brake itself is byte-identical. Weakening, rewriting or deleting a brake is refused, and so are the sneakier variants: appending a second definition that shadows the protected one at import time, or editing the file through `bash_exec`, which never passes the guard at all. The gate therefore re-runs the same comparison against the on-disk files and the baseline *before* verification, and a brake touched that way is rolled back without being tested: a green suite cannot justify changing the code that decides what a green suite means.
+  * **Brake protection** — `guard_tool_call` refuses a write that would redefine `merge_state`, `StateBlock`, `atomic_write_yaml`, `_resolve_jinx_path`, `_apply_protocol`, `check_exit`, `check_deadlock`, `_resolve_min_rounds`, `_handle_llm_response`, the adaptive round-count helpers and constants, or `SYSTEM_PROMPT`, and treats `selfpatch.py` and `learning.py` as wholly off limits. Refusal happens **before** dispatch, not after, so the model is told it was refused instead of concluding verification is broken. Protection compares the *bodies* of those definitions against what is on disk, not merely their presence, so rewriting a whole protected file is allowed as long as the brake itself is byte-identical. Weakening, rewriting or deleting a brake is refused, and so are the sneakier variants: appending a second definition that shadows the protected one at import time, or editing the file through `bash_exec`, which never passes the guard at all. The gate therefore re-runs the same comparison against the on-disk files and the baseline *before* verification, and a brake touched that way is rolled back without being tested: a green suite cannot justify changing the code that decides what a green suite means.
 * **`prompts.py`** (Prompt Templates):
   Holds `SYSTEM_PROMPT`, the `MISSING_STATE_WARNING` injected when a round omits its state block, the `TOOL_DEPTH_CRITICAL_MSG` recovery directive, and `construct_round_prompt()`.
 
@@ -576,7 +588,7 @@ After any round that writes to framework source, the runner:
 2. keeps the edit if both pass;
 3. otherwise **reverts the source tree** and feeds the failure output back into the next round's prompt, so a failed attempt produces evidence instead of a silently broken framework.
 
-Separately, a write that would redefine the brake logic is **refused before dispatch** — not written and then undone — so the model is told it was refused rather than concluding that verification is broken. Protected: `merge_state`, `StateBlock`, `atomic_write_yaml`, `_resolve_jinx_path`, `check_exit`, `check_deadlock`, `_resolve_min_rounds`, `_handle_llm_response`, and `SYSTEM_PROMPT`; `selfpatch.py` and `learning.py` are off limits entirely.
+Separately, a write that would redefine the brake logic is **refused before dispatch** — not written and then undone — so the model is told it was refused rather than concluding that verification is broken. Protected: `merge_state`, `StateBlock`, `atomic_write_yaml`, `_resolve_jinx_path`, `_apply_protocol`, `check_exit`, `check_deadlock`, `_resolve_min_rounds`, `_handle_llm_response`, the adaptive round-count helpers (`_declared_base`, `_store_declared`, `_round_floors`, `_close_round`, `_round_verdict`, `_finish_round`, `_note_round_result`, `_record_tool_results`, `_ledger_of`, `_discard_sizing`) with their constants (`DEFAULT_MIN_ROUNDS`, `SIZING_ROUNDS`, `CONFIRM_ROUNDS`, `DEAD_ROUND_CAP`), and `SYSTEM_PROMPT`; `selfpatch.py` and `learning.py` are off limits entirely.
 
 **Why the guard is not optional.** `file_write` has no path restrictions, and the model can already merge a `protocol` block into the manifest, which re-resolves `min_rounds` mid-session. Autonomous self-modification without a brake-removal guard would make "the agent improved itself" and "the agent removed the logic that would have noticed" indistinguishable — and the second is prompt-injectable from any task.
 
@@ -772,7 +784,7 @@ During execution, the developer does not need to actively manage the loop. Progr
 ### Handling Pause and Deadlock Interventions
 JINX halts execution automatically when protocol limits are hit, requesting human oversight.
 * **Deadlock Triggering**:
-  If the same requirement fails across 3 semantically distinct strategy clusters, `deadlock` is forced to `true` in the manifest, `[JINX_DEADLOCK]` is printed, IPC files are removed, and the process exits `0` (the loop terminated deliberately, not by error — inspect the manifest to distinguish it from a successful `[JINX_COMPLETE]`).
+  If the same requirement fails across 3 semantically distinct strategy clusters (from the round floor on), or the model claims a blocker only the user can remove (also only from the round floor on; an earlier claim is refused and the loop goes on), `deadlock` is forced to `true` in the manifest, `[JINX_DEADLOCK]` is printed, IPC files are removed, and the process exits `0` (the loop terminated deliberately, not by error — inspect the manifest to distinguish it from a successful `[JINX_COMPLETE]`).
 * **Hard Cap Triggering**:
   After 40 rounds the process exits `2` without cleanup markers being relied upon; IPC files are still removed.
 * **Manual Correction Workflow**:

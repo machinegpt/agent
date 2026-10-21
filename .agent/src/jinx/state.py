@@ -395,6 +395,55 @@ def _describe_validation_error(exc: Exception, prefix: str = "") -> str:
     return "; ".join(parts)
 
 
+# Keys the runner keeps inside ``protocol.loop`` next to the model's own ``min``.
+# ``agent_set`` marks a ``min`` that came from the model, not from a person, and
+# ``config_min`` remembers the configured value that sizing replaced. They are
+# written only by ``_apply_protocol``; a block that names them is not believed.
+AGENT_SET_KEY: str = "agent_set"
+CONFIG_MIN_KEY: str = "config_min"
+
+
+def is_count(value: Any) -> bool:
+    """True for a plain integer. ``bool`` is an ``int`` in Python and is not a count."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _apply_protocol(jinx: Dict[str, Any], update: Dict[str, Any]) -> None:
+    """Merges the model's ``protocol`` section into the manifest, one level deep.
+
+    ``loop`` is merged key by key: a plain ``dict.update`` replaced the whole
+    mapping, so a block that sent only ``loop.min`` erased every other loop
+    setting, and a ``protocol`` that was not a mapping raised in the middle of a
+    round. A section that is the wrong shape is ignored rather than trusted.
+
+    A ``loop.min`` written here is marked ``agent_set``. That is what lets the
+    runner tell the model's sizing from a value a person configured: sizing is
+    ratcheted so it can only grow, and it is discarded when the next task starts
+    instead of leaking into it. A configured value it replaces is kept as
+    ``config_min`` so that discarding it restores the configuration.
+    """
+    protocol = jinx.get("protocol")
+    if not isinstance(protocol, dict):
+        protocol = {}
+        jinx["protocol"] = protocol
+    for key, value in update.items():
+        if key != "loop":
+            protocol[key] = value
+            continue
+        if not isinstance(value, dict):
+            continue
+        loop = protocol.get("loop")
+        if not isinstance(loop, dict):
+            loop = {}
+            protocol["loop"] = loop
+        sent = {k: v for k, v in value.items() if k not in (AGENT_SET_KEY, CONFIG_MIN_KEY)}
+        if "min" in sent:
+            if not loop.get(AGENT_SET_KEY) and is_count(loop.get("min")):
+                loop[CONFIG_MIN_KEY] = loop["min"]
+            loop[AGENT_SET_KEY] = True
+        loop.update(sent)
+
+
 def merge_state(
     jinx: Dict[str, Any], update: Dict[str, Any],
     diagnostics: Optional[List[str]] = None,
@@ -418,11 +467,15 @@ def merge_state(
     claim success on stale state.
     """
     path_prefix = ""
+    protocol_update: Optional[Dict[str, Any]] = None
     if "state" in update and isinstance(update["state"], dict):
         path_prefix = "state"
-        # Merge protocol section into jinx top-level so _resolve_min_rounds can read it
-        if "protocol" in update and isinstance(update["protocol"], dict):
-            jinx.setdefault("protocol", {}).update(update["protocol"])
+        # The protocol section is merged into the jinx top-level so that
+        # _resolve_min_rounds can read it, but only AFTER the block has been
+        # validated (below). Merging it here let a block that was then rejected
+        # still change the round count, although everything else in it was dropped.
+        if isinstance(update.get("protocol"), dict):
+            protocol_update = update["protocol"]
         update = update["state"]
 
     # Normalize before validation — handles verdict/detail -> all_pass/requirements
@@ -445,6 +498,9 @@ def merge_state(
 
     if outcome is not None:
         outcome["applied"] = True
+
+    if protocol_update:
+        _apply_protocol(jinx, protocol_update)
 
     s: Dict[str, Any] = jinx.setdefault("state", {})
 
