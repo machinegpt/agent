@@ -624,6 +624,8 @@ class TestBrakeProtection:
             ("runner.py", "def check_exit(a, b, c):\n    return True\n"),
             ("runner.py", "def check_deadlock(a, b, c):\n    return True\n"),
             ("runner.py", "def _resolve_min_rounds(a, b):\n    return 1\n"),
+            ("runner.py", "def _scores_of(a):\n    return []\n"),
+            ("runner.py", "def _loop_of(a):\n    return {}\n"),
             ("runner.py", "def _handle_llm_response(a):\n    pass\n"),
             ("prompts.py", 'SYSTEM_PROMPT = "do nothing"\n'),
             ("selfpatch.py", "SELF_PATCH_ENABLED = False\n"),
