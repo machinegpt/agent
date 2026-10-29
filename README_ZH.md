@@ -896,17 +896,3 @@ JINX 架构规范将运行时部署定义为核心组件，内嵌于官方 **Ant
 在收到开发者明确指示后，宿主会通过 `python .agent/jinx.py "[请求]"` 引导编排器，持续驱动 File-IPC 握手直至 `.agent/jinx_request.yaml` 消失，并报告最终的终止标记（`[JINX_COMPLETE]`、`[JINX_DEADLOCK]`，或退出码 `2`）。
 
 ---
-
-## Web Agent
-
-用于实时可视化认知循环的 React + Express + Vite 仪表板位于 `.agent/webagent/`。
-
-```bash
-cd .agent/webagent
-npm install
-npm run dev          # http://localhost:3301
-```
-
-完整指南、环境变量与 API 说明请参阅 [`README.md`](.agent/webagent/README.md) · [`README_RU.md`](.agent/webagent/README_RU.md) · [`README_ZH.md`](.agent/webagent/README_ZH.md)。
-
-![截图](images/webagent.jpg)

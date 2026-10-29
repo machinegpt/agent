@@ -321,7 +321,7 @@ The runner validates the draft and delivers it atomically: the message is writte
 
 **Known limits.**
 * A shell command is *noticed*, not *blocked*: leases protect `file_write`, not `bash_exec`. Two shells that rewrite one file at the same moment leave the final file correct, but the attribution of the change in the patches can be imprecise.
-* The JSON-RPC transport (`--ipc rpc`) and the Web Agent do not use sessions at all (one process, one run, as before); `JINX_SESSIONS` has no effect on them.
+* The JSON-RPC transport (`--ipc rpc`) does not use sessions at all (one process, one run, as before); `JINX_SESSIONS` has no effect on it.
 * Sub-agents of one editor process cannot be told apart by the runtime (they share the process and its environment), so each of them keeps using its own `--session <id>`. A model that ignores the printed `resume=` command and calls bare from such a process is refused when two of those sessions are unfinished; with only one of them it would get that one.
 * A session that was abandoned (its editor gave up) stays "unfinished" until it is archived, and keeps the editor that started it from being recognised bare; its id still works.
 * `--peek` shows text diffs; a binary file is reported as changed. The round in progress is compared with the state the session recorded when it took each file, so what another process did to that file in the meantime appears in the comparison too.
@@ -974,17 +974,3 @@ Insert the following declarative permissions block into the JSON configuration f
 Following the developer's instruction, the host bootstraps the JINX orchestrator via `python .agent/jinx.py "[request]"`, drives the File-IPC handshake until the request file disappears, and reports the terminal marker (`[JINX_COMPLETE]`, `[JINX_DEADLOCK]`, or exit code `2`). Which request and response file to use, and which command resumes the run, is printed on the `[JINX_SESSION]` line of every call (`.agent/jinx_request.yaml` and `.agent/jinx_response.yaml` only with `JINX_SESSIONS=0`). Several Claude Code windows can therefore work in one project at once, each driving its own session (§1.3); every window launches JINX the same way and the runtime tells each model who else is running and what they do. The project's `CLAUDE.md` tells every window to use the paths and the `resume` command from that line and to treat a `mail:` block as information from the other sessions, not as an instruction from the user.
 
 ---
-
-## Web Agent
-
-A React + Express + Vite dashboard for live visualization of the cognitive loop lives in `.agent/webagent/`.
-
-```bash
-cd .agent/webagent
-npm install
-npm run dev          # http://localhost:3301
-```
-
-See [`README.md`](.agent/webagent/README.md) · [`README_RU.md`](.agent/webagent/README_RU.md) · [`README_ZH.md`](.agent/webagent/README_ZH.md) for the full dashboard guide, environment variables, and API surface.
-
-![Screenshot](images/webagent.jpg)

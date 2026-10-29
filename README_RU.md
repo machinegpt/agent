@@ -902,17 +902,3 @@ python scripts/jinx_test.py --stress
 В соответствии с явными указаниями разработчика хост выполнит инициализацию оркестратора `python .agent/jinx.py "[запрос]"`, проведёт рукопожатие File-IPC до тех пор, пока `.agent/jinx_request.yaml` не исчезнет, и сообщит терминальный маркер (`[JINX_COMPLETE]`, `[JINX_DEADLOCK]` либо код выхода `2`).
 
 ---
-
-## Web Agent
-
-Панель мониторинга на React + Express + Vite для визуализации когнитивного цикла в реальном времени расположена в `.agent/webagent/`.
-
-```bash
-cd .agent/webagent
-npm install
-npm run dev          # http://localhost:3301
-```
-
-Полное руководство по дашборду, переменным окружения и API приведено в [`README.md`](.agent/webagent/README.md) · [`README_RU.md`](.agent/webagent/README_RU.md) · [`README_ZH.md`](.agent/webagent/README_ZH.md).
-
-![Скриншот](images/webagent.jpg)

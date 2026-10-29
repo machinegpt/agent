@@ -1,6 +1,0 @@
-{
-  "name": "MachineGPT Agent Terminal",
-  "description": "A monitoring dashboard and visualization workspace for machinegpt/agent execution logs, cognitive loop states, plans, and file diffs. Saves run history in LocalStorage.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
