@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.2.7--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.2.8--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-File_Based_IPC_State_Machine-0D9488?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-ReEntrant_Single_Step_Process-059669?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -515,7 +515,7 @@ JINX 运行时由以下位于 `.agent/` 目录下的 Python 组件构成（核�
   * `record_outcome` — 每一轮根据该轮结果，为实际展示过的经验记功或记过。被验证有效的经验上浮；反复失效的经验不再展示，因此该存储会自我修剪而不是持续增长。缺少这一步，账本就只是一份只写的日志。
 * **`selfpatch.py`**（带闸门的自我修改）：
   允许 JINX 修改自己的代码，同时不允许它拆掉自己的安全闸。`file_write` 接受的是裸字符串路径，因此模型一直都能重写 `.agent/src/jinx/*.py`——事实上本仓库自身的发布工作正是这样完成的。此前没有任何机制检查结果是否还能工作，本模块补上了这一环：
-  * **校验与回滚** — `capture_baseline` 复制源码树，`baseline_changed` 比对差异，`restore_baseline` 执行回滚。任何改动了框架源码的轮次之后，`verify` 都会运行 `pytest` **以及** 完整的 `jinx_test` 套件；任一失败即撤销该修改，并把失败输出回灌到下一轮提示词中。一次失败的尝试只损失一轮，而不是整次运行。基线覆盖整个运行，而非单轮：运行开始时采集，某个轮次没有改动时保留，已验证的修改被采纳后重新采集。正常结束时清除；出错退出时**刻意保留**——正是它让下一次启动能够修复损坏。
+  * **保护、编译与回滚** — `capture_baseline` 复制源码树，`baseline_changed` 比对差异，`restore_baseline` 执行回滚。框架源码变更后，闸门只运行快速 `compileall` 检查；语法错误会被回滚并反馈给模型。功能测试由编辑器 CLI 按当前任务选择和运行，因此 JINX 不重复项目测试套件。基线覆盖整个运行，而非单轮：运行开始时采集，某个轮次没有改动时保留，结构正确的修改被采纳后重新采集。正常结束时清除；出错退出时**刻意保留**——正是它让下一次启动能够修复损坏。
   * **启动前预检** — 同一检查会在 `.agent/jinx.py` 中、在导入 JINX 之前再运行一次，并按路径直接加载 `selfpatch.py`。否则，留下语法错误的自修改会让框架根本无法启动，而本该捕捉该问题的闸门也根本无法运行。磁盘上没有基线时无从比较，此时损坏的代码树会明确报错，而不是被悄悄覆盖。
   * **闸门保护** — `guard_tool_call` 拒绝任何会重定义 `merge_state`、`StateBlock`、`atomic_write_yaml`、`_resolve_jinx_path`、`_apply_protocol`、`check_exit`、`check_deadlock`、`_resolve_min_rounds`、`_handle_llm_response`、退出决策辅助函数（`_scores_of`、`_loop_of`）和自适应轮数的辅助函数与常量或 `SYSTEM_PROMPT` 的写入，并将 `selfpatch.py` 与 `learning.py` 整体列为禁区。拒绝发生在**派发之前**而非事后撤销，模型因此会知道自己被拒绝，而不会误以为校验机制坏了。保护比较这些定义的*函数体*与磁盘上的实际内容，而不仅仅检查名字是否存在，因此只要闸门本身逐字节未变，就可以整体重写受保护的文件。削弱、改写、删除闸门都会被拒绝，更隐蔽的做法同样会被识破：在文件末尾追加一个在导入时覆盖受保护定义的第二份定义，或是通过 `bash_exec` 动手——它根本不经过这道检查。因此在真正校验之前，机制会对磁盘上的文件与 baseline 重新做一次同样的比较；一旦发现闸门被这样动过，就直接回滚而不运行测试：一次通过的测试无法成为修改「决定测试是否通过的那段代码」的理由。
 * **`prompts.py`**（提示词模板）：
@@ -573,9 +573,9 @@ JINX 可以编辑 `.agent/src/jinx/*.py` 来改善自身效果，而在做框架
 
 在任何写入了框架源码的轮次之后，运行器会：
 
-1. 运行 `pytest` **以及** 完整的 `scripts/jinx_test.py` 套件，并在首次失败处停止；
-2. 两者都通过则保留该修改；
-3. 否则**回滚源码树**，并把失败输出回灌到下一轮提示词中，使失败的尝试产出证据，而不是留下一个悄悄损坏的框架。
+1. 快速编译 Python 源码；
+2. 代码仍可导入时保留该修改；
+3. 否则**回滚源码树**，并把编译器输出回灌到下一轮提示词中。
 
 此外，任何会重新定义闸门逻辑的写入都会在**派发之前**被拒绝，而不是先写入再回滚，因此模型会知道自己被拒绝，而不会误判校验机制已损坏。受保护的有：`merge_state`、`StateBlock`、`atomic_write_yaml`、`_resolve_jinx_path`、`_apply_protocol`、`check_exit`、`check_deadlock`、`_resolve_min_rounds`、`_handle_llm_response`、退出决策辅助函数（`_scores_of`、`_loop_of`）、自适应轮数的辅助函数（`_declared_base`、`_store_declared`、`_round_floors`、`_close_round`、`_round_verdict`、`_finish_round`、`_note_round_result`、`_record_tool_results`、`_ledger_of`、`_discard_sizing`）及其常量（`DEFAULT_MIN_ROUNDS`、`SIZING_ROUNDS`、`CONFIRM_ROUNDS`、`DEAD_ROUND_CAP`）和 `SYSTEM_PROMPT`；`selfpatch.py` 与 `learning.py` 整体不可触碰。
 
@@ -788,56 +788,17 @@ JINX 在触达协议上限时会自动停止执行，以请求人工介入。
 
 ---
 
-## 7. machineGPT 可插拔验证与 AI 合成引擎
+## 7. machineGPT 验证套件
 
-为保证结构符合规范与结构稳定性，仓库中提供了一套统一的超级测试套件 `scripts/jinx_test.py`。该系统将静态环境审计与单元回归测试，同一套全自动、可自愈的 AI 合成引擎（`AISynthesisEngine`）结合起来。
+为保证结构符合规范与结构稳定性，仓库中提供了验证套件 `scripts/jinx_test.py`。它自成一体：只依赖 JINX 自身的依赖项，既不读取也不创建 `tests/` 目录。框架源码被修改后，self-patch 关卡运行的也是这套检查。
 
-```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
-flowchart TD
-    classDef sub fill:#161b22,stroke:#30363d,stroke-dasharray: 3 3,color:#c9d1d9;
-    classDef standard fill:#21262d,stroke:#30363d,stroke-width:2px,color:#c9d1d9;
+### 验证阶段
+编排器运行三个诊断阶段（使用 `--stress` 时增加第四个）：
 
-    subgraph Engine["AISynthesisEngine (jinx_test.py)"]
-        AST["1. 离线 AST 解析器<br/>(扫描 .agent/src/jinx/)"]:::standard
-        DIFF["2. API 漂移检测器"]:::standard
-        GEN["3. 动态测试合成器"]:::standard
-        AST --> DIFF --> GEN
-    end
-    style Engine fill:#0d1117,stroke:#30363d,color:#e6edf3
-
-    subgraph Plugins["tests/enterprise_plugins/"]
-        V_CLI["verify_cli.py"]:::sub
-        V_STATE["verify_state.py"]:::sub
-        V_OTHER["verify_runner.py / verify_prompts.py / verify_tools.py / verify_parse_state.py"]:::sub
-    end
-    style Plugins fill:#0d1117,stroke:#30363d,color:#e6edf3
-
-    GEN -->|"自动同步 / 代码保留"| Plugins
-```
-
-### 核心验证支柱
-编排器共运行若干**诊断阶段，归入主要验证支柱**（使用 `--stress` 时会额外增加阶段与支柱）。四个静态支柱先行执行，随后针对每个被发现的核心模块各运行一个 AI 合成阶段：
-
-1. **平台与环境审计**：校验运行时约束、Python 依赖（Pydantic、PyYAML、Pytest）以及文件路径解析。
+1. **平台与环境审计**：校验运行时约束、Python 依赖（Pydantic、PyYAML）、文件路径解析，以及 `jinx` 包中的每个模块都能正常导入。
 2. **结构与模型一致性**：对 Pydantic 模型序列化以及状态块的完整序列化／反序列化往返进行压力测试（涵盖 `ApproachGraph` 的节点与边），并通过 `.agent/JINX.yaml` 落地。
 3. **图相似度与压力测试**：在极端拓扑条件下检验 Jaccard 聚类、死锁检测与相似度阈值伸缩性。
-4. **Pytest 集成回归**：原样触发 `tests/` 目录下全部单元回归测试。
-5. **AI 合成动态验证（可插拔）**：通过抽象语法树（AST）扫描 `.agent/src/jinx/`，并将类、方法与函数的存在性检查编译进 `tests/enterprise_plugins/verify_<module>.py` —— 每个模块一个阶段（`cli`、`runner`、`state`、`tools`、`prompts`、`parse_state`）。
-6. **认知循环规模与性能压力剖析（`--stress`）**：模拟 500 节点／499 边的 `ApproachGraph`，剖析完整 Pydantic 循环与 YAML 转储／加载的吞吐，并在严格的亚毫秒预算内模拟 100 路互不相交聚类的死锁场景。
-
-### 代码保留边界协议
-开发者与 AI 智能体可以自由扩展 `tests/enterprise_plugins/verify_<module>.py` 中的任何动态测试模块，无需担心手工断言在自动同步过程中被覆盖。放置在指定边界注释之间的自定义测试逻辑会被严格保留：
-```python
-# ==============================================================================
-# <CUSTOM_CODE_START>
-# 在下方添加自定义断言与执行测试，它们会被保留。
-def custom_validation_rules(suite):
-    # 你手写的自定义断言写在这里
-    assert True
-# <CUSTOM_CODE_END>
-# ==============================================================================
-```
+4. **认知循环规模与性能压力剖析（`--stress`）**：模拟 500 节点／499 边的 `ApproachGraph`，剖析完整 Pydantic 循环与 YAML 转储／加载的吞吐，并在严格的亚毫秒预算内模拟 100 路互不相交聚类的死锁场景。
 
 ### 测试套件命令行参数
 测试套件可在仓库根目录下运行：
@@ -845,18 +806,13 @@ def custom_validation_rules(suite):
 | 标志 | 作用 |
 | :--- | :--- |
 | *(无)* | 执行完整的验证循环并渲染状态仪表板 |
-| `--ai-list` | 打印所发现模块的清单、其类／函数以及插件覆盖状态 |
-| `--ai-sync` | 强制执行 AST 编译，并对插件模块进行同步／重新生成 |
 | `--stress` | 启用额外的压力／性能阶段 |
-| `--output PATH` | 覆盖 JSON 报告输出路径（默认为 `tests/jinx_test_report.json`） |
+| `--output PATH` | 额外将 JSON 报告写入 `PATH`（默认不生成报告文件） |
 | `--verbose` | 输出每一项检查的详细结果 |
 
 ```bash
 python scripts/jinx_test.py
-python scripts/jinx_test.py --ai-list
-python scripts/jinx_test.py --ai-sync
 python scripts/jinx_test.py --stress
-python -m pytest -q          # tests/ 下的 59 个回归测试
 ```
 
 ---

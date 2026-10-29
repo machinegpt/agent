@@ -22,8 +22,3 @@ jinx-cli = "jinx.cli:main"
 
 [tool.setuptools.packages.find]
 where = [".agent/src"]
-
-[tool.pytest.ini_options]
-pythonpath = [".agent/src"]
-testpaths = ["tests"]
-

@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.2.7--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.2.8--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-File_Based_IPC_State_Machine-0D9488?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-ReEntrant_Single_Step_Process-059669?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -39,6 +39,8 @@ Three files make up the transport, all resolved relative to the `.agent/` direct
 | `.agent/jinx_request.yaml` | JINX | The action JINX wants the host to perform |
 | `.agent/jinx_response.yaml` | Host | The result of that action |
 | `.agent/jinx_run_state.yaml` | JINX | Round counter, tool depth, message history, and the `waiting_for` pointer |
+
+> **Several editors at once.** By default each run lives in a *session* with its own copy of these files (and of `JINX.yaml`) under `.agent/ipc/sessions/<sid>/`, so two editors in one project no longer overwrite each other's request and response. Every call prints a `[JINX_SESSION] id=… request=… response=… resume="…" [others=N]` line with the exact paths, the exact command to run next and how many other sessions are running. Set `JINX_SESSIONS=0` to use the single shared files in `.agent/` exactly as described in this section. See §1.3.
 
 `stdout` carries only human-readable progress markers (`[JINX_WAITING]`, `[JINX_COMPLETE]`, `[JINX_DEADLOCK]`); all structured diagnostics go to `stderr` via the `jinx.cli` / `jinx.runner` loggers.
 
@@ -256,6 +258,75 @@ The legacy transport is preserved for hosts that prefer a single long-lived chil
 ```
 
 A response is treated as an error when it carries an `error` key or a `status` string containing `error`. The optional `sliced` / `is_sliced` boolean tells JINX that the host already applied the `start_line` / `end_line` window; when it is absent or false, JINX slices the payload itself. Reads are served by a single background stdin reader thread feeding a shared queue, so timeouts never desynchronize the stream.
+
+### 1.3 Several Sessions in One Project
+
+Several editors can drive JINX in the same project at the same time (two Claude Code windows, or an orchestrator that starts one editor per task). Without coordination they would share one request file, one response file and one `JINX.yaml`, and the second editor would destroy the first one's run. With sessions (the default for `--ipc file`) every run gets a directory of its own and the sessions coordinate through plain files: **no database, no daemon, no network; only `.yaml` and `.patch` files**, written atomically, built on the standard library, PyYAML and Pydantic. The editors run on one computer, so the files live in one directory tree and a rename or a hard link is the only synchronisation primitive needed.
+
+| Path under `.agent/ipc/` | Purpose |
+| :--- | :--- |
+| `sessions/<sid>/jinx_request.yaml`, `jinx_response.yaml`, `jinx_run_state.yaml`, `JINX.yaml` | The files of §1.1 and §3, one set per session. A new session starts from `.agent/JINX.yaml` when that file exists |
+| `sessions/<sid>/card.yaml` | Presence card: task, room (the team), round, state, heartbeat, held paths, what the last round tried (`doing`), the files the last rounds changed (`touched`), the fingerprint of the editor that calls it (`who`), optional `JINX_EDITOR` label |
+| `sessions/<sid>/mail_state.yaml` | What the model has been told so far: mail already shown, and the board as it was last shown |
+| `sessions/<sid>/round.yaml` | The round in progress: what each file contained when the session took it (this is what `--peek` compares with) |
+| `sessions/<sid>/inbox/{new,cur,bad}/` | Mail for this session: many writers, one reader |
+| `sessions/<sid>/outbox/` | Drafts the editor writes and the runner delivers; `sent/` and `rejected/` hold the outcome |
+| `sessions/<sid>/rounds/NNNN.patch` | One patch per closed round: a YAML header followed by a `git diff` |
+| `claims/<key>/NNNNNNNN.yaml` | Write leases on paths: one numbered generation file per change of owner |
+| `archive/<sid>-<time>/` | A finished session (or one silent for a long time) is moved here seven days after its last heartbeat, when a later session starts; its patches stay readable |
+| `office.yaml` | Protocol version, written once |
+
+The whole directory is git-ignored. The durable lesson ledger `.agent/lessons.yaml` stays shared and is updated under a file lock, so concurrent sessions do not lose each other's lessons.
+
+**Launching and resuming.** Every agent starts JINX the same way, `python .agent/jinx.py "<task>"`. The runtime gives each launch a session of its own and an id (`s7f3a`) that is unique to it and is what mail, leases and patches use, so an agent does not have to track or remember which session it is. Every call prints `[JINX_SESSION] id=<sid> request=<path> response=<path> resume="<command>"` and, when others are running, `others=<n>`; the editor uses exactly those paths and that command. `--session <sid>` (or the `JINX_SESSION` environment variable) always works: it selects the session to resume, and given together with a task it names the new one. Stale-wait recovery, signal cleanup and completion (§1.1) apply to each session separately.
+
+The runtime also recognises the calling editor, so that the command can be a bare `python .agent/jinx.py` even when several sessions are unfinished. Every call leaves a *fingerprint* on the session's card: the processes above JINX (the editor's own process, its terminal) and the environment variables that name a terminal pane or a window (`CLAUDE_PID`, `TMUX_PANE`, `WT_SESSION`, …). The marks two calls have in common are kept; those of the shell that ran one command drop out. The first call of a session therefore prints `resume="python .agent/jinx.py --session <sid>"`; once a second call has shown the same editor and the marks single the session out among the unfinished ones, the printed command is the bare one, and a bare call finds its session. The match is strict: a session is chosen only when the caller carries *all* the marks that tell it from the others, and never when another session's marks contain them. Two sessions run by one editor process (sub-agents of one window share its process and environment) cannot be told apart, so for them the printed command keeps the id, and a bare call exits `1` and lists the unfinished sessions instead of guessing. With exactly one unfinished session a bare call resumes it, as before.
+
+**The board.** The runner tells each model who else is running and what they are doing, by itself and as briefly as it can; the model never has to look. A session that is alone gets nothing. With others around, the digest (the last message of the `llm_generate` request, not kept in the history) carries
+
+```yaml
+mail:
+  you: s7f3a
+  others:                  # `team:` lists the sessions that joined this one's work
+    s9c21: r4 (reviewer) fixing the README table; holds README.md; on your files: runner.py
+  news: [s9c21 now holds runner.py]     # only after the first digest, only when something changed
+  use: 'mail: file_write .agent/ipc/sessions/s7f3a/outbox/<name>.yaml with to (<id>|room|*), ...'
+```
+
+Each line is the session's round, its editor label, what its model said its last round tried, what it holds, and, apart, the files it holds or changed that this session has held, changed or read lately. The whole list is shown the first time, whenever a session joins or leaves, and every three rounds, so what the others do stays current; in between, a change appears only as one line of `news` and only when it touches a file this session works with, at any request, so that the model hears it in time. When nothing changed nothing is said, and a plain information message arrives alone, without the list. A session that has finished leaves the board with one line (`s9c21 finished; changed README.md, runner.py`: the files of its latest rounds, newest first); its team, that is the host it joined or the helpers that joined it, also gets a short message with the paths of its last patches, and nobody else is sent one. Because the model sees a digest only in the request that carries it, every digest that can lead to an action ends with a one-line how-to (the outbox path, the mail fields and the `--peek` command); the longer explanation is given once per session.
+
+**Looking at another session.** `python .agent/jinx.py --peek` lists every session in one line. `--peek <sid>` prints what that session does, one line per round that changed something (files, added and removed lines, the model's summary) and what it has changed in the round that is still running. `--diff` adds the changes themselves, the unfinished ones first and then the newest rounds, cut at 160 lines (80 per file); `--full` lifts the limits. It reads the card, the round patches and `round.yaml` of that session and writes nothing; it does not run the self-patch preflight or import the runner, so it is safe next to a session that is editing JINX's own source. An archived session can be looked at too.
+
+**Helping another session.** `python .agent/jinx.py --join <sid> ["<task>"]` starts a new session in the team of `<sid>`. It has its own files, rounds and leases, so it cannot overwrite the host's work; what it shares is the mail room: `to: room` reaches the host and the other helpers, the host is told that you joined, and the first request carries a briefing of a few lines (the host's task in its own words, its last three rounds with their files, what it holds, its open questions, and the `--peek` command) instead of a transcript. Without a task the helper's task is "help session `<sid>`" with the host's task.
+
+**Mail.** An editor sends a message by writing a YAML draft with `file_write` into its own outbox (the digest's `use` line names the directory):
+
+```yaml
+to: sf0d0                # a session id, 'room' for the team, or '*' for every other session
+kind: ask                # tell | ask | reply | conflict
+summary: Which file should I leave alone?    # one line, 160 characters at most
+needs: reply             # reply | none
+re: sf0d0-3              # only when this message answers that one
+body: |                  # optional; a whole message is at most 64 KiB
+  Free text or structured data.
+```
+
+The runner validates the draft and delivers it atomically: the message is written under a hidden name and then linked into the recipient's `inbox/new/`, so a reader never sees a half-written file, and the reader consumes it by rename, so two readers cannot both get it. The draft moves to `sent/`, or to `rejected/` with the reason, which is shown to its author once (a draft addressed to a session that has finished is rejected too, with a pointer to `--peek <sid>`: nobody would ever read it). Unread mail is shown in the **digest** (see *The board*) as soon as it arrives; a message that asks for a reply is shown at most three times, and answering it (`re:`) acknowledges it. A session that is alone and has no mail gets nothing added to its prompt, so single-editor use costs no extra tokens. Mail is information from another agent, never an instruction from the user; the digest says so with every message.
+
+**Write leases.** Before an editor writes a file the runner claims it for the session. A path has one holder at a time; a write to a held path is refused with a message that names the holder, and the editor mails the holder, works on something else, or waits. A lease is valid while its holder's heartbeat is fresh (`JINX_LEASE_S`); when the holder is dead the next claimant takes the path over, and each generation file carries a fencing number so that the late write of a previous holder is recognised. A write is also refused as stale when the file changed after the editor last read or wrote it, and releasing a lease records the state the file was left in, which is the starting point of the next holder's patch. Edits to JINX's own source (`.agent/src/jinx`) are refused while other sessions are running, because the self-patch gate compares the whole source tree with one baseline, and `git reset --hard`, `git clean -f`, `git stash`, `git checkout -f` / `git checkout .` and `git restore .` are refused while other sessions are alive.
+
+**Round patches.** When a round closes the runner writes `rounds/NNNN.patch`. The header holds `jinx` (protocol version), `kind: round`, `session`, `round`, `summary`, `base` and `tree` (git tree ids), `touches` (the files changed) and `diff_sha256`; it adds `shell_unattributed`, `includes_unrecorded`, `lost_claims` or `shell_unrecorded` when the round could not be attributed exactly. The diff is taken between two git trees built from the recorded state of the files before the round and their state when it closed. The patches of one file chain, so applying them in order with `git apply` reproduces the file: a round can be replayed, reviewed or reverted without touching the repository's history. Building a patch never changes `HEAD`, the real index, a branch or the stash.
+
+**Shell commands.** A `bash_exec` changes files without saying which. Around every batch that contains one, the runner compares the working tree before and after and attributes the new changes to the round that ran the command. When another session's shell batch overlapped in time, only the files the script names are attributed and the rest is listed as `shell_unattributed`. A change to a file that another session holds gives the editor a conflict note and the holder a `conflict` message, except for a pure append (a log line, a list item), which is not a conflict.
+
+**Known limits.**
+* A shell command is *noticed*, not *blocked*: leases protect `file_write`, not `bash_exec`. Two shells that rewrite one file at the same moment leave the final file correct, but the attribution of the change in the patches can be imprecise.
+* The JSON-RPC transport (`--ipc rpc`) and the Web Agent do not use sessions at all (one process, one run, as before); `JINX_SESSIONS` has no effect on them.
+* Sub-agents of one editor process cannot be told apart by the runtime (they share the process and its environment), so each of them keeps using its own `--session <id>`. A model that ignores the printed `resume=` command and calls bare from such a process is refused when two of those sessions are unfinished; with only one of them it would get that one.
+* A session that was abandoned (its editor gave up) stays "unfinished" until it is archived, and keeps the editor that started it from being recognised bare; its id still works.
+* `--peek` shows text diffs; a binary file is reported as changed. The round in progress is compared with the state the session recorded when it took each file, so what another process did to that file in the meantime appears in the comparison too.
+* Leases bind only JINX sessions. A person editing in an IDE is not stopped by one, and what such an edit changes inside a round is reported as `includes_unrecorded` instead of being hidden.
+* Round patches record the working tree, not intentions: a session that loses its lease mid-round gets a patch flagged with `lost_claims`.
 
 ---
 
@@ -502,9 +573,9 @@ When a state block fails validation the previous state is kept and the reason is
 The JINX runtime is comprised of the following Python components located in `.agent/` (with core package files under `.agent/src/jinx/`):
 
 * **`jinx.py`** (Entrypoint Bootstrapper, located in `.agent/`):
-  Serves as the execution entrypoint. It prepends `.agent/src` to `sys.path` so `import jinx` resolves without a global install, then delegates to the command line parser. Includes an automatic dependency bootstrapper that checks for and automatically installs version-bounded dependencies (`pydantic>=2.0.0`, `pyyaml>=6.0`) via `sys.executable -m pip` if missing, exiting `1` with a manual-install hint on failure.
+  Serves as the execution entrypoint. It prepends `.agent/src` to `sys.path` so `import jinx` resolves without a global install, then delegates to the command line parser. Includes an automatic dependency bootstrapper that checks for and automatically installs version-bounded dependencies (`pydantic>=2.0.0`, `pyyaml>=6.0`) via `sys.executable -m pip` if missing, exiting `1` with a manual-install hint on failure. `--peek` is answered here, before the self-patch preflight and before the runner is imported.
 * **`cli.py`** (Argument Parser):
-  Parses inputs using `argparse`. Collects the positional task (joined into a single string) and the optional `--min` round override and `--ipc {file,rpc}` transport override before passing them to the orchestrator. Logging is bound to `stderr` so the transport channel stays clean. A bare invocation with no task is treated as a resume and is only legal when a run state file exists.
+  Parses inputs using `argparse`. Collects the positional task (joined into a single string) and the optional `--min` round override, `--ipc {file,rpc}` transport override, `--session <id>` selector and `--join <id>` (§1.3) before passing them to the orchestrator. `--peek [<id>] [--diff] [--full]` (§1.3) is answered without starting a run. Logging is bound to `stderr` so the transport channel stays clean. A bare invocation with no task is treated as a resume and is only legal when a run state file exists (with sessions: when the runtime can tell which session is the caller's).
 * **`runner.py`** (Orchestrator):
   Implements the state machine and both transports. Key responsibilities:
   * `run_file_ipc` — the default single-step state machine: resume detection, stale-wait recovery, response dispatch, and round advancement.
@@ -528,9 +599,20 @@ The JINX runtime is comprised of the following Python components located in `.ag
   * `record_outcome` — each round credits or blames the lessons it was actually shown, by whether that round passed. A rule that keeps failing sinks and stops being injected, so the store self-prunes instead of growing. Without this the ledger would be a write-only log.
 * **`selfpatch.py`** (Gated Self-Patching):
   Lets JINX edit its own code without letting it remove its own brakes. `file_write` accepts a bare string path, so the model has always been able to rewrite `.agent/src/jinx/*.py` — and has, which is how this repository's own release work happens. Nothing used to check whether the result still worked. This module adds that check:
-  * **Verify and roll back** — `capture_baseline` copies the source tree, `baseline_changed` diffs it, and `restore_baseline` reverts. After any round that touched framework source, `verify` runs `pytest` **and** the full `jinx_test` suite; if either fails the edit is undone and the failure output is fed back to the model. A failed attempt costs one round instead of the whole run. The baseline lives for the whole run, not one round: it is captured when the run starts, kept while a round changes nothing, and re-captured after a verified edit is adopted. It is dropped on a clean finish, and deliberately **kept** on an error exit, because that is what lets the next invocation repair the damage.
+  * **Protect, compile and roll back** — `capture_baseline` copies the source tree, `baseline_changed` diffs it, and `restore_baseline` reverts. After a framework-source edit, the gate runs only a fast `compileall` check; a syntax failure is reverted and reported to the model. Functional tests are selected and run by the editor CLI for the task at hand, so JINX does not repeat a project suite. The baseline lives for the whole run, not one round: it is captured when the run starts, kept while a round changes nothing, and re-captured after a structurally valid edit is adopted. It is dropped on a clean finish, and deliberately **kept** on an error exit, because that is what lets the next invocation repair the damage.
   * **Bootstrap preflight** — the same check runs once more in `.agent/jinx.py` before JINX is imported, loading `selfpatch.py` directly from its path. Without this, a self-edit that leaves a syntax error would stop the framework from starting at all, and the gate designed to catch exactly that would be unable to run. With no baseline on disk there is nothing to compare against, so a broken tree fails loudly instead of being silently overwritten.
   * **Brake protection** — `guard_tool_call` refuses a write that would redefine `merge_state`, `StateBlock`, `atomic_write_yaml`, `_resolve_jinx_path`, `_apply_protocol`, `check_exit`, `check_deadlock`, `_resolve_min_rounds`, `_handle_llm_response`, the exit-decision helpers (`_scores_of`, `_loop_of`), the adaptive round-count helpers and constants, or `SYSTEM_PROMPT`, and treats `selfpatch.py` and `learning.py` as wholly off limits. Refusal happens **before** dispatch, not after, so the model is told it was refused instead of concluding verification is broken. Protection compares the *bodies* of those definitions against what is on disk, not merely their presence, so rewriting a whole protected file is allowed as long as the brake itself is byte-identical. Weakening, rewriting or deleting a brake is refused, and so are the sneakier variants: appending a second definition that shadows the protected one at import time, or editing the file through `bash_exec`, which never passes the guard at all. The gate therefore re-runs the same comparison against the on-disk files and the baseline *before* verification, and a brake touched that way is rolled back without being tested: a green suite cannot justify changing the code that decides what a green suite means.
+* **`mail.py`** (Office: Mail, Leases, Round Patches):
+  The coordination layer for several sessions, with no dependency beyond the standard library, PyYAML and Pydantic. Key responsibilities:
+  * `Office` / `Session` — presence cards with heartbeats, per-session inbox and outbox, atomic publish-by-link and consume-by-rename delivery, a validated `Mail` schema, and the digest shown to the model: the board (`peer_line`, a snapshot of what concerns the reader, the `news` that differ from what was last shown) and unread mail.
+  * `claim` / `release` — exclusive write leases on paths, as numbered generation files with fencing and dead-owner takeover.
+  * `Round` — remembers what each file contained when it was claimed, refuses stale writes, and on close builds `rounds/NNNN.patch` from two git trees made with a private index (`snapshot_tree`, `make_round_patch`, `split_patch`, `apply_check`), so building a patch never touches `HEAD`, the real index or the stash.
+* **`identity.py`** (Which Editor Is Calling):
+  Fingerprints the editor above a JINX process (its ancestors and a few terminal/window environment variables, from `/proc` or `ps`), `refine`s a session's marks across calls and `identify`s the caller among the unfinished sessions under the strict rule of §1.3. It never raises: no fingerprint just means the explicit `--session <id>`.
+* **`team.py`** (Looking at Other Sessions):
+  `--peek` (`board`, `status`, `rounds_of`, `in_progress`) and the briefing of a helper that joins a session (`briefing`). Read-only, bounded output.
+* **`sessions.py`** (Runner Glue for Sessions):
+  The only caller of `mail.py`. `open_session` finds or creates the session for an invocation (a task, `--session`, `--join`, or the session it recognises as the caller's), `describe` prints the `[JINX_SESSION]` line, `digest_message` / `commit_digest` / `flush_outbox` handle mail, `screen_call` / `check_writes` enforce leases on `file_write`, and `screen_shell` / `before_batch` / `after_batch` watch shell commands. Every function logs and carries on when its own I/O fails, because coordination must never be what stops a run that would otherwise succeed.
 * **`prompts.py`** (Prompt Templates):
   Holds `SYSTEM_PROMPT`, the `MISSING_STATE_WARNING` injected when a round omits its state block, the `TOOL_DEPTH_CRITICAL_MSG` recovery directive, and `construct_round_prompt()`.
 
@@ -548,6 +630,13 @@ The JINX runtime is comprised of the following Python components located in `.ag
 | `JINX_FACTS_CAP` | `60` | both | Max `facts` entries kept; oldest dropped first |
 | `JINX_KEEP_IPC_ON_SIGNAL` | *(unset)* | both | Set to `1` to keep IPC files on Ctrl+C for inspection |
 | `JINX_TOOL_RESULT_CACHE_CAP` | `64` | both | Max memoized tool results kept; oldest evicted |
+| `JINX_SESSIONS` | `1` | `--ipc file` | `0`, `false`, `no` or `off` turns sessions off: one shared set of files in `.agent/` (§1.3) |
+| `JINX_SESSION` | *(unset)* | `--ipc file` | Session to resume when `--session` is not given |
+| `JINX_EDITOR` | *(unset)* | `--ipc file` | Free-text label of the editor, stored on the presence card when the session is created; the other sessions see it on the board (`r4 (label) …`) |
+| `JINX_LEASE_S` | `900` | `--ipc file` | Seconds (a decimal such as `45.5` is accepted) a session counts as alive after its last heartbeat, and so how long its write leases hold (minimum `30`); read when a session is created |
+| `JINX_IPC_DIR` | `.agent/ipc` | `--ipc file` | Directory of the office: sessions, claims, `office.yaml` |
+| `JINX_PROJECT_ROOT` | *parent of `.agent/`* | `--ipc file` | Project root that paths in leases and round patches are relative to |
+| `JINX_MAIL_PURE_YAML` | *(unset)* | `--ipc file` | Any value makes the mail layer use PyYAML's pure-Python parser instead of libyaml |
 
 ---
 
@@ -584,9 +673,9 @@ JINX may edit its own code under `.agent/src/jinx/*.py` to improve its results, 
 
 After any round that writes to framework source, the runner:
 
-1. runs `pytest` **and** the full `scripts/jinx_test.py` suite, stopping at the first failure;
-2. keeps the edit if both pass;
-3. otherwise **reverts the source tree** and feeds the failure output back into the next round's prompt, so a failed attempt produces evidence instead of a silently broken framework.
+1. checks the framework with fast Python compilation;
+2. keeps the edit when it remains importable;
+3. otherwise **reverts the source tree** and feeds the compiler output back into the next round's prompt.
 
 Separately, a write that would redefine the brake logic is **refused before dispatch** — not written and then undone — so the model is told it was refused rather than concluding that verification is broken. Protected: `merge_state`, `StateBlock`, `atomic_write_yaml`, `_resolve_jinx_path`, `_apply_protocol`, `check_exit`, `check_deadlock`, `_resolve_min_rounds`, `_handle_llm_response`, the exit-decision helpers (`_scores_of`, `_loop_of`), the adaptive round-count helpers (`_declared_base`, `_store_declared`, `_round_floors`, `_close_round`, `_round_verdict`, `_finish_round`, `_note_round_result`, `_record_tool_results`, `_ledger_of`, `_discard_sizing`) with their constants (`DEFAULT_MIN_ROUNDS`, `SIZING_ROUNDS`, `CONFIRM_ROUNDS`, `DEAD_ROUND_CAP`), and `SYSTEM_PROMPT`; `selfpatch.py` and `learning.py` are off limits entirely.
 
@@ -791,85 +880,18 @@ JINX halts execution automatically when protocol limits are hit, requesting huma
   1. Inspect `.agent/JINX.yaml` to identify the failing requirement and the approach history.
   2. Resolve the blocking issue in the code, or correct the environment (database seeds, fixtures, tool availability).
   3. Optionally hand-edit the `state` properties in `JINX.yaml` (facts, debt, open issues).
-   4. Restart from the CLI. A bare `python .agent/jinx.py` **resumes only when `jinx_run_state.yaml` still exists** — it is the flag that marks a run as unfinished. That file is removed on `[JINX_COMPLETE]`, `[JINX_DEADLOCK]`, and after the hard cap, so once a run has terminated a bare restart exits `1` with "Cannot start new session without a task description" rather than resuming. `JINX.yaml` itself is *not* deleted and stays readable as an audit record, but supplying a task calls `_init_new_session`, which resets `facts`, `scores`, `debt`, and `open` — so a new task starts from a clean slate and the previous evaluations are gone from the manifest. To continue interrupted work, leave the run-state in place and either fix the blocking cause and re-run bare, or hand-edit the manifest first.
+   4. Restart from the CLI. (With sessions, §1.3, resume with the `resume=` command from the `[JINX_SESSION]` line; a bare restart works while exactly one session is unfinished, or when the runtime recognises the calling editor.) A bare `python .agent/jinx.py` **resumes only when `jinx_run_state.yaml` still exists** — it is the flag that marks a run as unfinished. That file is removed on `[JINX_COMPLETE]`, `[JINX_DEADLOCK]`, and after the hard cap, so once a run has terminated a bare restart exits `1` with "Cannot start new session without a task description" rather than resuming. `JINX.yaml` itself is *not* deleted and stays readable as an audit record, but supplying a task calls `_init_new_session`, which resets `facts`, `scores`, `debt`, and `open` — so a new task starts from a clean slate and the previous evaluations are gone from the manifest. To continue interrupted work, leave the run-state in place and either fix the blocking cause and re-run bare, or hand-edit the manifest first.
 
 ### Session Verification and Commit
 Once the loop satisfies all exit criteria, JINX prints `[JINX_COMPLETE] Task resolved successfully!` and exits `0`.
 1. **Review Diff**: Inspect the file modifications produced in the workspace.
-2. **Clear/Archive State**: The state metadata in `.agent/JINX.yaml` persists as context for the next task; the transient `jinx_request.yaml`, `jinx_response.yaml`, and `jinx_run_state.yaml` are removed automatically.
+2. **Clear/Archive State**: The state metadata in `.agent/JINX.yaml` persists as context for the next task; the transient `jinx_request.yaml`, `jinx_response.yaml`, and `jinx_run_state.yaml` are removed automatically. With sessions (§1.3) the same holds inside `.agent/ipc/sessions/<sid>/`, which also keeps that session's `JINX.yaml` and its `rounds/NNNN.patch` files after the run (for seven days, then under `archive/`), so every round can be reviewed or replayed.
 
 ---
 
-## 7. machineGPT Pluggable Verification & AI Synthesis Engine
+## 7. Verification Ownership
 
-To guarantee schema conformance and structural stability of JINX, a unified super test suite lives at `scripts/jinx_test.py`. It combines static environment auditing and unit regression testing with a fully automated, self-healing dynamic AI Synthesis Engine.
-
-```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {"darkMode": true, "background": "#0d1117", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#8b949e", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#161b22", "mainBkg": "#21262d", "nodeBorder": "#8b949e", "nodeTextColor": "#e6edf3"}}}%%
-flowchart TD
-    classDef sub fill:#161b22,stroke:#30363d,stroke-dasharray: 3 3,color:#c9d1d9;
-    classDef standard fill:#21262d,stroke:#30363d,stroke-width:2px,color:#c9d1d9;
-
-    subgraph Engine["AISynthesisEngine (jinx_test.py)"]
-        AST["1. Offline AST Parser<br/>(Scans .agent/src/jinx/)"]:::standard
-        DIFF["2. API Drift Detector"]:::standard
-        GEN["3. Dynamic Test Synthesizer"]:::standard
-        AST --> DIFF --> GEN
-    end
-    style Engine fill:#0d1117,stroke:#30363d,color:#e6edf3
-
-    subgraph Plugins["tests/enterprise_plugins/"]
-        V_CLI["verify_cli.py"]:::sub
-        V_STATE["verify_state.py"]:::sub
-        V_OTHER["verify_runner.py / verify_prompts.py / verify_tools.py / verify_parse_state.py"]:::sub
-    end
-    style Plugins fill:#0d1117,stroke:#30363d,color:#e6edf3
-
-    GEN -->|"Auto-Sync / Code-Preservation"| Plugins
-```
-
-### Core Testing Pillars
-The orchestrator runs **diagnostic phases grouped into primary verification pillars** (with additional phases and pillars under `--stress`). The four static pillars run first, followed by one AI-synthesized phase per discovered core module:
-
-1. **Platform & Environment Audit**: Validates runtime constraints, Python dependencies (Pydantic, PyYAML, Pytest), and file path resolutions.
-2. **Schema & Model Conformance**: Stresses Pydantic model serialization and full state-block round-trip cycles (including `ApproachGraph` nodes and edges) through `.agent/JINX.yaml`.
-3. **Graph Similarity & Stress Testing**: Exercises Jaccard clustering, deadlock detection, and similarity scaling thresholds under extreme topological conditions.
-4. **Pytest Integration Regressions**: Natively triggers the entire `tests/` unit regression suite.
-5. **AI-Synthesized Dynamic Verification (Pluggable)**: Scans `.agent/src/jinx/` via Abstract Syntax Trees and compiles class, method, and function presence checks into `tests/enterprise_plugins/verify_<module>.py` — one phase per module (`cli`, `runner`, `state`, `tools`, `prompts`, `parse_state`).
-6. **Cognitive Loop Scale & Performance Stress Profiling (`--stress`)**: Simulates 500-node/499-edge `ApproachGraph`s, profiles full Pydantic cycle and YAML dump/load throughput, and simulates 100-way disjoint-clustering deadlock scenarios within tight sub-millisecond budgets.
-
-### Code Preservation Boundary Protocols
-Developers and AI agents can extend any dynamic test module under `tests/enterprise_plugins/verify_<module>.py` without worrying about their manual assertions being overwritten during auto-sync runs. Custom testing logic placed inside designated boundary comments is strictly preserved:
-```python
-# ==============================================================================
-# <CUSTOM_CODE_START>
-# Add custom assertions and execution tests below. They will be preserved.
-def custom_validation_rules(suite):
-    # Your manual custom testing assertions go here
-    assert True
-# <CUSTOM_CODE_END>
-# ==============================================================================
-```
-
-### Test Suite CLI Arguments
-The test suite can be run from the repository root:
-
-| Flag | Effect |
-| :--- | :--- |
-| *(none)* | Run the full verification cycle and render the status dashboard |
-| `--ai-list` | Print the discovered module inventory, their classes/functions, and plugin coverage status |
-| `--ai-sync` | Force full AST compilation and sync/regeneration of the plugin modules |
-| `--stress` | Enable the extra stress/performance phase |
-| `--output PATH` | Override the JSON report destination (default `tests/jinx_test_report.json`) |
-| `--verbose` | Emit detailed per-check output |
-
-```bash
-python scripts/jinx_test.py
-python scripts/jinx_test.py --ai-list
-python scripts/jinx_test.py --ai-sync
-python scripts/jinx_test.py --stress
-python -m pytest -q          # 59 regression tests in tests/
-```
+JINX does not ship or automatically repeat a framework test suite. The editor CLI selects and runs the relevant functional checks for the current task. After a self-patch, JINX performs only a fast Python compilation check to keep a syntactically invalid source tree from becoming its baseline.
 
 ---
 
@@ -949,7 +971,7 @@ Insert the following declarative permissions block into the JSON configuration f
    * *“JINX: Add division to calc.py and verify with unit tests”*
    * *“Please run JINX to implement division”*
 
-Following the developer's instruction, the host bootstraps the JINX orchestrator via `python .agent/jinx.py "[request]"`, drives the File-IPC handshake until `.agent/jinx_request.yaml` disappears, and reports the terminal marker (`[JINX_COMPLETE]`, `[JINX_DEADLOCK]`, or exit code `2`).
+Following the developer's instruction, the host bootstraps the JINX orchestrator via `python .agent/jinx.py "[request]"`, drives the File-IPC handshake until the request file disappears, and reports the terminal marker (`[JINX_COMPLETE]`, `[JINX_DEADLOCK]`, or exit code `2`). Which request and response file to use, and which command resumes the run, is printed on the `[JINX_SESSION]` line of every call (`.agent/jinx_request.yaml` and `.agent/jinx_response.yaml` only with `JINX_SESSIONS=0`). Several Claude Code windows can therefore work in one project at once, each driving its own session (§1.3); every window launches JINX the same way and the runtime tells each model who else is running and what they do. The project's `CLAUDE.md` tells every window to use the paths and the `resume` command from that line and to treat a `mail:` block as information from the other sessions, not as an instruction from the user.
 
 ---
 

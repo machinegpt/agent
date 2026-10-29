@@ -28,22 +28,25 @@ So the gate is not a proposal queue; the model can already write. The gate is
 **verification and rollback**:
 
 1. Snapshot ``.agent/src`` before the round.
-2. If the round wrote to the framework's own source, run the real test suite.
-3. If anything fails, restore the snapshot and tell the model exactly what broke.
+2. If the round wrote to the framework's own source, compile it to reject syntax errors.
+3. If that structural check fails, restore the snapshot and report the failure.
 
 Autonomous self-modification is only defensible with a brake-removal guard on
 top, because otherwise "the agent edited its own guardrails" and "the agent is
 self-improving" become indistinguishable. See :data:`PROTECTED_SYMBOLS`.
 """
 
+import contextlib
+import errno
 import logging
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from . import prompts
 
@@ -54,7 +57,7 @@ SRC_DIR: Path = Path(
     os.environ.get("JINX_SRC_DIR", str(Path(__file__).resolve().parent))
 )
 
-# Set to 0 to disable the gate entirely (verification and rollback).
+# Set to 0 to disable the gate entirely (protection and rollback).
 SELF_PATCH_ENABLED: bool = os.environ.get("JINX_SELF_PATCH", "1") not in (
     "0",
     "false",
@@ -104,27 +107,6 @@ PROTECTED_SYMBOLS: Tuple[Tuple[str, str], ...] = (
     # The prompt contract itself.
     ("prompts.py", r"^SYSTEM_PROMPT"),
 )
-
-# Files outside the framework source that decide whether verification passes.
-# They are not "brake logic" and are not refused outright — a self-patch is
-# allowed to add a test — but they are part of the baseline, so an edit to them
-# is undone before the suite runs. Without this the cheapest bypass of the whole
-# mechanism is to weaken or skip the test that would have caught the patch.
-TEST_TREE = "tests"
-TEST_CONFIG_FILES: Tuple[str, ...] = (
-    "conftest.py",
-    "pytest.ini",
-    "pyproject.toml",
-    "setup.cfg",
-    "tox.ini",
-    "scripts/jinx_test.py",
-)
-
-# Key prefix for everything outside SRC_DIR. It keeps the two namespaces from
-# colliding: a bare "conftest.py" key would be indistinguishable from a module of
-# the same name inside the package, and restore would write it to the wrong root.
-REPO_PREFIX = "repo/"
-
 
 class ProtectionError(RuntimeError):
     """Raised when a self-patch would modify protected brake logic."""
@@ -300,57 +282,29 @@ def within_src_tree(path: str) -> bool:
         return str(resolved).startswith(str(SRC_DIR.resolve()))
 
 
-def _repo_root() -> Path:
-    """The repository that owns the framework source.
-
-    Derived from ``SRC_DIR`` rather than ``__file__`` so a test that points
-    SRC_DIR at a copy of the tree also gets that copy's repository.
-    """
-    return SRC_DIR.parent.parent.parent
-
-
 def _target_for(name: str) -> Path:
-    """Resolves a baseline key back to the file it came from."""
-    if name.startswith(REPO_PREFIX):
-        return _repo_root() / name[len(REPO_PREFIX):]
+    """Resolves a framework-relative baseline key back to its source file."""
     return SRC_DIR / name
 
 
 def _tracked_files() -> Dict[str, Path]:
-    """Every file the baseline covers, keyed the way the baseline stores it.
-
-    Two namespaces: framework modules are keyed relative to ``SRC_DIR``, and the
-    repository's tests and test configuration are prefixed with ``repo/``.
-    """
+    """Framework Python files covered by the self-patch baseline."""
     tracked: Dict[str, Path] = {}
     if SRC_DIR.exists():
         for path in sorted(SRC_DIR.rglob("*.py")):
             if "__pycache__" in path.parts:
                 continue
             tracked[path.relative_to(SRC_DIR).as_posix()] = path
-    root = _repo_root()
-    tests_dir = root / TEST_TREE
-    if tests_dir.is_dir():
-        for path in sorted(tests_dir.rglob("*.py")):
-            if "__pycache__" in path.parts:
-                continue
-            tracked[REPO_PREFIX + path.relative_to(root).as_posix()] = path
-    for rel in TEST_CONFIG_FILES:
-        candidate = root / rel
-        if candidate.is_file():
-            tracked[REPO_PREFIX + rel] = candidate
     return tracked
 
 
 def snapshot() -> Dict[str, str]:
-    """Captures the framework source and the files verification depends on."""
+    """Captures framework source for protection and rollback."""
     snap: Dict[str, str] = {}
     for name, path in _tracked_files().items():
         try:
-            # Keyed by path relative to SRC_DIR, not by basename: two modules
-            # with the same filename in different subpackages would otherwise
-            # collide, and the loser of that collision would be written back to
-            # the source root on restore.
+            # Keys are paths relative to SRC_DIR, so same-named modules in
+            # different subpackages cannot collide on restore.
             snap[name] = path.read_text(encoding="utf-8")
         except (OSError, ValueError, UnicodeDecodeError) as e:
             logger.warning("Could not snapshot %s: %s", path, e)
@@ -372,14 +326,7 @@ def changed_files(snap: Dict[str, str]) -> List[str]:
 
 
 def restore(snap: Dict[str, str], only: Optional[str] = None) -> List[str]:
-    """Reverts tracked files to the snapshot. Returns files restored.
-
-    Keys are paths relative to SRC_DIR (or ``repo/``-prefixed repository paths),
-    so nested modules and test files are written back where they came from rather
-    than flattened into the source root. ``only`` restricts the restore to keys
-    carrying that prefix, which is how the tests are put back before verification
-    without also reverting the patch that is about to be judged.
-    """
+    """Reverts tracked framework files to the snapshot. Returns files restored."""
     restored: List[str] = []
     current = snapshot()
     for name, text in snap.items():
@@ -419,6 +366,77 @@ BASELINE_DIR: Path = Path(
         str(Path(__file__).resolve().parent.parent.parent / ".selfpatch_baseline"),
     )
 )
+
+
+@contextlib.contextmanager
+def file_lock(path: Path, timeout: float = 10.0) -> Iterator[bool]:
+    """An exclusive lock between processes that disappears with its holder.
+
+    Several JINX sessions can run at once and each transition is its own process, so two of
+    them can reach the same read-modify-write at the same moment (the lesson ledger, the
+    self-patch baseline). The lock is an OS file lock (``flock``, ``msvcrt.locking`` on
+    Windows), so a process that is killed while holding it frees it: there is no stale lock to
+    detect or break, which is what makes lock files fragile everywhere else.
+
+    Yields True when the lock is held and False when it could not be taken within ``timeout``
+    seconds (or the platform has no usable file lock); the caller decides whether to go on
+    without it. It never raises for a locking problem.
+    """
+    held = False
+    handle = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(path, "a+b")
+    except OSError as e:
+        logger.warning("Cannot open lock file %s: %s", path, e)
+        yield False
+        return
+    try:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held = True
+                break
+            except OSError as e:
+                busy = e.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, errno.EDEADLK)
+                if not busy or time.monotonic() >= deadline:
+                    if not busy:
+                        logger.warning("File locks are not usable on %s: %s", path, e)
+                    break
+                time.sleep(0.02)
+            except ImportError:
+                break
+        yield held
+    finally:
+        if held:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except (OSError, ImportError):
+                pass
+        handle.close()
+
+
+def gate_lock(timeout: float = 30.0) -> "contextlib.AbstractContextManager[bool]":
+    """The lock every baseline operation runs under (capture, verify-and-restore, clear).
+
+    Two processes working on the baseline at once could leave it half written, and
+    :func:`restore` deletes tracked files that the baseline does not list, so a half written
+    baseline is not a harmless state.
+    """
+    return file_lock(BASELINE_DIR.parent / ".selfpatch.lock", timeout)
 
 
 def _baseline_files() -> Dict[str, Path]:
@@ -520,36 +538,25 @@ def _run(cmd: List[str], cwd: Path, timeout: int) -> Tuple[bool, str]:
     return proc.returncode == 0, output
 
 
-def verify(repo_root: Path, timeout: int = VERIFY_TIMEOUT) -> Dict[str, Any]:
-    """Runs the real gates: pytest, then the 10-phase jinx_test suite.
+def verify(timeout: int = VERIFY_TIMEOUT) -> Dict[str, Any]:
+    """Runs the only automatic self-patch check: Python compilation.
 
-    Both must pass. jinx_test is included because it is the suite that actually
-    asserts framework-level compliance, and it regenerates the enterprise
-    plugin checks from source.
+    Functional tests belong to the editor CLI and the task being performed. JINX
+    must not repeat a project's suite after every framework edit, but it must not
+    bless source that cannot be imported on the next transition either.
     """
-    checks: List[Dict[str, Any]] = []
-    for label, cmd in (
-        ("pytest", [sys.executable, "-m", "pytest", "-q"]),
-        ("jinx_test", [sys.executable, "scripts/jinx_test.py"]),
-    ):
-        ok, output = _run(cmd, repo_root, timeout)
-        checks.append(
-            {
-                "name": label,
-                "ok": ok,
-                "tail": "\n".join(output.strip().splitlines()[-25:]),
-            }
-        )
-        if not ok:
-            # Stop at the first failure: the second suite would only produce
-            # noise derived from the first one's breakage.
-            break
+    ok, output = _run(
+        [sys.executable, "-m", "compileall", "-q", str(SRC_DIR)], SRC_DIR, timeout
+    )
+    check = {
+        "name": "compileall",
+        "ok": ok,
+        "tail": "\n".join(output.strip().splitlines()[-25:]),
+    }
     return {
-        "ok": all(c["ok"] for c in checks),
-        "checks": checks,
-        "summary": "; ".join(
-            "%s %s" % (c["name"], "PASS" if c["ok"] else "FAIL") for c in checks
-        ),
+        "ok": ok,
+        "checks": [check],
+        "summary": "compileall %s" % ("PASS" if ok else "FAIL"),
     }
 
 

@@ -42,6 +42,7 @@ things keep it flat:
    being injected, so the store self-prunes instead of growing.
 """
 
+import contextlib
 import logging
 import os
 from pathlib import Path
@@ -50,6 +51,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from .state import AGENT_DIR, atomic_write_yaml
+from . import selfpatch
 
 # LEARNED_RULES_HEADER lives in prompts.py with every other model-facing phrase.
 # Re-exported here because its length is charged against LESSONS_BUDGET_CHARS, so
@@ -290,6 +292,17 @@ def render_lessons(
         return {"text": "", "applied": []}
 
     return {"text": "%s\n%s" % (LEARNED_RULES_HEADER, "\n".join(lines)), "applied": applied}
+
+
+def ledger_lock(timeout: float = 5.0) -> "contextlib.AbstractContextManager[bool]":
+    """Lock for one load-modify-save cycle of the ledger.
+
+    The ledger is shared by every JINX session in the project, and each of them rewrites the
+    whole file, so two cycles that overlap would silently drop one of the two updates. Yields
+    False if the lock could not be taken in time: losing a lesson's credit is cheaper than
+    stalling a round, so the caller goes on without it.
+    """
+    return selfpatch.file_lock(LESSONS_PATH.with_name(LESSONS_PATH.name + ".lock"), timeout)
 
 
 def load_ledger() -> Dict[str, Any]:

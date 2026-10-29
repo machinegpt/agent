@@ -47,7 +47,6 @@ Thumbs.db
 # --- Test Caches & Diagnostic Reports ---
 .pytest_cache/
 *.log
-tests/jinx_test_report.json
 
 # --- JINX Runtime State ---
 # Per-run IPC files and the run manifest are session state, not source.
@@ -64,3 +63,5 @@ tests/jinx_test_report.json
 # Self-patch baseline: a throwaway copy of framework source used to roll back a
 # failed self-edit. Never source of truth.
 .agent/.selfpatch_baseline/
+# Lock files of the cross-process locks (lesson ledger, self-patch baseline).
+.agent/*.lock

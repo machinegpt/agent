@@ -36,7 +36,7 @@ from .state import (
     AGENT_SET_KEY, CONFIG_MIN_KEY, is_count, merge_state, read_jinx, write_jinx,
 )
 from .tools import tool_schema
-from . import evidence, learning, selfpatch
+from . import evidence, learning, selfpatch, sessions
 
 logger = logging.getLogger("jinx.runner")
 
@@ -426,11 +426,46 @@ REQUEST_PATH: Path = AGENT_DIR / "jinx_request.yaml"
 RESPONSE_PATH: Path = AGENT_DIR / "jinx_response.yaml"
 RUN_STATE_PATH: Path = AGENT_DIR / "jinx_run_state.yaml"
 
+# The session this process serves (see sessions.py). None is the single shared set of files above,
+# which is what JINX_SESSIONS=0 and the JSON-RPC transport use.
+SESSION: Optional["sessions.Context"] = None
 
-def clean_up_ipc_files() -> None:
-    """Removes temporary IPC communication files."""
+
+def bind_session(ctx: "sessions.Context") -> None:
+    """Points every file of the run at this session's own directory.
+
+    Without it every process shares ``.agent/jinx_request.yaml`` and friends, so two editors
+    that start JINX in one project wipe each other's work. The paths are module attributes read
+    at call time, so rebinding them here is all the rest of the runner needs.
+    """
+    global SESSION, REQUEST_PATH, RESPONSE_PATH, RUN_STATE_PATH
+    SESSION = ctx
+    REQUEST_PATH, RESPONSE_PATH, RUN_STATE_PATH = ctx.request, ctx.response, ctx.run_state
+    # state._resolve_jinx_path() reads this variable on every access, so the manifest follows the session.
+    os.environ["JINX_PATH"] = str(ctx.manifest)
+
+
+def _remove_ipc_files() -> None:
+    """Removes the request, the response and the run state, and nothing else."""
     for p in (REQUEST_PATH, RESPONSE_PATH, RUN_STATE_PATH):
         p.unlink(missing_ok=True)
+
+
+def clean_up_ipc_files() -> None:
+    """Ends a run: removes its IPC files and, with sessions, frees what the session held."""
+    _remove_ipc_files()
+    if SESSION is not None:
+        sessions.end(SESSION)
+
+
+def _gate_owner() -> bool:
+    """May this process run the self-patch gate (capture, verify, restore, clear the baseline)?
+
+    Always, without sessions. With them, only a session that runs alone or holds the framework
+    source: the baseline is one copy of the whole source tree, so a second session reverting
+    "changes" would be reverting the first one's work.
+    """
+    return SESSION is None or sessions.self_patch_allowed(SESSION)
 
 
 # AGENT_DIR is derived from this module's location, not from the CWD, so the IPC
@@ -969,11 +1004,13 @@ def _close_lesson_bookkeeping(
     if not applied:
         return
     try:
-        ledger = learning.load_ledger()
-        ledger["lessons"] = learning.record_outcome(
-            ledger.get("lessons"), applied, bool(passed)
-        )
-        learning.save_ledger(ledger)
+        # The ledger is shared by every session: one load-modify-save cycle at a time.
+        with learning.ledger_lock():
+            ledger = learning.load_ledger()
+            ledger["lessons"] = learning.record_outcome(
+                ledger.get("lessons"), applied, bool(passed)
+            )
+            learning.save_ledger(ledger)
     except Exception as e:
         logger.error("Lesson bookkeeping failed: %s", e, exc_info=True)
     finally:
@@ -1008,6 +1045,23 @@ def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> Optional[str]:
         return None
     if not selfpatch.BASELINE_DIR.exists():
         return None
+    if not _gate_owner():
+        # Another session is running and this one does not hold the framework source: the
+        # baseline is not this session's to judge against.
+        return None
+    # One process at a time may verify and restore. The lock is released when this process
+    # ends, even if it is killed, so it cannot be left behind.
+    with selfpatch.gate_lock() as held:
+        if not held:
+            logger.warning(
+                "Another process is running the self-patch gate; this check waits for the next round."
+            )
+            return None
+        return _verify_or_revert()
+
+
+def _verify_or_revert() -> Optional[str]:
+    """The body of the gate, called with the gate lock held (see ``_enforce_self_patch_gate``)."""
     try:
         changed = selfpatch.baseline_changed()
     except Exception as e:
@@ -1020,8 +1074,8 @@ def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> Optional[str]:
         return None
 
     # Re-check protection against the baseline before verifying. `guard_tool_call`
-    # only ever sees `file_write`, so a brake weakened through `bash_exec` would
-    # otherwise sail through a green test suite and be adopted as the baseline.
+    # only ever sees `file_write`, so a brake weakened through `bash_exec` must
+    # never be adopted merely because it passes a later structural check.
     try:
         for name in changed:
             # 1. Block any edit to PROTECTED_FILES
@@ -1055,30 +1109,15 @@ def _enforce_self_patch_gate(run_state: Dict[str, Any]) -> Optional[str]:
             prompts.PROTECTION_CHECK_FAILURE % (type(e).__name__, e)
         )
 
-    # Put the tests and test configuration back BEFORE the suite runs. They are
-    # the yardstick the patch is about to be measured with, so leaving a weakened
-    # or skipped test in place would let the model edit the answer instead of the
-    # framework. Source changes are deliberately left alone here: they are the
-    # thing under test, and a failing patch is reverted below anyway.
-    try:
-        tests_restored = selfpatch.restore_baseline(only=selfpatch.REPO_PREFIX)
-    except Exception as e:
-        logger.error("Could not restore the test files: %s", e, exc_info=True)
-        return _rollback_and_report(
-            prompts.TEST_SUITE_RESTORE_FAILURE % (type(e).__name__, e)
-        )
-
-    result = selfpatch.verify(AGENT_DIR.parent)
+    # Functional tests belong to the editor CLI and the current task. The gate
+    # performs only the fast importability check that keeps an invalid source
+    # tree from becoming the next trusted baseline.
+    result = selfpatch.verify()
     if result["ok"]:
-        logger.info("Self-patch verified: %s", ", ".join(changed))
-        # Adopt the verified edit as the new reference so the same diff is not
-        # re-verified on every later round.
+        logger.info("Self-patch syntax check passed: %s", ", ".join(changed))
+        # Adopt the structurally valid edit as the new reference so the same
+        # diff is not re-checked on every later round.
         selfpatch.capture_baseline()
-        if tests_restored:
-            # The tests were put back before verification, so a new or edited test
-            # file the model added is now gone. Staying silent would leave it
-            # believing the coverage it just wrote still exists.
-            return prompts.TEST_FILES_RESTORED % ", ".join(tests_restored)
         return None
 
     # Route the rollback through the shared handler. `restore_baseline` reads
@@ -1154,17 +1193,32 @@ def _render_check_failures(checks: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _finish_run() -> None:
+def _finish_run(status: str = "exit") -> None:
     """Terminal cleanup for a run that ended on its own terms.
 
     The self-patch baseline is dropped here because the run is over and the next
     task recaptures it. It is intentionally NOT dropped on the error exits: a run
     that died with a half-applied self-edit should leave the baseline behind so
     the bootstrap preflight can still roll that edit back on the next invocation.
+
+    With sessions the baseline is only dropped by the last session standing (or the one
+    holding the framework source): another session may still be relying on it. ``status``
+    ("exit", "deadlock", "hard_cap") is what the other sessions are told.
     """
-    if selfpatch.SELF_PATCH_ENABLED:
-        selfpatch.clear_baseline()
-    clean_up_ipc_files()
+    if selfpatch.SELF_PATCH_ENABLED and _gate_owner():
+        with selfpatch.gate_lock() as held:
+            if held or SESSION is None:
+                selfpatch.clear_baseline()
+    if SESSION is not None:
+        sessions.end(SESSION, completed=True, status=status)
+    _remove_ipc_files()
+
+
+def _round_summary(scores: List[Any]) -> str:
+    """One line for the header of the round's .patch: what the model says the round tried."""
+    last = scores[-1] if scores else None
+    text = _get_val(last, "approach", "") if last is not None else ""
+    return " ".join(str(text or "").split())
 
 
 def _touch_run_state(run_state: Dict[str, Any]) -> Dict[str, Any]:
@@ -1365,10 +1419,11 @@ def summarize_dropped_history(
         return None
     rounds = [d for d in dropped if isinstance(d, dict)]
     tool_msgs = sum(1 for d in rounds if _has_unanswered_tool_use(d) or _has_orphan_tool_result(d))
-    return {
-        "role": "user",
-        "content": prompts.HISTORY_ELISION_NOTICE % (len(rounds), tool_msgs),
-    }
+    notice = prompts.HISTORY_ELISION_NOTICE % (len(rounds), tool_msgs)
+    if SESSION is not None:
+        # The saved state of a session lives in its own manifest, not in the shared path.
+        notice = notice.replace(".agent/JINX.yaml", SESSION.rel(SESSION.manifest))
+    return {"role": "user", "content": notice}
 
 
 def _request_messages(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1475,6 +1530,21 @@ def write_llm_request(
     if isinstance(feedback, str) and feedback:
         messages.insert(0, {"role": "user", "content": feedback})
 
+    # Mail and the list of the other sessions, as one extra message at the END of the request:
+    # everything before it stays identical from request to request (so a prompt cache keeps
+    # working), and like the notices above it is never added to the history. A session that
+    # runs alone and has no mail gets nothing here, so the feature costs it no tokens. A retry
+    # repeats the digest of the request it replaces, because the mail it showed has already been
+    # filed as read.
+    mail_msg: Optional[Dict[str, Any]] = None
+    if SESSION is not None:
+        if retry and isinstance(carried.get("mail_digest"), dict):
+            mail_msg = carried["mail_digest"]
+        else:
+            mail_msg = sessions.digest_message(SESSION, round_start=(tool_depth == 0))
+        if mail_msg:
+            messages.append(mail_msg)
+
     request_payload = {
         "type": "llm_generate", "system": SYSTEM_PROMPT,
         "messages": messages, "tools": tool_schema(),
@@ -1506,10 +1576,17 @@ def write_llm_request(
     ledger = rounds if rounds is not None else carried.get("rounds")
     if isinstance(ledger, dict):
         run_state["rounds"] = ledger
+    if mail_msg:
+        run_state["mail_digest"] = mail_msg
     try:
         Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
     except JinxError as e:
         raise IPCError(f"Failed to write run state: {e}") from e
+
+    # Only now is the digest in front of the editor: file the mail it showed as read. A crash
+    # before this line means the same mail is shown again, never that it is lost.
+    if SESSION is not None:
+        sessions.commit_digest(SESSION)
 
     print(f"[JINX_WAITING] Requesting LLM completion for Round {rnd}...", flush=True)
 
@@ -1535,12 +1612,18 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
         jinx = read_jinx()
         _init_new_session(task, jinx)
         min_rounds = _resolve_min_rounds(jinx, min_override)
-        clean_up_ipc_files()
+        # Only the files: with sessions, clean_up_ipc_files() would end the session just opened.
+        _remove_ipc_files()
 
         # Baseline the framework source before any tool call this round can
-        # modify it, and start from a fresh lesson-credit slate.
-        if selfpatch.SELF_PATCH_ENABLED:
-            selfpatch.capture_baseline()
+        # modify it, and start from a fresh lesson-credit slate. With sessions
+        # only a session that runs alone does so: the baseline is one copy of the
+        # source tree for everybody (see _gate_owner); a session that starts later
+        # takes it when it first needs to edit the framework (sessions.screen_call).
+        if selfpatch.SELF_PATCH_ENABLED and _gate_owner():
+            with selfpatch.gate_lock() as held:
+                if held or SESSION is None:
+                    selfpatch.capture_baseline()
 
         run_state: Dict[str, Any] = {
             "rnd": 1, "tool_depth": 0, "history": [],
@@ -1589,6 +1672,8 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
     history = run_state["history"]
     waiting_for = run_state["waiting_for"]
     min_rounds = run_state["min_rounds"]
+    if SESSION is not None:
+        sessions.heartbeat(SESSION, rnd)
 
     if not RESPONSE_PATH.exists():
         if _is_run_state_stale(run_state):
@@ -1695,6 +1780,20 @@ def _handle_llm_response(
                     {"type": "tool_result", "tool_use_id": tool_use_id, "content": reason}
                 )
                 continue
+        # With several sessions in one project a file belongs to one writer at a time: take
+        # the lease on the path before the write is dispatched, and refuse it, with the
+        # holder's name, when somebody else has it (or changed the file since it was read).
+        if SESSION is not None and name in ("file_read", "file_write", "bash_exec") and isinstance(params, dict):
+            reason = (
+                sessions.screen_shell(SESSION, params.get("script")) if name == "bash_exec"
+                else sessions.screen_call(SESSION, name, params)
+            )
+            if reason:
+                logger.info("Refused by the session guard: %s %s", name, params.get("path"))
+                refused_results.append(
+                    {"type": "tool_result", "tool_use_id": tool_use_id, "content": reason}
+                )
+                continue
         valid_calls.append({"id": tool_use_id, "name": name, "params": params})
 
     if malformed_results:
@@ -1739,6 +1838,9 @@ def _handle_llm_response(
             return
 
     if valid_calls:
+        if SESSION is not None:
+            # A shell command may change any file: look at the tree now and again after the batch.
+            sessions.before_batch(SESSION, valid_calls)
         try:
             _write_tool_request(valid_calls, history, rnd, tool_depth + 1, min_rounds, run_state)
         except (IPCError, OSError, JinxError) as e:
@@ -1760,6 +1862,10 @@ def _handle_llm_response(
     closed = _close_round(jinx, update, round_ledger, min_override, rnd, diagnostics)
     jinx, scores = closed["jinx"], closed["scores"]
     floor, min_rounds = closed["floor"], closed["exit_floor"]
+    if SESSION is not None:
+        # The round is over whatever its verdict: record what it changed as one .patch and
+        # give the file leases back.
+        sessions.round_closed(SESSION, rnd, _round_summary(scores))
     if update:
         outcome: Dict[str, Any] = closed["outcome"]
 
@@ -1773,11 +1879,13 @@ def _handle_llm_response(
             incoming = outcome.get("lessons") or []
             if incoming:
                 try:
-                    ledger = learning.load_ledger()
-                    ledger["lessons"] = learning.add_lessons(
-                        ledger.get("lessons"), incoming
-                    )
-                    learning.save_ledger(ledger)
+                    # The ledger is shared by every session: one cycle at a time.
+                    with learning.ledger_lock():
+                        ledger = learning.load_ledger()
+                        ledger["lessons"] = learning.add_lessons(
+                            ledger.get("lessons"), incoming
+                        )
+                        learning.save_ledger(ledger)
                 except Exception as e:
                     logger.error("Could not persist lessons: %s", e, exc_info=True)
             _close_lesson_bookkeeping(
@@ -1791,12 +1899,12 @@ def _handle_llm_response(
             )
             if verdict == "exit":
                 print("[JINX_COMPLETE] Task resolved successfully!", flush=True)
-                _finish_run()
+                _finish_run("exit")
                 return
 
             if verdict == "deadlock":
                 print("[JINX_DEADLOCK] Loop aborted due to strategy deadlock.", flush=True)
-                _finish_run()
+                _finish_run("deadlock")
                 return
         else:
             logger.warning(
@@ -1807,7 +1915,7 @@ def _handle_llm_response(
     # Transition to next round
     rnd += 1
     if rnd >= HARD_CAP:
-        _finish_run()
+        _finish_run("hard_cap")
         logger.error("Cognitive loop exhausted HARD_CAP.")
         sys.exit(2)
 
@@ -1858,12 +1966,24 @@ def _handle_tool_response(
         # conclusion on those results rather than as an instruction preceding them.
         tool_results.append({"type": "text", "text": feedback})
 
+    calls_by_id = _tool_calls_in(history)
+    if SESSION is not None:
+        # The lease on a path is checked before a write and again after it. If it was lost
+        # in between (it ran out and another session took the file), the write may have
+        # overwritten that session's work; say so, and tell that session.
+        answered = [
+            calls_by_id[r["tool_use_id"]] for r in results
+            if isinstance(r, dict) and r.get("tool_use_id") in calls_by_id
+        ]
+        for note in sessions.check_writes(SESSION, answered) + sessions.after_batch(SESSION):
+            tool_results.append({"type": "text", "text": note})
+
     # Measure what the batch returned against what the same calls returned before.
     # A call that keeps returning the identical result cannot change anything, and
     # the model is told so now, in the results it is about to read, rather than in
     # the next round's prompt after the loop of identical calls has been spent.
     round_ledger = _ledger_of(run_state)
-    repeats = _record_tool_results(round_ledger, _tool_calls_in(history), results)
+    repeats = _record_tool_results(round_ledger, calls_by_id, results)
     if repeats:
         tool_results.append({"type": "text", "text": prompts.note_repeated_call(repeats)})
 
