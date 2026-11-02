@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jinx"
-version = "1.2.5"
+dynamic = ["version"]
 description = "Enterprise Sovereign Agent Framework for Editor Integrations"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,3 +22,7 @@ jinx-cli = "jinx.cli:main"
 
 [tool.setuptools.packages.find]
 where = [".agent/src"]
+
+# One place for the version: jinx/__init__.py, so the package metadata cannot drift from it.
+[tool.setuptools.dynamic]
+version = { attr = "jinx.__version__" }

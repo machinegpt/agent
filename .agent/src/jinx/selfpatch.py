@@ -28,8 +28,9 @@ So the gate is not a proposal queue; the model can already write. The gate is
 **verification and rollback**:
 
 1. Snapshot ``.agent/src`` before the round.
-2. If the round wrote to the framework's own source, compile it to reject syntax errors.
-3. If that structural check fails, restore the snapshot and report the failure.
+2. If the round wrote to the framework's own source, compile it and import every module in a child
+   interpreter, to reject syntax errors and source that cannot be loaded.
+3. If either check fails, restore the snapshot and report the failure.
 
 Autonomous self-modification is only defensible with a brake-removal guard on
 top, because otherwise "the agent edited its own guardrails" and "the agent is
@@ -44,6 +45,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -368,6 +370,17 @@ BASELINE_DIR: Path = Path(
 )
 
 
+_NO_LOCK_WARNED: set = set()
+
+
+def _warn_no_lock(path: Path, why: str) -> None:
+    """Say once per lock file (not once per round) that it cannot be used and work goes on without it."""
+    key = str(path)
+    if key not in _NO_LOCK_WARNED:
+        _NO_LOCK_WARNED.add(key)
+        logger.warning("%s: %s; continuing without the lock", key, why)
+
+
 @contextlib.contextmanager
 def file_lock(path: Path, timeout: float = 10.0) -> Iterator[bool]:
     """An exclusive lock between processes that disappears with its holder.
@@ -378,9 +391,12 @@ def file_lock(path: Path, timeout: float = 10.0) -> Iterator[bool]:
     Windows), so a process that is killed while holding it frees it: there is no stale lock to
     detect or break, which is what makes lock files fragile everywhere else.
 
-    Yields True when the lock is held and False when it could not be taken within ``timeout``
-    seconds (or the platform has no usable file lock); the caller decides whether to go on
-    without it. It never raises for a locking problem.
+    Yields True when the caller may go ahead and False when another process kept the lock for the
+    whole ``timeout`` seconds; the caller then skips its cycle. A lock that cannot exist here at all
+    (the lock file cannot be opened, or the file system or platform has no file locks) is not a lock
+    that somebody else holds: it is warned about once and the caller goes ahead without it, as a
+    single process would. Treating it as busy would switch the self-patch gate and the lesson ledger
+    off for good. It never raises for a locking problem.
     """
     held = False
     handle = None
@@ -388,9 +404,10 @@ def file_lock(path: Path, timeout: float = 10.0) -> Iterator[bool]:
         path.parent.mkdir(parents=True, exist_ok=True)
         handle = open(path, "a+b")
     except OSError as e:
-        logger.warning("Cannot open lock file %s: %s", path, e)
-        yield False
+        _warn_no_lock(path, "cannot open the lock file: %s" % e)
+        yield True
         return
+    usable = True
     try:
         deadline = time.monotonic() + max(0.0, timeout)
         while True:
@@ -408,12 +425,15 @@ def file_lock(path: Path, timeout: float = 10.0) -> Iterator[bool]:
                 busy = e.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, errno.EDEADLK)
                 if not busy or time.monotonic() >= deadline:
                     if not busy:
-                        logger.warning("File locks are not usable on %s: %s", path, e)
+                        usable = False
+                        _warn_no_lock(path, "file locks are not usable here: %s" % e)
                     break
                 time.sleep(0.02)
             except ImportError:
+                usable = False
+                _warn_no_lock(path, "this platform has no file locks")
                 break
-        yield held
+        yield held or not usable
     finally:
         if held:
             try:
@@ -538,26 +558,65 @@ def _run(cmd: List[str], cwd: Path, timeout: int) -> Tuple[bool, str]:
     return proc.returncode == 0, output
 
 
+# Run in a child process: a module that fails (or hangs) on import must not take the verifier down
+# with it, and the child sees the files as they are on disk, not the modules this process loaded
+# long ago. It imports exactly what the next transition imports, every module of the package.
+_IMPORT_CHECK = """\
+import importlib, sys
+from pathlib import Path
+pkg = Path(sys.argv[1])
+sys.path.insert(0, str(pkg.parent))
+failed = []
+for stem in ["__init__"] + sorted(p.stem for p in pkg.glob("*.py") if p.stem != "__init__"):
+    name = pkg.name if stem == "__init__" else pkg.name + "." + stem
+    try:
+        importlib.import_module(name)
+    except BaseException as e:
+        failed.append("%s: %s: %s" % (name, type(e).__name__, e))
+print("\\n".join(failed))
+sys.exit(1 if failed else 0)
+"""
+
+
 def verify(timeout: int = VERIFY_TIMEOUT) -> Dict[str, Any]:
-    """Runs the only automatic self-patch check: Python compilation.
+    """Runs the only automatic self-patch checks: the source compiles, and every module imports.
 
     Functional tests belong to the editor CLI and the task being performed. JINX
     must not repeat a project's suite after every framework edit, but it must not
-    bless source that cannot be imported on the next transition either.
+    bless source that cannot be imported on the next transition either. Compiling
+    alone accepts a module with a missing import or an exception at load time, and
+    such an edit would then become the baseline every later rollback returns to.
     """
+    # -f: without it compileall trusts a .pyc whose recorded modification time (whole seconds) matches
+    # the source's, so an edit made within the same second as the version compiled before it goes unseen.
     ok, output = _run(
-        [sys.executable, "-m", "compileall", "-q", str(SRC_DIR)], SRC_DIR, timeout
+        [sys.executable, "-m", "compileall", "-q", "-f", str(SRC_DIR)], SRC_DIR, timeout
     )
-    check = {
+    checks = [{
         "name": "compileall",
         "ok": ok,
         "tail": "\n".join(output.strip().splitlines()[-25:]),
-    }
-    return {
-        "ok": ok,
-        "checks": [check],
-        "summary": "compileall %s" % ("PASS" if ok else "FAIL"),
-    }
+    }]
+    summary = "compileall %s" % ("PASS" if ok else "FAIL")
+    if ok:
+        # Only worth running on source that compiles: otherwise it would repeat the same error.
+        # The working directory is the one above the package, so it is the only thing the
+        # interpreter puts on the path besides the package's own dependencies.
+        # A cache directory of its own makes the child compile what is on disk now, whatever the
+        # project's own .pyc files say, and leaves those files alone.
+        with tempfile.TemporaryDirectory(prefix="jinx-verify-") as cache:
+            imported, output = _run(
+                [sys.executable, "-X", "pycache_prefix=" + cache, "-c", _IMPORT_CHECK, str(SRC_DIR)],
+                SRC_DIR.parent, timeout,
+            )
+        checks.append({
+            "name": "import",
+            "ok": imported,
+            "tail": "\n".join(output.strip().splitlines()[-25:]),
+        })
+        summary += ", import %s" % ("PASS" if imported else "FAIL")
+        ok = imported
+    return {"ok": ok, "checks": checks, "summary": summary}
 
 
 def guard_tool_call(path: str, content: str) -> Optional[str]:

@@ -445,9 +445,37 @@ def bind_session(ctx: "sessions.Context") -> None:
     os.environ["JINX_PATH"] = str(ctx.manifest)
 
 
+NOTICES_DIR = "notices"      # the same name as in jinx.py, which cannot import the package it guards
+
+
+def _notice_files() -> List[Path]:
+    """The verdicts the bootstrap preflight left for this run, oldest first (see jinx.py)."""
+    try:
+        return sorted((RUN_STATE_PATH.parent / NOTICES_DIR).iterdir())
+    except OSError:
+        return []
+
+
+def _take_notices() -> str:
+    """Reads and removes the preflight's verdicts; the empty string when there are none."""
+    messages: List[str] = []
+    for p in _notice_files():
+        if p.suffix != ".yaml":
+            continue
+        try:
+            data = Yaml.load_from_file(p)
+        except Exception:
+            data = None
+        p.unlink(missing_ok=True)       # an unreadable notice helps nobody, so it goes as well
+        text = data.get("message") if isinstance(data, dict) else None
+        if isinstance(text, str) and text.strip():
+            messages.append(text.strip())
+    return "\n\n".join(messages)
+
+
 def _remove_ipc_files() -> None:
-    """Removes the request, the response and the run state, and nothing else."""
-    for p in (REQUEST_PATH, RESPONSE_PATH, RUN_STATE_PATH):
+    """Removes the request, the response, the run state and the verdicts waiting for it, and nothing else."""
+    for p in (REQUEST_PATH, RESPONSE_PATH, RUN_STATE_PATH, *_notice_files()):
         p.unlink(missing_ok=True)
 
 
@@ -1005,12 +1033,9 @@ def _close_lesson_bookkeeping(
         return
     try:
         # The ledger is shared by every session: one load-modify-save cycle at a time.
-        with learning.ledger_lock():
-            ledger = learning.load_ledger()
-            ledger["lessons"] = learning.record_outcome(
-                ledger.get("lessons"), applied, bool(passed)
-            )
-            learning.save_ledger(ledger)
+        learning.update_ledger(
+            lambda lessons: learning.record_outcome(lessons, applied, bool(passed))
+        )
     except Exception as e:
         logger.error("Lesson bookkeeping failed: %s", e, exc_info=True)
     finally:
@@ -1110,11 +1135,11 @@ def _verify_or_revert() -> Optional[str]:
         )
 
     # Functional tests belong to the editor CLI and the current task. The gate
-    # performs only the fast importability check that keeps an invalid source
-    # tree from becoming the next trusted baseline.
+    # performs only the fast checks (compile, then import) that keep a source
+    # tree which cannot be loaded from becoming the next trusted baseline.
     result = selfpatch.verify()
     if result["ok"]:
-        logger.info("Self-patch syntax check passed: %s", ", ".join(changed))
+        logger.info("Self-patch check passed (%s): %s", result["summary"], ", ".join(changed))
         # Adopt the structurally valid edit as the new reference so the same
         # diff is not re-checked on every later round.
         selfpatch.capture_baseline()
@@ -1210,15 +1235,46 @@ def _finish_run(status: str = "exit") -> None:
             if held or SESSION is None:
                 selfpatch.clear_baseline()
     if SESSION is not None:
-        sessions.end(SESSION, completed=True, status=status)
+        exported = sessions.end(SESSION, completed=True, status=status)
+        if exported:
+            print(exported, flush=True)     # where the code of this run was collected, for the editor to pass on
     _remove_ipc_files()
 
 
 def _round_summary(scores: List[Any]) -> str:
-    """One line for the header of the round's .patch: what the model says the round tried."""
+    """One line for the subject of the round's .mbox: what the model says the round tried."""
     last = scores[-1] if scores else None
     text = _get_val(last, "approach", "") if last is not None else ""
     return " ".join(str(text or "").split())
+
+
+EVIDENCE_CHARS = 300                   # per field of a round's evidence
+EVIDENCE_FAILED = 8                    # failed requirements named
+
+
+def _round_evidence(scores: List[Any]) -> Dict[str, Any]:
+    """What the model says about how the round went, for the round's .yaml: short, and only what it actually said.
+
+    The verdict (all requirements passed or not, which ones did not) and the three fields that make the round's
+    reasoning checkable: what it predicted, whether that held, and the cause of a failure. {} when it said nothing.
+    """
+    last = scores[-1] if scores else None
+    if last is None:
+        return {}
+    out: Dict[str, Any] = {}
+    requirements = _get_val(last, "requirements", None)
+    if isinstance(requirements, dict) and requirements:
+        out["passed"] = "%d/%d" % (sum(1 for v in requirements.values() if v), len(requirements))
+        failed = [" ".join(str(k).split())[:80] for k, v in requirements.items() if not v]
+        if failed:
+            out["failed"] = failed[:EVIDENCE_FAILED]
+    if _get_val(last, "all_pass", None) is not None:
+        out["all_pass"] = bool(_get_val(last, "all_pass", False))
+    for key in ("hypothesis", "prediction_check", "cause"):
+        text = " ".join(str(_get_val(last, key, "") or "").split())
+        if text:
+            out[key] = text[:EVIDENCE_CHARS]
+    return out
 
 
 def _touch_run_state(run_state: Dict[str, Any]) -> Dict[str, Any]:
@@ -1522,12 +1578,15 @@ def write_llm_request(
     # the send window; the persist window is deliberately larger.
     messages = _request_messages(history)
 
-    # A self-patch reverted by the bootstrap preflight leaves its explanation in
-    # the run state. It is surfaced here because this is the one funnel every
-    # llm_generate request passes through, and the run state is rebuilt from
-    # explicit keys below, so the marker is consumed exactly once.
-    feedback = carried.get("self_patch_feedback")
-    if isinstance(feedback, str) and feedback:
+    # A self-patch reverted by the bootstrap preflight leaves its explanation as a file in the
+    # notices folder (jinx.py). It is surfaced here because this is the one funnel every
+    # llm_generate request passes through. The files are removed as they are read, so the model
+    # sees each verdict once; a retry repeats the request it replaces, so it repeats the verdict
+    # too (kept in the run state below, which is rebuilt from explicit keys and so drops it again).
+    feedback = carried.get("self_patch_feedback") if retry else None
+    if not (isinstance(feedback, str) and feedback):
+        feedback = _take_notices()
+    if feedback:
         messages.insert(0, {"role": "user", "content": feedback})
 
     # Mail and the list of the other sessions, as one extra message at the END of the request:
@@ -1578,6 +1637,8 @@ def write_llm_request(
         run_state["rounds"] = ledger
     if mail_msg:
         run_state["mail_digest"] = mail_msg
+    if feedback:
+        run_state["self_patch_feedback"] = feedback
     try:
         Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
     except JinxError as e:
@@ -1863,9 +1924,10 @@ def _handle_llm_response(
     jinx, scores = closed["jinx"], closed["scores"]
     floor, min_rounds = closed["floor"], closed["exit_floor"]
     if SESSION is not None:
-        # The round is over whatever its verdict: record what it changed as one .patch and
-        # give the file leases back.
-        sessions.round_closed(SESSION, rnd, _round_summary(scores))
+        # The round is over whatever its verdict: record what it changed as a .mbox and a .yaml, and
+        # give the file leases back. A block that was rejected says nothing about this round.
+        said = scores if closed["applied"] else []
+        sessions.round_closed(SESSION, rnd, _round_summary(said), _round_evidence(said))
     if update:
         outcome: Dict[str, Any] = closed["outcome"]
 
@@ -1880,12 +1942,9 @@ def _handle_llm_response(
             if incoming:
                 try:
                     # The ledger is shared by every session: one cycle at a time.
-                    with learning.ledger_lock():
-                        ledger = learning.load_ledger()
-                        ledger["lessons"] = learning.add_lessons(
-                            ledger.get("lessons"), incoming
-                        )
-                        learning.save_ledger(ledger)
+                    learning.update_ledger(
+                        lambda lessons: learning.add_lessons(lessons, incoming)
+                    )
                 except Exception as e:
                     logger.error("Could not persist lessons: %s", e, exc_info=True)
             _close_lesson_bookkeeping(

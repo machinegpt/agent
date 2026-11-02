@@ -54,6 +54,11 @@ Thumbs.db
 .agent/jinx_request.yaml
 .agent/jinx_response.yaml
 .agent/jinx_run_state.yaml
+# Verdicts of the self-patch preflight waiting for the next prompt (removed as they are read). With
+# JINX_SESSIONS=0 they are here; with sessions they sit in the session's own folder under .agent/ipc/.
+.agent/notices/
+# The rounds of a finished run collected into one .mbox and .yaml (jinx.py --export): a copy, never source.
+.agent/export/
 # Per-session subtree (JINX_SESSION). Claims, bus notes and per-session manifest,
 # baseline and IPC live here; deleting it forgets every session at once.
 .agent/ipc/

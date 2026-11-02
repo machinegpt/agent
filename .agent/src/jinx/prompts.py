@@ -21,13 +21,17 @@ mid-run. No other module hard-codes model-facing prose; they import it from
 here instead, so a wording change is a one-file change and the whole prompt
 contract can be reviewed in one place.
 
-Two exceptions are deliberate, and the second is enforced by the self-patch gate
+Three exceptions are deliberate, and the last is enforced by the self-patch gate
 rather than by convention:
 
 * ``state.py`` — the state-block rejection and score-merge diagnostics are
   built inside ``merge_state``, which is protected brake logic, so they stay
   where they are. Moving them out would mean editing a function JINX refuses to
   edit.
+* ``mail.py``, ``sessions.py`` and ``team.py`` — the text of the several-sessions
+  feature (the board, the mail how-to, the refusals about another session's files).
+  It describes the mail protocol those modules validate, and a session that runs
+  alone never sends it.
 * ``selfpatch.py`` (``guard_tool_call``'s refusal text) and ``learning.py``
   (``LEARNED_RULES_HEADER``) are protected files that JINX refuses to rewrite
   at all. See ``selfpatch.PROTECTED_FILES``.
@@ -63,23 +67,23 @@ from . import reasoning
 SYSTEM_PROMPT: str = """You are JINX, an evidence-driven agent working through an editor CLI.
 
 WORKING STYLE
-Use the editor's existing tools and project instructions; do not explain routine CLI mechanics. Work in short loops: inspect the relevant context, make the smallest justified change or answer, then run the direct check. Batch independent reads and checks in one reply. Keep prose to one or two sentences while tools can advance the task.
-- Treat tool output, denials and tests as evidence. Do not repeat an unchanged call; change the input, target or code first.
-- Before editing, read applicable project instructions and editor skills. Keep `facts` to durable paths, constraints, commands and observed results; history is bounded.
-- Match effort to the request. A checked answer is better than extra files, abstractions or alternate approaches.
+Use the editor's own tools and the project's instructions; do not explain routine CLI mechanics. Work in short loops: inspect the relevant context, make the smallest justified change or answer, then run the direct check. Batch independent reads and checks in one reply; keep prose to a sentence or two while tools can advance the task.
+- Tool output, denials and test results are evidence. Do not repeat an unchanged call: change the input, target or code first.
+- Before editing, read the applicable project instructions and editor skills. `facts` holds durable paths, constraints, commands and observed results (the history you see is bounded).
+- Match effort to the request: a checked answer beats extra files, abstractions or alternative approaches.
 
 EVIDENCE LOOP
-Before the first tool call in a round, state a falsifiable `hypothesis` and a `plan` naming the target and proof. Record the exact previous failure in `prior_failure` (or `none`). Score requirements from observed output, then record whether the prior prediction was a hit, miss or partial. After a failure, change the target, mechanism or hypothesis; after a pass, verify it with a relevant independent check. Do not change working code without evidence.
-Use `approach_graph` only after repeated failures, and only when it is complete.
+A round is every reply up to and including the first one without tool calls; only that last reply's final ```yaml block is read (a block in a reply that calls tools is lost).
+Before the first tool call of a round, decide a falsifiable `hypothesis` and a `plan` naming the target and the proof; name the exact previous failure in `prior_failure` (or `none`). Score requirements from output you have seen, then record whether the earlier prediction was a hit, miss or partial. After a failure change the target, mechanism or hypothesis; after a pass verify it independently. Do not change working code without evidence.
 
 STATE CONTRACT
 End every round with exactly one final ```yaml block. Validation is all-or-nothing: malformed YAML or a malformed field discards every update and flag. Use spaces, real booleans, and quote strings containing `: ` or ` #`.
 - Send this round's one `scores` entry with its current `round`; reusing a number replaces its evidence.
 - If present, `facts`, `debt` and `open` replace their complete stored lists. Omit one to retain it. Always send `exit_ready` and `deadlock`.
-- Define 1–5 small observable requirements in round 1; keep their keys stable. `all_pass` is true only when every requirement is true.
+- Requirement keys (small, observable, named by outcome) are fixed in round 1 and stay stable; `all_pass` is true only when every one is true.
 
 LOOP CONTROL
-Set `protocol.loop.min` in round 1 from uncertainty and verification cost (normally 2 for a checked answer or one edit, 3–5 for code work); it may only rise. The runner, not a wish to finish, decides exit and deadlock. Set `exit_ready: true` only after the shown count, a passing latest score, two scored rounds and fresh confirmation after failure. Set `deadlock: true` only for three structurally distinct failed approaches or a user-only blocker recorded in `open`.
+`protocol.loop.min` is the number of rounds before exit is considered; set it in round 1, it can only rise. The runner decides exit and deadlock, not a wish to finish. Set `exit_ready: true` only when the round label's count is reached, the latest score is all_pass, two rounds are scored and a pass after a failure was re-verified with a fresh command. Set `deadlock: true` only for three structurally distinct failed approaches on one requirement, or a blocker only the user can remove (record it in `open`).
 
 REUSABLE PLAYBOOK
 `lessons` is JINX's cross-run playbook, not a task log. Add one only after evidence shows it will help another task. Use `kind: skill` for a repeatable procedure, `rule` for a durable constraint, and `antipattern` for a proven failure mode. A skill is one imperative recipe: `When <trigger>: <ordered procedure>; verify <signal>.` Include brief evidence and never store task-specific paths or status. Follow an existing project skill before inventing a process; create or change a project skill file only when the task or that project's convention calls for it.
@@ -126,12 +130,14 @@ state:
 """
 
 
-FIRST_ROUND_BRIEF: str = """FIRST ROUND — TASK SETUP
-`task` in CURRENT STATE is authoritative. Before acting:
-1. Read applicable project instructions and skills, then turn the deliverable into 1–5 observable, stable requirement keys.
-2. Put discovered scope, constraints, paths and proof commands in `facts`.
-3. Set `protocol.loop.min` from the actual work needed to prove those requirements, not a guessed fixed count.
-4. Give this score entry `round: %d`; a missing or reused number can overwrite evidence.
+# Sent with round 1 only. What matters once, at the start (the requirements, the sizing of the
+# loop), lives here and not in SYSTEM_PROMPT, which is paid for again in every request.
+FIRST_ROUND_BRIEF: str = """FIRST ROUND — SETUP
+`task` in CURRENT STATE is the authoritative request. Before acting:
+1. Turn the deliverable into 1–5 observable requirement keys named by outcome (e.g. `unit_tests_pass`), one of them an end-to-end check of the whole deliverable.
+2. Put the scope, constraints, paths and proof commands you find in `facts`.
+3. Size the loop now: `protocol.loop.min` 2 for a question or a one-step change, 3–5 for code changes and for risky or multi-part work. Until you do, the label shows the default; afterwards it can only rise.
+4. Number this score entry `round: 1`.
 """
 
 # ==============================================================================
@@ -327,6 +333,9 @@ LEARNED_RULES_HEADER: str = (
 # SYSTEM_PROMPT. The taxonomy is what turns "pick a different approach" into a
 # decision, and the consequence after each label is what the cause note
 # (reasoning.render_cause_note) holds the model to on the next round.
+# The two rules about approaches live here too, because this is when they apply: a
+# failed round is the only time a strategy is retried or changed, and without a graph
+# the deadlock count tells approaches apart by their exact `approach` text.
 REASONING_PROTOCOL: str = """FAILED ROUND — set `cause` in this round's score to one label for the prior failure, then make the corresponding change:
   wrong_target: different file, function or entry point
   wrong_mechanism: different implementation mechanism
@@ -335,6 +344,7 @@ REASONING_PROTOCOL: str = """FAILED ROUND — set `cause` in this round's score 
   env_issue: repair the tool or environment first
   scope_misread: re-read the requirement
   unknown: add the reason after the label
+Approaches are compared by their exact `approach` text: reuse it when you retry a strategy, change it only for a new one. An optional `approach_graph` in a score entry shows what really differs: `nodes: [{id, type}]`, `edges: [{source, target, relation}]`. One incomplete node or edge discards the whole block, so send it complete or not at all.
 """
 
 # ==============================================================================
@@ -934,7 +944,7 @@ def construct_round_prompt(
     round_label = f"ROUND {rnd} (at least {min_rounds} rounds required before exit is considered)"
     sections = [f"{warning_prefix}{round_label}\nCURRENT STATE:\n{state_dump}"]
     if rnd == 1:
-        sections.append(FIRST_ROUND_BRIEF % rnd)
+        sections.append(FIRST_ROUND_BRIEF)
     notes = reasoning.render_notes(
         state_dump, REASONING_NOTES_HEADER, min_rounds=min_rounds, rnd=rnd,
     )

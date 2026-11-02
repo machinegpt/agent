@@ -19,7 +19,7 @@ import logging
 import os
 import sys
 
-from . import runner, sessions, team
+from . import export, runner, sessions, team
 from .state import AGENT_DIR
 
 # Setup a dedicated stderr logger for internal CLI logs
@@ -81,12 +81,24 @@ def main() -> None:
              "what it does and which rounds changed which files. Changes nothing."
     )
     parser.add_argument("--diff", action="store_true", help="With --peek <id>: also show the changes themselves.")
-    parser.add_argument("--full", action="store_true", help="With --peek <id>: no size limits.")
+    parser.add_argument("--full", action="store_true",
+                        help="With --peek <id>: no line limits (the output is still cut at 400,000 characters).")
+    parser.add_argument(
+        "--export",
+        nargs="*",
+        default=None,
+        metavar="SESSION",
+        help="Collect the rounds of the named sessions (all of them with none named) into one .mbox that "
+             "`git am` applies, one commit per round, and a .yaml that records them. Changes nothing in the project."
+    )
+    parser.add_argument("--out", default=None, help="With --export: the folder to write to (default: .agent/export).")
 
     args = parser.parse_args()
 
     if args.peek is not None:
         sys.exit(team.peek_main(sys.argv[1:], AGENT_DIR))
+    if args.export is not None:
+        sys.exit(export.export_main(sys.argv[1:], AGENT_DIR))
 
     task_str: str = " ".join(args.task).strip()
 

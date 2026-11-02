@@ -46,7 +46,7 @@ import contextlib
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import yaml
 
@@ -299,10 +299,30 @@ def ledger_lock(timeout: float = 5.0) -> "contextlib.AbstractContextManager[bool
 
     The ledger is shared by every JINX session in the project, and each of them rewrites the
     whole file, so two cycles that overlap would silently drop one of the two updates. Yields
-    False if the lock could not be taken in time: losing a lesson's credit is cheaper than
-    stalling a round, so the caller goes on without it.
+    False if another session kept the lock for the whole timeout: losing a lesson's credit is
+    cheaper than stalling a round, so that cycle is skipped (see :func:`update_ledger`). A lock
+    that cannot be used at all on this file system is not "held by another session": the cycle
+    goes ahead without it (see :func:`selfpatch.file_lock`).
     """
     return selfpatch.file_lock(LESSONS_PATH.with_name(LESSONS_PATH.name + ".lock"), timeout)
+
+
+def update_ledger(change: Callable[[Any], List[Dict[str, Any]]]) -> bool:
+    """One locked load-modify-save cycle: ``ledger["lessons"] = change(ledger["lessons"])``.
+
+    Returns False, and leaves the file untouched, when the lock could not be taken in time.
+    A cycle that ran without the lock would read a ledger another session is about to
+    overwrite, and its own save would then throw that session's update away; skipping one
+    update costs a lesson's credit, never anybody else's data.
+    """
+    with ledger_lock() as held:
+        if not held:
+            logger.warning("The lesson ledger is locked by another session; this update is skipped")
+            return False
+        ledger = load_ledger()
+        ledger["lessons"] = change(ledger.get("lessons"))
+        save_ledger(ledger)
+        return True
 
 
 def load_ledger() -> Dict[str, Any]:

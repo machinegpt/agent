@@ -19,7 +19,7 @@ the response, the run state, the state manifest), so two editors that start JINX
 wipe each other's work. Here each session gets a directory of its own,
 
     .agent/ipc/sessions/<sid>/   jinx_request.yaml, jinx_response.yaml, jinx_run_state.yaml,
-                                 JINX.yaml, mailbox, outbox, one .patch per round
+                                 JINX.yaml, mailbox, outbox, a .mbox and a .yaml per round
 
 and the sessions talk to each other through ``mail.py``: they see who else is running, take
 exclusive write leases on files, and exchange short YAML messages.
@@ -37,7 +37,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import identity, mail, selfpatch, team
+from . import export, identity, mail, selfpatch, team
 from .state import AGENT_DIR
 
 logger = logging.getLogger("jinx.sessions")
@@ -53,10 +53,11 @@ MANIFEST_NAME = "JINX.yaml"
 FRAMEWORK_CLAIM = ".agent/src/jinx"
 
 # Shell commands change files without telling anybody which. Around a batch that runs one, the tree is
-# compared before and after (git status), and what changed is attributed to the round.
-SHELL_PRE_NAME = "shell_pre.yaml"      # exists while a batch with a shell command is out with the editor
-SHELL_DONE_NAME = "shell_done.yaml"    # when the last such batch ended: lets the others tell whether they overlapped it
-SHELL_UNATTRIBUTED_CAP = 20            # paths named in a patch header as "changed, but not attributable"
+# compared before and after (git status), and what changed is attributed to the round. The other sessions
+# learn from the card whether such a batch is out (``shell``: when it began) and when the last one ended
+# (``shell_ended``), which is how they tell whether they overlapped it.
+SHELL_STALE_S = 3600                   # a batch that has been "out" this long is not running: its session lost its record
+SHELL_UNATTRIBUTED_CAP = 20            # paths named in a round's record as "changed, but not attributable"
 SHELL_ADOPT_CAP = 100              # a command that changes more files than this is not an edit (npm install...)
 SHELL_APPEND_CAP = 1_000_000       # bytes: larger files are not compared to see whether a change only appended
 SHELL_WATCH_BUDGET_S = 2.5         # a tree that takes longer than this to inspect is left alone from then on
@@ -119,6 +120,11 @@ def ipc_dir() -> Path:
 
 def project_root() -> Path:
     return Path(os.environ.get("JINX_PROJECT_ROOT") or AGENT_DIR.parent).resolve()
+
+
+def export_dir() -> Path:
+    """Where the rounds of a finished run are collected (export.py)."""
+    return AGENT_DIR / export.EXPORT_DIR
 
 
 class Context:
@@ -545,7 +551,8 @@ def screen_shell(ctx: Context, script: Any) -> Optional[str]:
 def _own_prefixes(ctx: Context) -> List[str]:
     """Paths of JINX's own bookkeeping: never part of anybody's round."""
     agent = ctx.rel(AGENT_DIR)
-    return [f"{agent}/ipc/", f"{agent}/.selfpatch", f"{agent}/lessons.yaml", f"{agent}/JINX.yaml", f"{agent}/jinx_"]
+    return [f"{agent}/ipc/", f"{agent}/{export.EXPORT_DIR}/", f"{agent}/notices/", f"{agent}/.selfpatch",
+            f"{agent}/lessons.yaml", f"{agent}/JINX.yaml", f"{agent}/jinx_"]
 
 
 def before_batch(ctx: Context, calls: List[Dict[str, Any]]) -> None:
@@ -560,25 +567,26 @@ def before_batch(ctx: Context, calls: List[Dict[str, Any]]) -> None:
     if not scripts:
         return
     started = time.time()
-    pre_file = ctx.dir / SHELL_PRE_NAME
     try:
         if alone(ctx):
             _ensure_baseline()                # a framework edit by a shell command must be verifiable too
         rnd = ctx.round
-        if not rnd.git or not rnd.watch or pre_file.exists():
-            return                            # (an existing file is the earliest state: this is a retry)
+        rnd.begin()                           # the commit this round starts from: the command may commit
+        if not rnd.git or not rnd.watch or rnd.shell:
+            return                            # (a record that exists is the earliest state: this is a retry)
         t0 = time.monotonic()
         pre = mail.dirty_files(ctx.root, _own_prefixes(ctx))
         if time.monotonic() - t0 > SHELL_WATCH_BUDGET_S:
             rnd.watch = False
-            rnd._save()
             logger.warning("Inspecting the working tree took %.1fs: shell changes are no longer attributed.",
                            time.monotonic() - t0)
-        mail.atomic_write(pre_file, mail.dump_yaml({
+        rnd.shell = {
             "started": started,
             "dirty": {p: (list(e) if e else None) for p, e in pre.items()},
             "script": "\n".join(scripts)[:SHELL_SCRIPT_KEEP],
-        }))
+        }
+        rnd._save()
+        ctx.session.beat(shell=started)       # the others see that a batch with a shell command is out
     except (OSError, ValueError, mail.MailError) as e:
         logger.warning("Could not look at the tree before the shell command (continuing unprotected): %s", e)
 
@@ -618,13 +626,6 @@ def _only_appended(ctx: Context, rel: str, before: mail.Entry) -> bool:
     return len(cur_norm) > len(old_norm) and cur_norm.startswith(old_norm)
 
 
-def _stamp_shell_done(ctx: Context, ended: float) -> None:
-    try:
-        mail.atomic_write(ctx.dir / SHELL_DONE_NAME, mail.dump_yaml({"ended": ended}))
-    except (OSError, mail.MailError):
-        pass                                  # the others then think we overlapped them: the cautious answer
-
-
 def _shell_overlap(ctx: Context, started: float) -> bool:
     """Whether another session may have been running shell commands while this session's batch was out.
 
@@ -632,24 +633,20 @@ def _shell_overlap(ctx: Context, started: float) -> bool:
     the tree different, and the before/after comparison cannot tell whose command did it when two were
     running at once. Cautious: anything that cannot be read counts as an overlap.
     """
+    now = time.time()
     for sid in ctx.office.session_ids():
         if sid == ctx.sid:
             continue
-        d = ctx.office.sessions_dir / sid
-        try:
-            if (d / SHELL_PRE_NAME).exists() and ctx.office.alive(sid):
-                return True                   # its batch is out with its editor right now
-            st = (d / SHELL_DONE_NAME).stat()
-        except FileNotFoundError:
-            continue
-        except OSError:
+        card = ctx.office.card(sid)
+        if not card:
             return True
-        if st.st_mtime + 2.0 < started:       # (file times can be coarse: two seconds of grace)
-            continue
         try:
-            ended = float((mail.load_yaml((d / SHELL_DONE_NAME).read_text("utf-8")) or {}).get("ended", 0.0))
-        except (OSError, ValueError, TypeError, mail.MailError):
+            out = float(card.get("shell") or 0.0)
+            ended = float(card.get("shell_ended") or 0.0)
+        except (TypeError, ValueError):
             return True
+        if out and now - out < SHELL_STALE_S and ctx.office.alive(sid, card):
+            return True                       # its batch is out with its editor right now
         if ended >= started:
             return True                       # it finished a batch after ours began
     return False
@@ -664,22 +661,28 @@ def after_batch(ctx: Context) -> List[str]:
 
     The comparison sees every change in the tree, whoever made it. While another session was running shell
     commands too, a change is taken only when this session's own command names the file; the rest is
-    listed in the patch header as not attributable instead of being credited to whichever session looks first.
+    listed in the round's record as not attributable instead of being credited to whichever session looks first.
     """
-    pre_file = ctx.dir / SHELL_PRE_NAME
-    if not pre_file.exists():
+    if not ctx.session.card().get("shell"):
+        return []                             # before_batch started no watch: nothing to attribute (and no git to spawn)
+    rnd = ctx.round
+    if not rnd.shell:
+        # The record is gone (round.yaml was lost): do not leave the others waiting for a batch that is over.
+        ctx.session.beat(shell=None, shell_ended=time.time())
         return []
     notes: List[str] = []
     try:
-        data = mail.load_yaml(pre_file.read_text("utf-8")) or {}
+        data = rnd.shell
         pre: Dict[str, mail.Entry] = {p: (tuple(e) if e else None) for p, e in (data.get("dirty") or {}).items()}
         script = str(data.get("script") or "")
         try:
             started = float(data.get("started") or 0.0)
         except (TypeError, ValueError):
             started = 0.0
-        _stamp_shell_done(ctx, time.time())   # before the batch stops counting as running: no gap for the others
-        mail._unlink(pre_file)                # consumed, whatever happens below
+        rnd.shell = None                      # consumed, whatever happens below
+        rnd._save()
+        # One write: the batch stops counting as running at the moment its end is stamped, so there is no gap for the others.
+        ctx.session.beat(shell=None, shell_ended=time.time())
         post = mail.dirty_files(ctx.root, _own_prefixes(ctx), store=False)
         changed: List[Tuple[str, mail.Entry]] = []
         for p in sorted(set(pre) | set(post)):
@@ -689,9 +692,8 @@ def after_batch(ctx: Context) -> List[str]:
                 changed.append((p, before))
         if not changed:
             return []
-        rnd = ctx.round
         if len(changed) > SHELL_ADOPT_CAP:
-            rnd.notes["shell_unrecorded"] = len(changed)       # said in the patch header: it is incomplete
+            rnd.notes["shell_unrecorded"] = len(changed)       # said in the round's record: it is incomplete
             rnd._save()
             return []
         peers = [x["id"] for x in ctx.office.peers(exclude=ctx.sid)]
@@ -768,12 +770,16 @@ def check_writes(ctx: Context, calls: List[Dict[str, Any]]) -> List[str]:
 
 
 # ------------------------------------------------------------------------------ rounds and the end
-def round_closed(ctx: Context, rnd: int, summary: str) -> Optional[Path]:
-    """The model's round ended: record it as rounds/NNNN.patch, release the file leases, update the card."""
+def round_closed(ctx: Context, rnd: int, summary: str, evidence: Optional[Dict[str, Any]] = None) -> Optional[Path]:
+    """The model's round ended: record it as rounds/NNNN.mbox + NNNN.yaml, release the file leases, update the card.
+
+    ``evidence`` is what the model said about the round (see runner._round_evidence); it goes into the .yaml.
+    """
     out: Optional[Path] = None
     ctx.round.last_touched = []
+    summary, evidence = mail.clean_text(summary), mail.clean_text(evidence)     # a lone surrogate cannot be written
     try:
-        out = ctx.round.close(rnd, summary)
+        out = ctx.round.close(rnd, summary, evidence)
     except (OSError, ValueError, mail.MailError) as e:
         logger.warning("Could not record round %s: %s", rnd, e)
         try:
@@ -802,14 +808,17 @@ def _publish_round(ctx: Context, rnd: int, summary: str) -> None:
         logger.warning("Could not update the session card after round %s: %s", rnd, e)
 
 
-def end(ctx: Context, *, completed: bool = False, status: str = "exit") -> None:
+def end(ctx: Context, *, completed: bool = False, status: str = "exit") -> str:
     """The session is over (finished, deadlocked, aborted): free everything it held and say goodbye.
 
     ``completed`` is True for a run that ended on its own terms (``status``: exit, deadlock,
     hard_cap); its team (the host it joined, the helpers that joined it) is told so, with a pointer to the
-    patches of its last rounds. Everybody else sees it leave the board (``gone``) at their next round
+    .mbox of its last rounds. Everybody else sees it leave the board (``gone``) at their next round
     start: the notice would cost them tokens for a session they do not work with. Any other end (an
     error, a signal) just frees the leases and marks the session done.
+
+    A completed run that changed files also has its rounds collected into one .mbox and .yaml
+    (export.py). What comes back is the ``[JINX_EXPORT]`` line for the editor to pass on, or "".
     """
     try:
         for item in ctx.session.flush_outbox():     # drafts written in the last round still go out
@@ -819,14 +828,18 @@ def end(ctx: Context, *, completed: bool = False, status: str = "exit") -> None:
     try:
         if completed and ctx.office.teammates(ctx.session.sid):
             card = ctx.session.card()
-            patches = sorted(p for p in ctx.session.rounds.glob("*.patch"))
-            refs = [mail.patch_ref(ctx.office, p) for p in patches[-5:]]
+            changed = sorted(ctx.session.rounds.glob("*.mbox"))
+            refs = [mail.patch_ref(ctx.office, p) for p in changed[-5:]]
             task = mail._short(card.get("task"), 60)
-            body: Dict[str, Any] = {"status": status, "rounds": card.get("round"), "patches": len(patches)}
+            body: Dict[str, Any] = {"status": status, "rounds": card.get("round"), "changed_rounds": len(changed)}
             ctx.session.send("room", "tell", f"{status}: {task}", body=body, refs=refs)
     except (OSError, ValueError, mail.MailError) as e:
         logger.warning("Could not announce the end of the session: %s", e)
+    exported = ""
+    if completed:
+        exported = export.auto(ctx.office, ctx.root, ctx.session.sid, export_dir())
     try:
         ctx.session.close()
     except OSError as e:
         logger.warning("Could not close the session cleanly: %s", e)
+    return exported

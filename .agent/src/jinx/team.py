@@ -15,8 +15,8 @@
 """Looking at the other sessions: what each one does, what it changed, and the briefing for a helper.
 
 Nothing here changes anything. It reads what ``mail.py`` and ``sessions.py`` keep for every session (the
-presence card, the one ``.patch`` per round, and the file that remembers the round still in progress) and
-prints a short text. An agent asks for it with one command,
+presence card, the ``.mbox`` and ``.yaml`` of every round, and the file that remembers the round still in
+progress) and prints a short text. An agent asks for it with one command,
 
     python .agent/jinx.py --peek <id> [--diff] [--full]
 
@@ -48,7 +48,7 @@ DIFF_ROUNDS = 3                 # rounds whose diff --diff shows (newest first)
 ROUNDS_SHOWN = 8                # rounds listed in the status
 LIST_SHOWN = 12                 # sessions listed by a bare --peek
 MAX_FILE_BYTES = 400_000        # a larger file is only counted, not diffed
-MAX_PATCH_BYTES = 5_000_000     # a larger round patch is read for its header only
+MAX_PATCH_BYTES = 5_000_000     # a larger round .mbox is listed from its .yaml only (no diff, no checksum)
 
 
 # --------------------------------------------------------------------------- reading what a session left
@@ -127,46 +127,38 @@ class RoundInfo:
     minus: int = 0
     diff: str = ""
     intact: bool = True
-    flags: List[str] = field(default_factory=list)       # what the patch header says about its own limits
-
-
-_FLAGS = ("lost_claims", "shell_unattributed", "includes_unrecorded", "shell_unrecorded")
+    flags: List[str] = field(default_factory=list)       # what the round's record says about its own limits
 
 
 def rounds_of(d: Path) -> List[RoundInfo]:
-    """The rounds of a session that changed something, oldest first (a round with no change leaves no patch)."""
+    """The rounds of a session that changed something, oldest first (a round with no change leaves no .mbox)."""
     out: List[RoundInfo] = []
     try:
-        names = sorted(p for p in (d / "rounds").iterdir() if p.name.endswith(".patch"))
+        names = sorted(p for p in (d / "rounds").iterdir() if p.name.endswith(".mbox"))
     except OSError:
         return out
     for p in names:
+        record = mail.read_record(p.with_suffix(".yaml"))
         try:
-            if p.stat().st_size > MAX_PATCH_BYTES:
-                continue
-            data = p.read_bytes()
+            n = int(record["round"] if record.get("round") is not None else p.name.split(".")[0])
+        except (KeyError, TypeError, ValueError):
+            n = 0
+        big = False
+        try:
+            big = p.stat().st_size > MAX_PATCH_BYTES
+            data = b"" if big else p.read_bytes()
         except OSError:
             continue
-        pos = 0 if data.startswith(b"diff --git ") else data.find(b"\ndiff --git ")
-        head_raw, body = (data[:pos + 1], data[pos + 1:]) if pos > 0 else ((b"", data) if pos == 0 else (data, b""))
-        try:
-            header = mail.load_yaml(head_raw, limit=1_000_000) or {}
-        except mail.InvalidMail:
-            header = {}
-        if not isinstance(header, dict):
-            header = {}
+        fields, body = mail.split_mbox(data)
         text = body.decode("utf-8", "replace")
         stat = _stat(text)
-        want = header.get("diff_sha256")
-        try:
-            n = int(header.get("round") if header.get("round") is not None else p.name.split(".")[0])
-        except (TypeError, ValueError):
-            n = 0
-        files = [str(f) for f in (header.get("touches") or [])] or sorted(stat)
+        want = record.get("sha256")
+        files = [str(f) for f in (record.get("touches") or [])] or sorted(stat)
+        summary = record.get("summary") or fields.get("subject", "").removeprefix("[PATCH] ")
         out.append(RoundInfo(
-            n=n, summary=mail._short(header.get("summary"), mail.MAX_SUMMARY), files=files,
+            n=n, summary=mail._short(summary, mail.MAX_SUMMARY), files=files,
             plus=sum(a for a, _ in stat.values()), minus=sum(r for _, r in stat.values()), diff=text,
-            intact=not want or want == mail.sha256_hex(body), flags=[f for f in _FLAGS if header.get(f)]))
+            intact=big or not want or want == mail.checksum(data), flags=[f for f in mail.FLAGS if record.get(f)]))
     return out
 
 
@@ -189,7 +181,7 @@ def _udiff(rel: str, before: Optional[bytes], after: Optional[bytes]) -> str:
 
 
 def in_progress(root: Path, d: Path) -> List[Tuple[str, str]]:
-    """What the session has changed in the round it is still in, as [(path, diff)]; not a patch yet.
+    """What the session has changed in the round it is still in, as [(path, diff)]; not in a round file yet.
 
     The round remembers the state of every file at the moment the session took it. Comparing that with the
     file now is the whole answer: nothing is written, and nothing about it needs git except reading the
@@ -324,14 +316,14 @@ def status(office: mail.Office, root: Path, sid: str, *, diff: bool = False, ful
         lines.append(f"changed in {len(rounds)} round(s)" + (f", last {len(shown)}:" if len(shown) < len(rounds) else ":"))
         for r in shown:
             tail = f" [{', '.join(r.flags)}]" if r.flags else ""
-            tail += " [patch was edited]" if not r.intact else ""
+            tail += " [.mbox was edited]" if not r.intact else ""
             lines.append(f"  r{r.n} +{r.plus} -{r.minus} {mail._names(r.files, 4)}"
                          + (f": {mail._short(r.summary, 70)}" if r.summary else "") + tail)
     else:
         lines.append("no round has changed a file yet")
     pending = in_progress(root, d) if word == "working" or card.get("holds") else []
     if pending:
-        lines.append("not yet in a patch (the round is still running):")
+        lines.append("not yet in a round file (the round is still running):")
         for rel, text in pending:
             a, r = _stat(text).get(rel, (0, 0))
             lines.append(f"  {rel} +{a} -{r}")
@@ -345,7 +337,7 @@ def status(office: mail.Office, root: Path, sid: str, *, diff: bool = False, ful
         for rel, text in pending:
             if not ok:
                 break
-            out.append(f"=== {rel} (not yet in a patch)")
+            out.append(f"=== {rel} (not yet in a round file)")
             ok = _emit(out, text.splitlines(), budget, None if full else FILE_DIFF_LINES, cut)
         shown = rounds if full else rounds[-DIFF_ROUNDS:]
         for r in reversed(shown):

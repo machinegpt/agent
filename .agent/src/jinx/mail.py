@@ -6,8 +6,8 @@ announce who is working on what, and take exclusive write leases on files.
 
 Everything stored on disk is one of two formats:
 
-    *.yaml    messages, presence cards, path claims
-    *.patch   one round of code work: a YAML header followed by a plain git diff
+    *.yaml    messages, presence cards, path claims, the record of a round
+    *.mbox    the code of one round, as a mail message `git am` can apply (see "round files" below)
 
 There is no database and no server process. The file system is the broker, and
 four rules make it safe for any number of agents on one machine:
@@ -24,18 +24,21 @@ four rules make it safe for any number of agents on one machine:
 
 Layout under the office root (JINX uses .agent/ipc/):
 
-    office.yaml                       protocol version, written once
     sessions/<sid>/card.yaml          presence: task, room, round, what it is doing, files held and
                                       changed, heartbeat, a fingerprint of its editor (identity.py)
+    sessions/<sid>/mail.yaml          what the session has been shown, and the drafts it has under way
+    sessions/<sid>/round.yaml         the round in progress: what each file was when the session took it
     sessions/<sid>/inbox/{new,cur,bad}/   mail for <sid>: many writers, one reader
     sessions/<sid>/outbox/            drafts the agent writes; the runner delivers
-    sessions/<sid>/rounds/NNNN.patch  YAML header + git diff of one round
+    sessions/<sid>/rounds/NNNN.mbox   the change of one round, as one mail message (`git am` applies it)
+    sessions/<sid>/rounds/NNNN.yaml   its record: tree ids, checksum, files, flags, what the model said
     claims/<key>/<generation>.yaml    exclusive write leases on paths, with fencing
 
 Dependencies: the standard library, pyyaml and pydantic (JINX already needs both).
 """
 from __future__ import annotations
 
+import email.utils
 import errno
 import hashlib
 import os
@@ -55,7 +58,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 PROTOCOL = 1
-MAX_YAML_BYTES = 64 * 1024      # one message; anything larger travels as a .patch/file reference
+MAX_YAML_BYTES = 64 * 1024      # one message; anything larger travels as a .mbox/file reference
 MAX_SUMMARY = 160               # the one line other agents see in their digest
 MAX_UNREAD = 500                # per inbox; beyond this the sender gets MailboxFull, nothing is dropped silently
 TMP_MAX_AGE_S = 600             # leaked temporary files older than this are swept
@@ -100,10 +103,6 @@ class MailboxFull(MailError):
 
 class InvalidMail(MailError):
     """The YAML or its schema is wrong. The message is written for the agent that must fix it."""
-
-
-class ProtocolMismatch(MailError):
-    pass
 
 
 # --------------------------------------------------------------------------- small helpers
@@ -180,15 +179,15 @@ def _write_new(path: Path, data: bytes, fsync: bool = False) -> None:
         os.close(fd)
 
 
-_ATOMIC_WRITE_LOCKS: Dict[str, threading.Lock] = {}
-_ATOMIC_WRITE_LOCKS_GUARD = threading.Lock()
+# One lock per path would be a table that grows with every file ever written by a long-lived process (the JSON-RPC
+# transport, an embedding host). A fixed set, picked by the path's hash, serialises writers of the same path just as
+# well; two different paths that share a lock only wait for each other for the length of one small write.
+_ATOMIC_WRITE_LOCKS = tuple(threading.Lock() for _ in range(64))
 
 
 def atomic_write(path: Path, text: "str | bytes", fsync: bool = False) -> None:
     """Replace path with text. Readers see the whole old file or the whole new one."""
-    key = str(path)
-    with _ATOMIC_WRITE_LOCKS_GUARD:
-        lock = _ATOMIC_WRITE_LOCKS.setdefault(key, threading.Lock())
+    lock = _ATOMIC_WRITE_LOCKS[hash(str(path)) % len(_ATOMIC_WRITE_LOCKS)]
     with lock:
         for attempt in range(25):
             tmp = path.with_name(_tmp_name())
@@ -206,15 +205,35 @@ def atomic_write(path: Path, text: "str | bytes", fsync: bool = False) -> None:
                 raise
 
 
+def _annotate(path: Path, note: str) -> None:
+    """Put the reason a file was set aside on its first line, as a YAML comment.
+
+    One file keeps both the content and the reason, and a comment changes nothing about how the
+    content reads (or fails to read): the file can still be opened and fixed as it is.
+    """
+    try:
+        atomic_write(path, ("# " + " ".join(note.split())[:300] + "\n").encode("utf-8") + path.read_bytes())
+    except OSError:
+        pass
+
+
 _NO_HARDLINKS = (errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS, errno.EXDEV)
 
 
-def link_new(src: Path, dst: Path) -> bool:
+def link_new(src: Path, dst: Path, *, exclusive: bool = True) -> bool:
     """Give src a second name, dst, but only if dst does not exist yet.
 
     Returns False when dst already existed. Hard links are used so one write can be
-    delivered to many inboxes; on a file system without them the content is copied
-    under a temporary name and renamed, which keeps the same "never half visible" rule.
+    delivered to many inboxes. A file system without them gets a copy instead, and then
+    the two guarantees can no longer both be kept with what every platform offers:
+
+    * ``exclusive=True`` (the default; a lease generation, where two claimers must never
+      both get the same name) creates dst with O_EXCL and writes into it, so a reader can
+      see it half written for the length of one small write. A reader of such a file already
+      treats an unreadable one as a lease that nobody holds. ``os.rename`` would not do:
+      on POSIX it replaces an existing file, and on Windows it raises.
+    * ``exclusive=False`` (a message, whose name is unique anyway) copies under a temporary
+      name and renames, which keeps the "never half visible" rule.
     """
     try:
         os.link(src, dst)
@@ -224,12 +243,22 @@ def link_new(src: Path, dst: Path) -> bool:
     except OSError as e:
         if e.errno not in _NO_HARDLINKS:
             raise
+    if exclusive:
+        try:
+            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            return False
+        try:
+            with os.fdopen(fd, "wb") as out, open(src, "rb") as data:
+                shutil.copyfileobj(data, out)
+        except BaseException:
+            _unlink(dst)                  # never leave a half written file under the final name
+            raise
+        return True
     tmp = dst.with_name(_tmp_name())
     shutil.copyfile(src, tmp)
     try:
-        if os.path.lexists(dst):
-            return False
-        os.rename(tmp, dst)
+        os.replace(tmp, dst)
         return True
     finally:
         _unlink(tmp)
@@ -305,7 +334,7 @@ def load_yaml(text: "str | bytes", limit: int = MAX_YAML_BYTES) -> Any:
     raw = text if isinstance(text, bytes) else text.encode("utf-8")
     if len(raw) > limit:
         raise InvalidMail(
-            f"YAML is {len(raw)} bytes, the limit is {limit}. Put large content in a .patch or file "
+            f"YAML is {len(raw)} bytes, the limit is {limit}. Put large content in a .mbox or file "
             "and reference it under refs.")
     try:
         doc = raw.decode("utf-8")
@@ -334,7 +363,7 @@ def _problems(e: ValidationError) -> str:
 
 # --------------------------------------------------------------------------- schema
 class Ref(BaseModel):
-    """An attachment: a .patch or other file inside the office, with its checksum."""
+    """An attachment: a round's .mbox (or any other patch or file) inside the office, with its checksum."""
     model_config = ConfigDict(extra="forbid")
     patch: Optional[str] = None
     file: Optional[str] = None
@@ -549,17 +578,6 @@ class Office:
         self.claims_dir = self.root / "claims"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.claims_dir.mkdir(exist_ok=True)
-        manifest = self.root / "office.yaml"
-        if not manifest.exists():
-            tmp = self.root / _tmp_name()
-            _write_new(tmp, dump_yaml({"jinx": PROTOCOL, "created": utc_iso()}).encode(), False)
-            link_new(tmp, manifest)      # the first creator wins; everyone then reads the same file
-            _unlink(tmp)
-        data = load_yaml(manifest.read_text("utf-8")) or {}
-        if data.get("jinx") != PROTOCOL:
-            raise ProtocolMismatch(
-                f"{manifest} is protocol {data.get('jinx')!r}, this code speaks {PROTOCOL}. "
-                "Upgrade JINX or point JINX_IPC_DIR at a fresh directory.")
 
     # -- sessions -----------------------------------------------------------------
     def new_session(self, task: str = "", *, sid: Optional[str] = None, editor: str = "",
@@ -844,12 +862,15 @@ class Session:
         return self.office.card(self.sid)
 
     def beat(self, **fields: Any) -> Dict[str, Any]:
-        """Refresh the heartbeat and merge fields into this session's card (single writer)."""
+        """Refresh the heartbeat and merge fields into this session's card (single writer). A field given as None is removed."""
         c = self.card()
-        c.update({k: v for k, v in fields.items()})
+        for k, v in fields.items():
+            if v is None:
+                c.pop(k, None)
+            else:
+                c[k] = v
         c["id"] = self.sid
         c["hb"] = round(time.time(), 3)
-        c["heartbeat"] = utc_iso()
         atomic_write(self.dir / "card.yaml", dump_yaml(c), self.office.fsync)
         return c
 
@@ -920,14 +941,16 @@ class Session:
         self._alive_cache[sid] = (now, ok)
         return ok
 
-    def deliver(self, draft: Draft, id: Optional[str] = None) -> Receipt:
+    def deliver(self, draft: Draft, id: Optional[str] = None, retry: Optional[bool] = None) -> Receipt:
         """Validate, stamp and deliver one draft to every recipient. One write, N hard links.
 
         Passing the same ``id`` again is a safe retry: a recipient that already has the
-        message (unread or read) is skipped instead of receiving a duplicate.
+        message (unread or read) is skipped instead of receiving a duplicate. A caller that
+        chose the id itself, but has not sent the message before, passes ``retry=False`` and
+        saves the look into every recipient's folders.
         """
         targets = self._resolve(draft.to)
-        retry = id is not None
+        retry = (id is not None) if retry is None else retry
         msg_id = id or f"{self.sid}-{self._next_seq()}"
         env = Envelope(id=msg_id, frm=self.sid, to=targets, kind=draft.kind, needs=draft.needs, re=draft.re,
                        thread=draft.thread, sent=utc_iso(), ttl=draft.ttl, summary=draft.summary,
@@ -935,7 +958,7 @@ class Session:
         data = env.to_yaml().encode("utf-8")
         if len(data) > MAX_YAML_BYTES:
             raise InvalidMail(f"message is {len(data)} bytes, the limit is {MAX_YAML_BYTES}; "
-                              "put the bulk in a .patch/file and reference it under refs")
+                              "put the bulk in a file and reference it under refs")
         receipt = Receipt(id=msg_id)
         staging = self.outbox / ".tmp" / _tmp_name()
         _write_new(staging, data, self.office.fsync)
@@ -949,7 +972,7 @@ class Session:
                     receipt.full.append(r)
                     continue
                 name = f"{self._stamp():019d}-{msg_id}.yaml"
-                link_new(staging, inbox / "new" / name)
+                link_new(staging, inbox / "new" / name, exclusive=False)
                 receipt.delivered.append(r)
                 if not self._recipient_alive(r):
                     receipt.stale.append(r)
@@ -966,27 +989,62 @@ class Session:
         results: List[Tuple[str, bool, str]] = []
         drafts = [p for p in _files(self.outbox) if p.name.endswith(".yaml")]
         drafts.sort(key=lambda p: (p.stat().st_mtime_ns, p.name))
+        # A draft that stays in the outbox (a full inbox, a failing disk) is tried again, and must go out
+        # under the id of its first attempt: with a new one, everybody who already has the message would
+        # get it again. The id is kept in the mail state, which survives the process, and is saved before
+        # the first copy goes out. A draft is identified by its name and content, so one that the agent
+        # has rewritten meanwhile is a new message.
+        stored: Dict[str, str] = dict(self._mail_state().get("pending") or {})
+        contents: Dict[Path, Tuple[str, bytes]] = {}
         for p in drafts:
             try:
-                draft = parse_draft(p.read_bytes())
+                raw = p.read_bytes()
+            except OSError:
+                continue
+            contents[p] = (f"{p.name}:{sha256_hex(raw)[:12]}", raw)
+        # Only what is still in the outbox, exactly as it was written, can be a retry.
+        pending = {k: v for k, v in stored.items() if k in {key for key, _ in contents.values()}}
+        for p in drafts:
+            if p not in contents:
+                continue
+            key, raw = contents[p]
+            try:
+                draft = parse_draft(raw)
                 draft_re = draft.re
-                receipt = self.deliver(draft)
+                again = key in pending
+                if not again:
+                    pending[key] = f"{self.sid}-{self._next_seq()}"
+                    self._save_pending(pending)
+                receipt = self.deliver(draft, id=pending[key], retry=again)
             except OSError as e:                  # disk full, permissions: keep the draft and try again later
                 results.append((p.name, False, f"could not deliver now ({e.strerror or e}); draft kept"))
                 continue
             except (InvalidMail, UnknownSession) as e:
+                pending.pop(key, None)
                 os.replace(p, self.outbox / "rejected" / p.name)
-                atomic_write(self.outbox / "rejected" / (p.name[:-5] + ".why.yaml"), dump_yaml({"error": str(e)}))
+                _annotate(self.outbox / "rejected" / p.name, f"rejected: {e}")
                 results.append((p.name, False, str(e)))
                 continue
             if receipt.full:
                 results.append((p.name, False, f"inbox full for {', '.join(receipt.full)}; draft kept, retry later"))
                 continue
+            pending.pop(key, None)
             os.replace(p, self.outbox / "sent" / p.name)
             results.append((p.name, True, f"{receipt.id} -> {', '.join(receipt.delivered) or 'nobody'}"))
             if draft_re:
                 self._ack_by_id(draft_re)            # answering a message means it has been read
+        if pending != stored:
+            self._save_pending(pending)
         return results
+
+    def _save_pending(self, pending: Dict[str, str]) -> None:
+        """Remember the ids of the drafts that have been tried but are not finished (see flush_outbox)."""
+        state = self._mail_state()
+        if pending:
+            state["pending"] = pending
+        else:
+            state.pop("pending", None)
+        atomic_write(self.dir / "mail.yaml", dump_yaml(state))
 
     def _ack_by_id(self, msg_id: str) -> None:
         suffix = f"-{msg_id}.yaml"
@@ -1028,7 +1086,7 @@ class Session:
     def _quarantine(self, name: str, why: str) -> None:
         try:
             os.replace(self.new / name, self.bad / name)
-            atomic_write(self.bad / (name[:-5] + ".why.yaml"), dump_yaml({"error": why}))
+            _annotate(self.bad / name, f"set aside: {why}")
         except FileNotFoundError:
             pass
 
@@ -1046,7 +1104,7 @@ class Session:
 
     def _mail_state(self) -> Dict[str, Any]:
         try:
-            data = load_yaml((self.dir / "mail_state.yaml").read_text("utf-8")) or {}
+            data = load_yaml((self.dir / "mail.yaml").read_text("utf-8")) or {}
         except (OSError, InvalidMail):
             return {}
         return data if isinstance(data, dict) else {}
@@ -1197,8 +1255,10 @@ class Session:
         for k in ("known", "board_round"):
             if state.get(k) is not None:
                 old[k] = state[k]
+        if state.get("pending"):                  # not this method's: the drafts flush_outbox has under way
+            new["pending"] = old["pending"] = state["pending"]
         if new != old:
-            atomic_write(self.dir / "mail_state.yaml", dump_yaml(new))      # only when it changed
+            atomic_write(self.dir / "mail.yaml", dump_yaml(new))      # only when it changed
         self.ack(expired)
 
     # -- exclusive write claims -----------------------------------------------------
@@ -1349,17 +1409,13 @@ def _has_id(d: Path, msg_id: str) -> bool:
         return False
 
 
-# --------------------------------------------------------------------------- .patch files
-_HEADER_FORBIDDEN = re.compile(
-    rb"^(diff |--- |\+\+\+ |@@ |index [0-9a-f]|new file mode|deleted file mode|old mode|new mode|"
-    rb"rename |copy |similarity |dissimilarity |Binary files |GIT binary patch)", re.M)
-
-
+# --------------------------------------------------------------------------- git helpers
 def _git(repo: "str | Path", *args: str, env: Optional[Dict[str, str]] = None,
          check: bool = True) -> subprocess.CompletedProcess:
-    # Keep git patch bytes stable across platform checkout settings. Some Windows setups
-    # rewrite CRLF during checkout; the patch checksum must therefore use a canonical LF view.
-    merged_env = {**os.environ, **(env or {})}
+    # core.autocrlf=false: the bytes of a diff are those of the files, whatever the checkout settings of the platform.
+    # GIT_DIFF_OPTS (a person's `-u0` in their shell profile, say) is dropped for the same reason as diff.* settings
+    # are overridden in round_diff: what a round records must not depend on whose machine it ran on.
+    merged_env = {k: v for k, v in {**os.environ, **(env or {})}.items() if k != "GIT_DIFF_OPTS"}
     r = subprocess.run(["git", "-C", str(repo), "-c", "core.autocrlf=false", *args],
                        capture_output=True, env=merged_env)
     if check and r.returncode != 0:
@@ -1388,57 +1444,175 @@ def snapshot_tree(repo: "str | Path", tmp_dir: "str | Path", exclude: Sequence[s
         _unlink(tmp_index)
 
 
-def _normalize_git_diff(data: bytes) -> bytes:
-    """Git diff output is canonicalised to LF so CRLF checkout artifacts do not alter the hash."""
-    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-
-
-def make_round_patch(repo: "str | Path", t0: str, t1: str, header: Dict[str, Any],
-                     paths: Optional[Sequence[str]] = None) -> bytes:
-    """One round as a single .patch: a YAML header, then a git diff from tree t0 to t1.
-
-    ``git apply`` skips everything before the first ``diff --git`` line, so the same file
-    is both the record (YAML) and the change (diff). ``paths`` limits the diff to what
-    this session owns when several sessions edit one working tree.
-    """
-    args = ["diff", "--binary", "--no-color", "--no-ext-diff", t0, t1]
-    if paths:
-        args += ["--", *paths]
-    diff = _normalize_git_diff(_git(repo, *args).stdout)
-    names = _git(repo, *args[:1], "--name-only", "-z", t0, t1, *(["--", *paths] if paths else [])).stdout
-    hdr = dict(header)
-    hdr["base"], hdr["tree"] = t0, t1
-    hdr["touches"] = [n.decode("utf-8", "replace") for n in names.split(b"\0") if n]
-    hdr["diff_sha256"] = sha256_hex(diff)
-    head = ("# JINX round patch: YAML header, then a git diff. `git apply` ignores the header.\n"
-            + dump_yaml(hdr) + "\n").encode("utf-8")
-    bad = _HEADER_FORBIDDEN.search(head)
-    if bad:
-        raise InvalidMail(f"patch header contains a line that looks like diff syntax: {bad.group(0)[:30]!r}")
-    return head + diff
-
-
-def split_patch(data: bytes) -> Tuple[Dict[str, Any], bytes]:
-    """Return (header, diff) of a .patch made by make_round_patch, checking the diff checksum."""
-    pos = 0 if data.startswith(b"diff --git ") else data.find(b"\ndiff --git ")
-    if pos < 0:
-        return (load_yaml(data) or {}), b""
-    if pos:
-        pos += 1
-    header = load_yaml(data[:pos]) or {}
-    diff = data[pos:]
-    want = header.get("diff_sha256") if isinstance(header, dict) else None
-    digest = sha256_hex(_normalize_git_diff(diff))
-    if want and want != digest:
-        raise InvalidMail("patch diff does not match diff_sha256 in its header (file was modified)")
-    return header, _normalize_git_diff(diff)
-
-
 def apply_check(repo: "str | Path", patch_file: "str | Path", *, reverse: bool = False,
                 three_way: bool = False) -> Tuple[bool, str]:
+    """Whether ``git apply`` would accept this round file (or any patch) on the working tree; changes nothing."""
     args = ["apply", "--check"] + (["-R"] if reverse else []) + (["--3way"] if three_way else []) + [str(patch_file)]
     r = _git(repo, *args, check=False)
     return r.returncode == 0, r.stderr.decode(errors="replace").strip()
+
+
+# --------------------------------------------------------------------------- round files: .mbox + .yaml
+# A round that changed files leaves two files in the session's rounds/ folder, written together when the round
+# closes. NNNN.mbox is the change, as one mail message in the layout `git format-patch` makes: `git am` applies it
+# and makes a commit of it (subject: what the round tried; trailers: the session, the round and the flags below).
+# NNNN.yaml is its record: where the change starts and ends (tree ids), the commit the project was at when the round
+# began, a checksum of the .mbox, the files, and what the model said about the round. Beyond the summary, which both
+# name, they do not repeat each other. A round that changed files but could not be written leaves a .yaml with
+# ``failed`` and no .mbox (``write_failed_round``), so that the export can name it.
+# Several of them concatenated are one mbox, which is what `jinx.py --export` makes (export.py).
+FLAGS = ("lost_claims", "shell_unattributed", "includes_unrecorded", "shell_unrecorded")   # see Round
+MAX_RECORDED_TOUCHES = 200      # paths a record names (a Ref takes no more)
+_AUTHOR = "JINX"
+# `git am` takes off a leading "Re:" and any leading [bracket] of a subject, and a leading colon or space:
+_SUBJECT_UNSAFE = re.compile(r"^(?:\s|:|\[|re:)", re.I)
+
+
+def checksum(data: bytes) -> str:
+    """sha256 of a file's content with every line ending made ``\\n``.
+
+    A round file that was opened and saved again by something that converts line endings (a Windows editor,
+    a mail client) is still the round its record describes; one whose text changed is not. What is stored is
+    never converted: the patch of a file with CRLF line endings has to keep them to apply to it.
+    """
+    return sha256_hex(data.replace(b"\r\n", b"\n").replace(b"\r", b"\n"))
+
+
+# The format of a round's diff is fixed here, not left to the settings of whoever runs JINX: `diff.noprefix` would
+# drop the a/ and b/ that `git apply` strips, `diff.context=0` would leave nothing for a 3-way merge to hold on to,
+# and a textconv filter of .gitattributes would put the converted text of a file into the patch instead of the file.
+_STAT_FORMAT = ("--no-color", "--no-ext-diff", "--no-textconv", "-M")       # (-U<n> would make --stat print the patch too)
+_DIFF_FORMAT = (*_STAT_FORMAT, "--src-prefix=a/", "--dst-prefix=b/", "-U3")
+
+
+def round_diff(repo: "str | Path", t0: str, t1: str) -> Tuple[bytes, bytes, List[str]]:
+    """The git diff from tree ``t0`` to tree ``t1``, a diffstat of it, and the paths it touches (both sides of a rename)."""
+    diff = _git(repo, "diff", "--binary", *_DIFF_FORMAT, t0, t1).stdout
+    stat = _git(repo, "diff", "--stat=72,72", *_STAT_FORMAT, t0, t1).stdout
+    names = _git(repo, "diff", "--name-only", "--no-renames", "-z", t0, t1).stdout
+    return diff, stat, [n.decode("utf-8", "replace") for n in names.split(b"\0") if n]
+
+
+_SURROGATES = re.compile("[\ud800-\udfff]")
+_CONTROL = re.compile("[\x00-\x1f\x7f]")
+
+
+def clean_text(value: Any) -> Any:
+    """``value`` with every lone surrogate made U+FFFD, inside strings, lists and dicts.
+
+    What a model writes can hold one (a JSON escape such as "\\ud83d" with no second half decodes to it), and it
+    cannot be written as UTF-8: a round whose summary had one would not be recorded at all.
+    """
+    if isinstance(value, str):
+        return _SURROGATES.sub("\ufffd", value)
+    if isinstance(value, (list, tuple)):
+        return [clean_text(v) for v in value]
+    if isinstance(value, dict):
+        return {clean_text(k): clean_text(v) for k, v in value.items()}
+    return value
+
+
+def _flag_text(value: Any) -> str:
+    items = value if isinstance(value, (list, tuple)) else [value]
+    return " ".join(", ".join(str(x) for x in items).split())
+
+
+def make_round_mbox(sid: str, n: int, summary: str, closed: float, tree: str, diff: bytes, stat: bytes,
+                    flags: Optional[Dict[str, Any]] = None) -> bytes:
+    """One round as a mail message that `git am` applies: subject, trailers, diffstat, then the diff itself."""
+    subject = _CONTROL.sub("", " ".join(clean_text(summary).split()))[:MAX_SUMMARY]
+    if not subject or _SUBJECT_UNSAFE.match(subject):
+        subject = f"JINX session {sid}, round {n}" + (f": {subject}" if subject else "")
+    trailers = [("Jinx-Session", sid), ("Jinx-Round", str(n))]
+    for key in FLAGS:
+        if (flags or {}).get(key):
+            trailers.append(("Jinx-" + "-".join(w.capitalize() for w in key.split("_")), _flag_text(flags[key])))
+    date = email.utils.format_datetime(datetime.fromtimestamp(closed, timezone.utc))
+    head = (f"From {tree} Mon Sep 17 00:00:00 2001\n"          # the line format-patch starts a message with
+            f"From: {_AUTHOR} <{sid}@jinx.invalid>\n"
+            f"Date: {date}\n"
+            f"Subject: [PATCH] {subject}\n"
+            "MIME-Version: 1.0\n"
+            "Content-Type: text/plain; charset=UTF-8\n"
+            "Content-Transfer-Encoding: 8bit\n"
+            "\n"
+            + "".join(f"{k}: {v}\n" for k, v in trailers)
+            + "---\n")
+    return clean_text(head).encode("utf-8") + stat + b"\n" + diff
+
+
+def split_mbox(data: bytes) -> Tuple[Dict[str, str], bytes]:
+    """(header fields, git diff) of a round's .mbox. The diff is the exact bytes of the file, b'' if it holds none."""
+    end = data.find(b"\n\n")
+    fields: Dict[str, str] = {}
+    for line in (data if end < 0 else data[:end]).decode("utf-8", "replace").splitlines():
+        key, sep, value = line.partition(":")
+        if sep and not line.startswith(("From ", " ", "\t")):
+            fields.setdefault(key.strip().lower(), value.strip())
+    pos = 0 if data.startswith(b"diff --git ") else data.find(b"\ndiff --git ")
+    return fields, (b"" if pos < 0 else data[pos + 1 if pos else 0:])
+
+
+def read_record(path: "str | Path") -> Dict[str, Any]:
+    """The .yaml record of a round; {} when it is missing or cannot be read."""
+    try:
+        data = load_yaml(Path(path).read_bytes(), limit=1_000_000)
+    except (OSError, InvalidMail):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def head_commit(repo: "str | Path") -> Optional[str]:
+    """The commit HEAD points at, None when there is none (a repository without a commit yet)."""
+    r = _git(repo, "rev-parse", "--verify", "-q", "HEAD", check=False)
+    out = r.stdout.decode().strip() if r.returncode == 0 else ""
+    return out or None
+
+
+def write_round(session: "Session", repo: "str | Path", n: int, summary: str, t0: str, t1: str,
+                flags: Optional[Dict[str, Any]] = None, evidence: Optional[Dict[str, Any]] = None,
+                head: Optional[str] = None) -> Path:
+    """Write rounds/NNNN.mbox and rounds/NNNN.yaml for the change from tree ``t0`` to tree ``t1``; returns the .mbox.
+
+    ``head`` is the commit the project was at when the round began (a round can commit; HEAD as it is now would
+    then already hold the change), "" when there was none; None means "not known", and the commit HEAD is at now is
+    taken. The .mbox goes first and the .yaml last: a record is only there once the file it describes is.
+    """
+    diff, stat, touches = round_diff(repo, t0, t1)
+    closed = time.time()
+    summary = clean_text(summary)
+    mbox = make_round_mbox(session.sid, n, summary, closed, t1, diff, stat, flags)
+    record: Dict[str, Any] = {
+        "jinx": PROTOCOL, "kind": "round", "session": session.sid, "round": n, "closed": round(closed, 3),
+        "summary": " ".join(summary.split())[:MAX_SUMMARY], "patch": f"{n:04d}.mbox",
+        "sha256": checksum(mbox), "size": len(mbox), "base": t0, "tree": t1, "touches": touches[:MAX_RECORDED_TOUCHES]}
+    head = head_commit(repo) if head is None else head
+    if head:
+        record["head"] = head                                 # the commit the round began at: a checkout to apply it on
+    record.update({k: v for k, v in (flags or {}).items() if v})
+    if evidence:
+        record["evidence"] = evidence
+    out = session.rounds / f"{n:04d}.mbox"
+    atomic_write(out, mbox)
+    atomic_write(out.with_suffix(".yaml"), dump_yaml(clean_text(record)))
+    return out
+
+
+def write_failed_round(session: "Session", n: int, why: Any, touches: Iterable[str] = ()) -> None:
+    """Leave a note that round ``n`` changed files but could not be recorded: a .yaml with no .mbox.
+
+    ``jinx.py --export`` reports such a round as left out, with the reason, instead of silently passing over
+    the work. Best effort: the failure being reported may be one that stops this from being written too.
+    """
+    try:
+        if (session.rounds / f"{n:04d}.mbox").exists():
+            return                                   # the change itself was written: it is the round that counts
+        record = {"jinx": PROTOCOL, "kind": "round", "session": session.sid, "round": n,
+                  "closed": round(time.time(), 3), "failed": " ".join(str(why).split())[:300],
+                  "touches": sorted(touches)[:MAX_RECORDED_TOUCHES]}
+        atomic_write(session.rounds / f"{n:04d}.yaml", dump_yaml(clean_text(record)))
+    except (OSError, ValueError, MailError):
+        pass
 
 
 # --------------------------------------------------------------------------- rounds: a claim is a transaction
@@ -1542,7 +1716,7 @@ _NO_HEAD = object()             # Round.adopt(): "start from the state before th
 
 
 class Round:
-    """One round of code work by one session, recorded as a single .patch.
+    """One round of code work by one session, recorded as a .mbox and a .yaml (see ``write_round``).
 
     Several sessions can edit one working tree without a worktree each, because a claim
     gives exclusive write access: from the moment a session claims a file until it closes
@@ -1565,17 +1739,38 @@ class Round:
                 data = {}
         self.base: Dict[str, Optional[List[str]]] = dict(data.get("base") or {})
         self.seen: Dict[str, Optional[str]] = dict(data.get("seen") or {})   # path -> blob id the model last read
-        self.notes: Dict[str, Any] = dict(data.get("notes") or {})          # extra header fields for this round's patch
+        self.notes: Dict[str, Any] = dict(data.get("notes") or {})          # the flags of this round's files (see FLAGS)
         self.watch: bool = bool(data.get("watch", True))                    # attribute shell changes (see sessions.py)
+        # While a batch with a shell command is out with the editor: when it began, what the tree looked like,
+        # and the script (sessions.before_batch). Private to this session; the others only see ``shell`` on its card.
+        self.shell: Optional[Dict[str, Any]] = data["shell"] if isinstance(data.get("shell"), dict) else None
         self.started: str = data.get("started") or utc_iso()
-        # Patches need git, and a git whose top directory is the project. Without that the round
-        # still gets claims and the stale-read guard; it just leaves no .patch behind.
+        # The commit the project was at when this round began (see begin): what a round's files say it applies to.
+        # None: not noted yet; "": noted, and there was no commit yet.
+        self.head: Optional[str] = data["head"] if isinstance(data.get("head"), str) else None
+        # Round files need git, and a git whose top directory is the project. Without that the round
+        # still gets claims and the stale-read guard; it just leaves no .mbox behind.
         self.git: bool = is_git_root(self.repo)
         self.last_touched: List[str] = []        # the files the round closed last changed (set by close())
 
     def _save(self) -> None:
-        atomic_write(self.file, dump_yaml({"started": self.started, "base": self.base, "seen": self.seen,
-                                           "notes": self.notes, "watch": self.watch}))
+        data: Dict[str, Any] = {"started": self.started, "base": self.base, "seen": self.seen,
+                                "notes": self.notes, "watch": self.watch}
+        if self.head is not None:
+            data["head"] = self.head
+        if self.shell:
+            data["shell"] = self.shell
+        atomic_write(self.file, dump_yaml(data))
+
+    def begin(self) -> None:
+        """Note the commit the project is at, if this round has not yet: call before the round first touches the tree.
+
+        A round can commit (the editor runs ``git commit``): HEAD when the round closes would then already hold the
+        round's own change, and the series would look as if it had been applied. Calling it again does nothing until
+        ``close`` has ended the round.
+        """
+        if self.git and self.head is None and not self.base:
+            self.head = head_commit(self.repo) or ""
 
     def _see(self, p: str, blob: Optional[str]) -> None:
         self.seen.pop(p, None)                     # re-insert at the end: the dict is ordered by recency
@@ -1605,6 +1800,18 @@ class Round:
         if p not in lst:
             self.notes["includes_unrecorded"] = sorted(lst + [p])[:20]
 
+    def _note_lost(self, p: str, prev: Optional[Dict[str, Any]]) -> None:
+        """A path this round already held was taken over by somebody else and claimed again.
+
+        The round's baseline for the file was fixed when the round first claimed it, so a patch
+        taken from it would show the other session's edits as this round's own. The mark tells
+        the reader (and ``close``, which merges it with the claims found lost at the end) so.
+        """
+        if prev and prev.get("owner") != self.s.sid:
+            lst = list(self.notes.get("lost_claims") or [])
+            if p not in lst:
+                self.notes["lost_claims"] = sorted(lst + [p])[:20]
+
     def claim_for_write(self, path: str) -> ClaimResult:
         """Claim a path before the editor writes it, and remember what it contained.
 
@@ -1621,6 +1828,7 @@ class Round:
         batch, a person); the patch then carries that change too, and its header says so.
         """
         p = check_relpath(path)
+        self.begin()
         res = self.s.claim(p)
         if not res.ok:
             return res
@@ -1632,6 +1840,8 @@ class Round:
             self.base[p] = list(start) if start else None
             if known and (rec[1] if rec else None) != now_id:
                 self._note_unrecorded(p)
+        else:
+            self._note_lost(p, res.prev)
         self._save()
         if p in self.seen and self.seen[p] != now_id:
             return ClaimResult(False, p, res.gen, reason="stale")
@@ -1662,6 +1872,7 @@ class Round:
         is exactly what the last round on it left, so there is nothing to record and the lease is not kept).
         """
         p = check_relpath(path)
+        self.begin()                                     # normally already done by before_batch, which saw the tree first
         res = self.s.claim(p)
         if not res.ok:
             return "busy"
@@ -1680,41 +1891,54 @@ class Round:
             self.base[p] = list(before) if before else None
             if known and (tuple(pre) if pre else None) != (tuple(rec) if rec else None):
                 self._note_unrecorded(p)
+        else:
+            self._note_lost(p, res.prev)
         known_id = self.seen.get(p)
         if p not in self.seen or known_id == (pre[1] if pre else None):
             self._see(p, e[1] if e else None)          # the model knew the file, and knows what its command made of it
         self._save()
         return "adopted"
 
-    def close(self, n: int, summary: str = "", extra: Optional[Dict[str, Any]] = None) -> Optional[Path]:
-        """Write rounds/NNNN.patch (None if nothing changed), then release every claim."""
-        lost = [p for p in self.base if not self.s.holds_claim(p)]
-        after = {p: blob_entry(self.repo, p, store=self.git) for p in self.base}
-        self.last_touched = sorted(p for p, e in self.base.items() if (tuple(e) if e else None) != after[p])
+    def close(self, n: int, summary: str = "", evidence: Optional[Dict[str, Any]] = None) -> Optional[Path]:
+        """Write rounds/NNNN.mbox and NNNN.yaml (None if nothing changed), then release every claim.
+
+        ``evidence`` is what the model said about the round, for the record (see ``write_round``). The claims are
+        released and the round starts afresh even when the files cannot be written; the error is then raised, after
+        a note for ``jinx.py --export`` that the round was not recorded (``write_failed_round``).
+        """
+        after: Dict[str, Entry] = {}
         out: Optional[Path] = None
-        if self.git and self.base:
-            before = {p: (tuple(e) if e else None) for p, e in self.base.items()}
-            t0 = tree_from_entries(self.repo, self.tmp, before)
-            t1 = tree_from_entries(self.repo, self.tmp, after)
-            if t0 != t1:
-                hdr: Dict[str, Any] = {"jinx": PROTOCOL, "kind": "round", "session": self.s.sid, "round": n,
-                                       "summary": " ".join(summary.split())[:MAX_SUMMARY]}
-                if lost:
-                    hdr["lost_claims"] = sorted(lost)      # the lease expired mid-round: the diff may hold foreign edits
-                hdr.update(self.notes)
-                hdr.update(extra or {})
-                out = self.s.rounds / f"{n:04d}.patch"
-                atomic_write(out, make_round_patch(self.repo, t0, t1, hdr))
-        now = time.time()
-        self.s.release_all({p: {"rec": list(e) if e else None, "t": now} for p, e in after.items()})
-        self.base, self.notes = {}, {}
-        self._save()
+        try:
+            # Paths whose lease is not ours at the end, and paths that were taken over and claimed again meanwhile.
+            lost = sorted({p for p in self.base if not self.s.holds_claim(p)} | set(self.notes.get("lost_claims") or []))
+            after = {p: blob_entry(self.repo, p, store=self.git) for p in self.base}
+            self.last_touched = sorted(p for p, e in self.base.items() if (tuple(e) if e else None) != after[p])
+            if self.git and self.base:
+                before = {p: (tuple(e) if e else None) for p, e in self.base.items()}
+                t0 = tree_from_entries(self.repo, self.tmp, before)
+                t1 = tree_from_entries(self.repo, self.tmp, after)
+                if t0 != t1:
+                    flags = dict(self.notes)
+                    if lost:
+                        flags["lost_claims"] = lost        # the lease lapsed mid-round: the diff may hold foreign edits
+                    out = write_round(self.s, self.repo, n, summary, t0, t1, flags, evidence, head=self.head)
+        except (OSError, ValueError, MailError) as e:
+            write_failed_round(self.s, n, e, self.last_touched or self.base)
+            raise
+        finally:
+            now = time.time()
+            try:
+                self.s.release_all({p: {"rec": list(e) if e else None, "t": now} for p, e in after.items()})
+            finally:
+                self.base, self.notes, self.head = {}, {}, None
+                self._save()
         return out
 
 
-def patch_ref(office: Office, patch_file: Path) -> Dict[str, Any]:
-    """The refs entry that points at a .patch inside the office, with its checksum."""
-    data = patch_file.read_bytes()
-    header, _ = split_patch(data)
-    return {"patch": str(patch_file.relative_to(office.root)).replace(os.sep, "/"), "sha256": sha256_hex(data),
-            "size": len(data), "round": header.get("round"), "touches": header.get("touches", [])}
+def patch_ref(office: Office, mbox_file: Path) -> Dict[str, Any]:
+    """The refs entry that points at a round's .mbox inside the office, with its checksum."""
+    data = mbox_file.read_bytes()
+    record = read_record(mbox_file.with_suffix(".yaml"))
+    return {"patch": str(mbox_file.relative_to(office.root)).replace(os.sep, "/"), "sha256": checksum(data),
+            "size": len(data), "round": record.get("round"),
+            "touches": [str(t) for t in (record.get("touches") or [])][:MAX_RECORDED_TOUCHES]}
