@@ -118,6 +118,8 @@ def main() -> None:
             sys.exit(1)
         runner.bind_session(ctx)
         print(sessions.describe(ctx), flush=True)
+    elif args.ipc == "file":
+        print(sessions.describe_shared(), flush=True)    # JINX_SESSIONS=0: the line is there in every mode
 
     is_resuming = (args.ipc == "file") and runner.RUN_STATE_PATH.exists()
 

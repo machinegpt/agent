@@ -48,6 +48,7 @@ Thumbs.db
 .pytest_cache/
 *.log
 
+# >>> JINX >>> (kept up to date by `jinx init`; write your own lines outside these markers)
 # --- JINX Runtime State ---
 # Per-run IPC files and the run manifest are session state, not source.
 .agent/JINX.yaml
@@ -70,3 +71,6 @@ Thumbs.db
 .agent/.selfpatch_baseline/
 # Lock files of the cross-process locks (lesson ledger, self-patch baseline).
 .agent/*.lock
+# Bytecode of the runtime itself.
+.agent/**/__pycache__/
+# <<< JINX <<<

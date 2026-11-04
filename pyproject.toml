@@ -18,6 +18,8 @@ dependencies = [
 ]
 
 [project.scripts]
+# `jinx init` puts JINX into a project, `jinx doctor` checks it. `jinx-cli` is the runtime itself (what `.agent/jinx.py` runs).
+jinx = "jinx.install:main"
 jinx-cli = "jinx.cli:main"
 
 [tool.setuptools.packages.find]

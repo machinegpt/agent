@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Direct entry point for JINX.
-Designed to be executed when the repository is dropped into a project as a `.agent` folder.
+Designed to be executed when the repository is dropped into a project as a `.agent` folder
+(`pip install git+https://github.com/machinegpt/agent`, then `jinx init` in the project, does that for you).
 
 Usage:
   python .agent/jinx.py "Analyze and fix the bug in auth"
@@ -283,7 +284,9 @@ def bootstrap_dependencies():
             print("[JINX BOOTSTRAP] Dependencies installed successfully.", file=sys.stderr)
         except Exception as e:
             print(f"[JINX BOOTSTRAP ERROR] Automatic dependency installation failed: {e}", file=sys.stderr)
-            print("Please manually run: pip install pydantic>=2.0.0 pyyaml>=6.0", file=sys.stderr)
+            print('Please run: "%s" -m pip install "pydantic>=2.0.0" "pyyaml>=6.0"' % sys.executable, file=sys.stderr)
+            print("If pip says the environment is externally managed, use a virtual environment: python -m venv .venv, "
+                  "activate it, install there, and start the editor from that shell.", file=sys.stderr)
             sys.exit(1)
 
 # Check and install dependencies before importing JINX package modules

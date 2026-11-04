@@ -345,6 +345,20 @@ def describe(ctx: Context) -> str:
     return line + (f" others={ctx.others}" if ctx.others else "")
 
 
+def describe_shared() -> str:
+    """The same line with ``JINX_SESSIONS=0``: one shared set of files, so no session id (``id=-``).
+
+    Every call that starts or resumes a run prints it, whichever mode, so an editor never has to guess the
+    mode from a missing line: a call without the line has failed, and the reason is on stderr.
+    """
+    try:
+        agent = Path(os.path.relpath(AGENT_DIR, project_root())).as_posix()
+    except ValueError:
+        agent = str(AGENT_DIR)
+    return '[JINX_SESSION] id=- request=%s/%s response=%s/%s resume="python %s/jinx.py"' % (
+        agent, REQUEST_NAME, agent, RESPONSE_NAME, agent)
+
+
 def heartbeat(ctx: Context, rnd: Optional[int] = None) -> None:
     try:
         fields: Dict[str, Any] = {"state": "working"}

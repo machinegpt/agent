@@ -90,6 +90,7 @@ CAUSE_LABELS: Tuple[str, ...] = (
     "incomplete_test",
     "env_issue",
     "scope_misread",
+    "prompt_wording",
     "unknown",
 )
 
