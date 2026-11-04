@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -50,6 +51,7 @@ EXPORT_DIR = "export"           # under .agent/
 MAX_DETAIL = 240                # characters of git's complaint kept in the record
 MAX_LABEL_SESSIONS = 3          # more sessions than this are called "all" in the file name
 _DROP = ("jinx", "kind", "patch", "size")     # what a round's record says that the series does not need to repeat
+_PLAIN_WORD = re.compile(r"[\w@%+=:,./-]+")      # a path a shell reads as one word, with no quotes
 
 
 @dataclass
@@ -214,7 +216,8 @@ def check_series(repo: Path, rounds: Sequence[Found]) -> Tuple[str, str, bool]:
     diffs = [mail.split_mbox(f.data)[1] for f in rounds]
     plain = [_without_cr(d) for d in diffs]
     has_cr = plain != diffs
-    variants = [(True, diffs), (False, plain)] if has_cr else [(False, diffs)]
+    # The plain reading goes first: it is git's own default, and a CR that no file needs must not get into the history.
+    variants = [(False, plain), (True, diffs)] if has_cr else [(False, diffs)]
     try:
         for keep, ds in variants:
             if _apply_chain(repo, ds, reverse=False)[0] is None:
@@ -222,11 +225,11 @@ def check_series(repo: Path, rounds: Sequence[Found]) -> Tuple[str, str, bool]:
         for keep, ds in variants:
             if _apply_chain(repo, ds, reverse=True)[0] is None:
                 return "already", "HEAD already holds these changes", keep
-        failures = []
+        failures: List[Tuple[int, str, bool]] = []      # (round that fails, git's complaint, the reading's keep_cr)
         for keep, ds in variants:
             bad, noops = _apply_chain(repo, ds, reverse=False, three_way=True)
             if bad is not None:
-                failures.append(bad)
+                failures.append((bad[0], bad[1], keep))
             elif len(noops) == len(ds):
                 return "already", "HEAD already holds these changes", keep
             elif noops:
@@ -235,8 +238,10 @@ def check_series(repo: Path, rounds: Sequence[Found]) -> Tuple[str, str, bool]:
                               "nothing (`git am --skip` goes on)"), keep
             else:
                 return "yes", "", keep
-        i, why = max(failures, key=lambda b: b[0])      # the reading that got further is the one that was meant
-        return "no", f"round {rounds[i].n} of {rounds[i].sid} does not apply to HEAD: {why}", has_cr
+        # The reading that got further is the one that was meant, and its keep_cr is the one to print (the plain
+        # reading on a tie): `--keep-cr` taken from the other reading would break the command on an LF repository.
+        i, why, keep = max(failures, key=lambda b: b[0])
+        return "no", f"round {rounds[i].n} of {rounds[i].sid} does not apply to HEAD: {why}", keep
     except (OSError, mail.MailError) as e:
         return "unknown", f"could not check: {e}", has_cr
 
@@ -310,11 +315,33 @@ def _rel(path: Path, root: Path) -> str:
         return str(path)
 
 
+def _command_path(path: Path, root: Path) -> str:
+    """The .mbox as the apply command names it: an absolute path, so that the command works in the checkout the
+    series is for (another clone, a ``git worktree``), not only in the tree the session ran in.
+
+    The command sits inside ``apply="..."`` of the ``[JINX_EXPORT]`` line, which cannot hold a quote, a backslash or
+    a control character: a path with one is left relative, as the line names its files.
+    """
+    try:
+        full = path.resolve().as_posix()
+    except (OSError, RuntimeError):
+        return _rel(path, root)
+    if _PLAIN_WORD.fullmatch(full):
+        return full
+    if any(c in full for c in "\"'\\`") or any(ord(c) < 32 for c in full):
+        return _rel(path, root)
+    return f"'{full}'"                       # a space or another character a shell would split or expand
+
+
 def apply_command(res: Result, root: Path) -> str:
-    """What the person runs to commit the series, one commit per round (on a checkout of ``res.head`` if it is known)."""
+    """What the person runs to commit the series, one commit per round (on a checkout of ``res.head`` if it is known).
+
+    It names the .mbox by its absolute path: the printed ``.agent/export/...`` path is relative to the tree the
+    session ran in, and a clone or a worktree does not have it (``.agent/`` is not in git).
+    """
     if not res.mbox:
         return ""
-    return "git am --3way" + (" --keep-cr" if res.keep_cr else "") + f" {_rel(res.mbox, root)}"
+    return "git am --3way" + (" --keep-cr" if res.keep_cr else "") + f" {_command_path(res.mbox, root)}"
 
 
 def line(res: Result, root: Path) -> str:

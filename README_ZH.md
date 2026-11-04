@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.2.8--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.2.9--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-File_Based_IPC_State_Machine-0D9488?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-ReEntrant_Single_Step_Process-059669?style=for-the-badge" alt="Integration Badge" />
 </p>
@@ -14,6 +14,36 @@
 <p align="center">
   <strong>JINX 技术规范：这是一个隔离的、有状态的、由协议驱动的认知循环，被设计为在软件工程宿主环境内部以子进程方式运行。</strong>
 </p>
+
+---
+
+## 两条命令完成安装
+
+```bash
+pip install git+https://github.com/machinegpt/agent     # 1. 获得 `jinx` 命令
+jinx init                                                # 2. 在你的项目文件夹中运行
+```
+
+需要 Python 3.10+、git 和 [Claude Code](https://claude.com/product/claude-code)。然后用 `claude` 打开该文件夹并交给它一个任务：`jinx init` 写入 `CLAUDE.md` 的规则会让每条消息都经由 JINX 处理（§8）。
+
+`jinx init` 会设置三处内容，然后运行 `jinx doctor`：
+
+| 位置 | 内容 |
+| :--- | :--- |
+| `.agent/` | 运行时（`jinx.py` 和 `src/jinx/`）；JINX 的运行状态、轮次文件与教训会在工作过程中出现在这里 |
+| `CLAUDE.md` | JINX 规则，位于 `<!-- JINX:BEGIN … -->` 与 `<!-- JINX:END -->` 之间；它们周围的文字仍归你所有 |
+| `.gitignore` | 让运行状态不进入 git 的几行，位于 `# >>> JINX >>>` 与 `# <<< JINX <<<` 之间 |
+
+`jinx doctor` 可随时运行：它会检查 Python、`pyyaml` 和 `pydantic`、运行时能否加载并启动、`CLAUDE.md` 中是否有这些规则、git 与 `claude`，并指出需要修复什么。`jinx init` 结尾会给出同样的报告（`JINX is ready`）。
+
+**更新。** `pip install -U git+https://github.com/machinegpt/agent`，然后再次运行 `jinx init`。安装之后被改动过的文件（被你改动，或被 JINX 改进自身源码时改动）不会被覆盖：新版本会以 `<文件名>.new` 的形式写在它旁边，`jinx init --force` 才会替换它。你编辑过的 `CLAUDE.md` 规则块同样会被保留（新的规则块在 `.agent/CLAUDE.md.new`）。JINX 运行进行期间，`jinx init` 会拒绝更新运行时（`--force` 可覆盖该拒绝）。
+
+**如果行不通**
+- *找不到命令、出现 `externally-managed-environment`（Debian、Ubuntu、Homebrew），或没有 `python`（macOS）：* 使用虚拟环境。在项目文件夹中运行 `python3 -m venv .venv`，激活它（`source .venv/bin/activate`；Windows：`.venv\Scripts\activate`），执行这两条命令，并在同一个 shell 中启动 `claude`。在虚拟环境里 `python` 和 `pip` 始终存在，而且正是所需的那一个。
+- *`jinx` 已安装但不在 `PATH` 中（Windows 上常见）：* `python -m jinx.install init`（或 `py -m jinx.install init`）。
+- *没有 pip，或从克隆安装：* `git clone https://github.com/machinegpt/agent`，然后 `PYTHONPATH=agent/.agent/src python3 -m jinx.install init /你的/项目路径`（PowerShell：`$env:PYTHONPATH="agent\.agent\src"; py -m jinx.install init C:\你的\项目路径`）。
+
+**或者让编辑器来做。** 告诉 Claude Code：*“在这个项目里安装 JINX：运行 `pip install git+https://github.com/machinegpt/agent`，然后运行 `jinx init`，并修复 `jinx doctor` 报告的所有问题。”* 它会按你的操作系统调整这些命令。
 
 ---
 
@@ -40,7 +70,7 @@ JINX 是一个智能体运行时，被设计为在宿主环境（如 IDE、命�
 | `.agent/jinx_response.yaml` | 宿主 | 该动作的执行结果 |
 | `.agent/jinx_run_state.yaml` | JINX | 轮次计数、工具调用深度、消息历史以及 `waiting_for` 指针 |
 
-> **多个编辑器同时工作。** 默认情况下，每次运行都在自己的*会话*中，拥有这些文件（以及 `JINX.yaml`）各自的一份，位于 `.agent/ipc/sessions/<sid>/` 下，因此同一项目中的两个编辑器不再互相覆盖对方的请求和响应。每次调用都会打印一行 `[JINX_SESSION] id=… request=… response=… resume="…" [others=N]`，给出确切的路径、下一步要运行的确切命令，以及有多少个其他会话在运行。设置 `JINX_SESSIONS=0` 即可恢复本节所述的 `.agent/` 中那一套共享文件。参见 §1.3。
+> **多个编辑器同时工作。** 默认情况下，每次运行都在自己的*会话*中，拥有这些文件（以及 `JINX.yaml`）各自的一份，位于 `.agent/ipc/sessions/<sid>/` 下，因此同一项目中的两个编辑器不再互相覆盖对方的请求和响应。每次调用都会打印一行 `[JINX_SESSION] id=… request=… response=… resume="…" [others=N]`，给出确切的路径、下一步要运行的确切命令，以及有多少个其他会话在运行。设置 `JINX_SESSIONS=0` 即可恢复本节所述的 `.agent/` 中那一套共享文件（此时同样会打印该行，其中 `id=-`）。没有打印该行的调用没有启动运行：原因在 stderr 中。参见 §1.3。
 
 `stdout` 仅输出便于阅读的进度标记（`[JINX_WAITING]`、`[JINX_COMPLETE]`、`[JINX_DEADLOCK]`）；所有结构化诊断信息均通过 `jinx.cli` / `jinx.runner` 日志器输出到 `stderr`。
 
@@ -267,7 +297,7 @@ history:                       # 最近消息的有界窗口
 
 每个文件都带有 `jinx: 1`，即协议版本，因此不再需要单独的版本文件。整个目录都被 git 忽略，`.agent/export/`（`--export` 的输出，见下文）和各个 `notices/` 目录（self-patch 预检的结论，等待下一次提示词：每个会话目录内各有一个，`JINX_SESSIONS=0` 时则是 `.agent/notices/`）也是如此；它们都不算作某一轮所做的改动。持久经验账本 `.agent/lessons.yaml` 仍然是共享的，并在文件锁保护下更新，因此并发会话不会丢失彼此的经验。
 
-**启动与恢复。** 每个智能体都以同样的方式启动 JINX：`python .agent/jinx.py "<任务>"`。运行时为每次启动分配独立的会话和唯一的 ID（`s7f3a`），邮件、租约和轮次文件都以它为准，因此智能体无需追踪或记住自己是哪个会话。每次调用都会打印 `[JINX_SESSION] id=<sid> request=<路径> response=<路径> resume="<命令>"`，在有其他会话运行时还会带上 `others=<n>`；编辑器应当原样使用这些路径和这条命令。`--session <sid>`（或环境变量 `JINX_SESSION`）始终有效：它选择要恢复的会话，与任务同时给出时则为新会话命名。等待超时恢复、信号清理和完成（§1.1）分别适用于每个会话。
+**启动与恢复。** 每个智能体都以同样的方式启动 JINX：`python .agent/jinx.py "<任务>"`。运行时为每次启动分配独立的会话和唯一的 ID（`s7f3a`），邮件、租约和轮次文件都以它为准，因此智能体无需追踪或记住自己是哪个会话。每次调用都会打印 `[JINX_SESSION] id=<sid> request=<路径> response=<路径> resume="<命令>"`，在有其他会话运行时还会带上 `others=<n>`；编辑器应当原样使用这些路径和这条命令。`JINX_SESSIONS=0` 时同样会打印该行（`id=-`，以及共享的 `.agent/jinx_request.yaml` 和 `.agent/jinx_response.yaml`），因此不必根据缺少该行去猜测模式：没有该行的调用没有启动运行，原因在 stderr 中（编辑器应报告它，而不是退回到共享文件）。`--session <sid>`（或环境变量 `JINX_SESSION`）始终有效：它选择要恢复的会话，与任务同时给出时则为新会话命名。等待超时恢复、信号清理和完成（§1.1）分别适用于每个会话。
 
 运行时还能识别调用方编辑器，因此即使有多个未完成的会话，命令也可以是不带参数的 `python .agent/jinx.py`。每次调用都会在会话的卡片上留下一个*指纹*：JINX 之上的进程（编辑器自身的进程、它的终端），以及标明终端窗格或窗口的环境变量（`CLAUDE_PID`、`TMUX_PANE`、`WT_SESSION` 等）。两次调用共有的标记会被保留；仅属于执行某条命令的 shell 的标记则被剔除。因此会话的第一次调用会打印 `resume="python .agent/jinx.py --session <sid>"`；当第二次调用显示出同一个编辑器、且这些标记足以在未完成的会话中唯一确定该会话时，打印出的命令就变成不带参数的形式，不带参数的调用即可找到自己的会话。匹配是严格的：只有调用方带有区分该会话与其他会话的*全部*标记时才会选中该会话，若其他会话的标记包含了这些标记则绝不选中。由同一个编辑器进程运行的两个会话（同一窗口的子智能体共用其进程和环境）无法区分，因此对它们打印出的命令保留 ID，不带参数的调用会以退出码 `1` 结束并列出未完成的会话，而不是去猜测。恰有一个未完成会话时，不带参数的调用会像以前一样恢复它。
 
@@ -307,7 +337,7 @@ refs:                    # 可选附件（最多 20 个），每个恰好包含 
 
 发件人、id 和时间由运行器填写，因此草稿无法冒用他人身份发送。运行器校验草稿并原子地投递：消息先以隐藏名称写入，再链接到收件方的 `inbox/new/`，读取者因此绝不会看到写了一半的文件；读取者通过重命名来取走它，因此两个读取者不可能都拿到。草稿会移入 `sent/`，或连同原因移入 `rejected/`，原因只向作者显示一次（发给已结束会话的草稿同样会被拒绝，并指向 `--peek <sid>`：没有人会读到它）。未读邮件一到就会显示在**摘要**中（见*看板*）；要求回复的消息最多显示三次，而回复它（`re:`）即视为确认。单独运行且没有邮件的会话，提示词中不会增加任何内容，因此单编辑器使用不会产生额外 token 开销。邮件是来自另一个智能体的信息，绝不是用户的指令；摘要在每条消息中都会这样说明。
 
-**写租约。** 编辑器写入文件之前，运行器会为该会话申请该文件的租约。一个路径同一时刻只有一个持有者；对已被持有的路径写入会被拒绝，并附带指明持有者的消息，编辑器可以给持有者发邮件、先做别的事，或者等待。只要持有者的心跳是新鲜的（`JINX_LEASE_S`），租约就有效；持有者已死时，下一个申请者接手该路径，并且每个代文件都带有 fencing 编号，以便识别前任持有者迟到的写入。如果文件在编辑器上次读取或写入之后发生了变化，写入同样会因过期而被拒绝；释放租约时会记录文件被留下时的状态，它是下一位持有者那一轮的起点。租约在写入被派发之前检查一次，并在编辑器报告写入完成后再检查一次；写入本身由编辑器执行，因此在租约失效时已经在进行的写入无法被阻止，只能事后识别：编辑器会被告知重新读取该文件，且该轮次会被标记为 `lost_claims`。在其他会话运行期间，对 JINX 自身源码（`.agent/src/jinx`）的编辑会被拒绝，因为 self-patch 闸门是把整个源码树与同一份基线比较的；而只要其他会话还活着，`git reset --hard`、`git clean -f`、`git stash`、`git checkout -f` / `git checkout .` 以及 `git restore .` 也会被拒绝。
+**写租约。** 编辑器写入文件之前，运行器会为该会话申请该文件的租约。一个路径同一时刻只有一个持有者；对已被持有的路径写入会被拒绝，并附带指明持有者的消息，编辑器可以给持有者发邮件、先做别的事，或者等待。只要持有者的心跳是新鲜的（`JINX_LEASE_S`），租约就有效；持有者已死时，下一个申请者接手该路径，并且每个代文件都带有 fencing 编号，以便识别前任持有者迟到的写入。如果文件在编辑器上次读取或写入之后发生了变化，写入同样会因过期而被拒绝；释放租约时会记录文件被留下时的状态，它是下一位持有者那一轮的起点。租约在写入被派发之前检查一次，并在编辑器报告写入完成后再检查一次；写入本身由编辑器执行，因此在租约失效时已经在进行的写入无法被阻止，只能事后识别：编辑器会被告知重新读取该文件，且该轮次会被标记为 `lost_claims`。在其他会话运行期间，对 JINX 自身源码（`.agent/src/jinx`）的 `file_write` 会被拒绝，因为 self-patch 闸门是把整个源码树与同一份基线比较的。改动该目录树的 `bash_exec` 不会被拒绝：它在该批次结束后才被发现，并提示编辑器撤销该改动或确保其完整。shell 命令中只有会抹掉其他会话未提交工作的那些才会被拒绝（`git reset --hard`、`git clean -f`、`git stash`、`git checkout -f` / `git checkout .` 以及 `git restore .`），前提是其他会话还活着。
 
 **轮次文件。** 一个改动了文件的轮次关闭时，运行器会并排写下两个文件：`rounds/NNNN.mbox` 和 `rounds/NNNN.yaml`。`.mbox` 是以 `git format-patch` 样式写成的一封邮件，内容就是这次改动（`From <tree> Mon Sep 17 00:00:00 2001`、`From: JINX <sid@jinx.invalid>`、`Date`、`Subject: [PATCH] <模型所说它做了什么>`（该文本为空，或以 `git am` 会去掉的内容开头，如 `[`、`:`、`Re:` 时，改用 `JINX session <sid>, round <n>`）、`Jinx-Session` 与 `Jinx-Round` 两个尾注、diffstat 以及 `git diff --binary`），因此 `git am` 能把它变成一次提交。`.yaml` 是它的记录：
 
@@ -340,10 +370,10 @@ evidence:                     # 仅包含模型自己对该轮所说的内容
 按自身节奏结束运行的会话（`[JINX_COMPLETE]`、`[JINX_DEADLOCK]` 或触达硬上限）会被自动导出，无需请求，运行器会打印一行供编辑器转告用户：
 
 ```
-[JINX_EXPORT] rounds=4 mbox=.agent/export/jinx-s7f3a.mbox yaml=.agent/export/jinx-s7f3a.yaml apply="git am --3way .agent/export/jinx-s7f3a.mbox" head=5480bcecc9
+[JINX_EXPORT] rounds=4 mbox=.agent/export/jinx-s7f3a.mbox yaml=.agent/export/jinx-s7f3a.yaml apply="git am --3way /home/me/project/.agent/export/jinx-s7f3a.mbox" head=5480bcecc9
 ```
 
-`head` 是第一个轮次开始时所在的提交：在它的检出点上（另一个克隆，或 `git worktree`）应用该序列，或在这些文件未发生变化的任何提交上应用。它不适用于会话运行所在的那棵工作树：那里已经有这些改动，只是尚未提交，而 `git am` 不会覆盖未提交的改动（此时 `--export` 会打印 `note:`；把该工作树原样提交，或到别处应用该序列）。导出不会触碰项目中的任何内容：序列能否应用到当前 `HEAD`，是在索引的私有副本上、按 `git am --3way` 的方式检查的；当答案不是单纯的“可以”时，该行会带上 `check=`：`already`（`HEAD` 已包含这些改动）、`together`（这些轮次建立在其他会话先改动的文件之上，因此只能与它们的轮次一起应用；该行还会追加 `all="python .agent/jinx.py --export"`）、`no`（第一个无法应用的轮次会在 `.yaml` 中指明；`HEAD` 已包含的轮次也会如此指明，因为 `git am` 会在不产生任何改动的补丁处停下，`git am --skip` 才能继续）或 `unknown`（检查无法运行）。diff 取自文件的字节，所以文件里有 CR 行尾的地方 diff 里也有；检查会用两种方式读取它，命令只在 `HEAD` 需要时才带 `--keep-cr`（按原样提交的 CRLF 文件）：在检出时会转换行尾的 LF 仓库（`core.autocrlf=true`）里，普通的 `git am` 才是正确的命令。无法传递的轮次会被排除，在 `.yaml` 中指明，并计入 `skipped=N`：它的 `.mbox` 与 `.yaml` 中的校验和不再一致、未能被记录，或是旧版 JINX 以 `.patch` 写下的。因此 `check=yes skipped=1` 表示序列可以应用，但并不完整。文件以会话命名（`jinx-s7f3a`），最多三个会话时以 `-` 连接，超过则为 `jinx-all`；当有轮次被排除或序列无法应用（`check=no` 或 `unknown`）时，该命令以退出码 `1` 结束，其余情况为 `0`。
+`head` 是第一个轮次开始时所在的提交：在它的检出点上（另一个克隆，或 `git worktree`）应用该序列，或在这些文件未发生变化的任何提交上应用。它不适用于会话运行所在的那棵工作树：那里已经有这些改动，只是尚未提交，而 `git am` 不会覆盖未提交的改动（此时 `--export` 会打印 `note:`；把该工作树原样提交，或到别处应用该序列）。`mbox=` 和 `yaml=` 是相对于项目的路径，而 `apply` 命令用绝对路径指明 `.mbox`，因为它所针对的检出点没有 `.agent/export/`（`.agent/` 不在 git 中）：该命令可以原样在本机任意目录下运行；在另一台机器上，请先复制 `.mbox`，再把副本的路径交给 `git am`。导出不会触碰项目中的任何内容：序列能否应用到当前 `HEAD`，是在索引的私有副本上、按 `git am --3way` 的方式检查的；当答案不是单纯的“可以”时，该行会带上 `check=`：`already`（`HEAD` 已包含这些改动）、`together`（这些轮次建立在其他会话先改动的文件之上，因此只能与它们的轮次一起应用；该行还会追加 `all="python .agent/jinx.py --export"`）、`no`（第一个无法应用的轮次会在 `.yaml` 中指明；`HEAD` 已包含的轮次也会如此指明，因为 `git am` 会在不产生任何改动的补丁处停下，`git am --skip` 才能继续）或 `unknown`（检查无法运行）。diff 取自文件的字节，所以文件里有 CR 行尾的地方 diff 里也有；检查会用两种方式读取它，命令只在 `HEAD` 需要时才带 `--keep-cr`（按原样提交的 CRLF 文件）：在检出时会转换行尾的 LF 仓库（`core.autocrlf=true`）里，普通的 `git am` 才是正确的命令。无法传递的轮次会被排除，在 `.yaml` 中指明，并计入 `skipped=N`：它的 `.mbox` 与 `.yaml` 中的校验和不再一致、未能被记录，或是旧版 JINX 以 `.patch` 写下的。因此 `check=yes skipped=1` 表示序列可以应用，但并不完整。文件以会话命名（`jinx-s7f3a`），最多三个会话时以 `-` 连接，超过则为 `jinx-all`；当有轮次被排除或序列无法应用（`check=no` 或 `unknown`）时，该命令以退出码 `1` 结束，其余情况为 `0`。
 
 **Shell 命令。** `bash_exec` 会改动文件，却不说明改动了哪些。在每个包含 shell 命令的批次前后，运行器会比较工作树，并把新增的改动归到运行该命令的那一轮。当另一个会话的 shell 批次在时间上重叠时，只归属脚本中点名的文件，其余的列为 `shell_unattributed`。对另一个会话所持有的文件的改动，会给编辑器一条冲突提示，并给持有者一条 `conflict` 消息，纯追加（一行日志、一个列表项）除外，它不算冲突。
 
@@ -647,13 +677,13 @@ JINX 运行时由以下位于 `.agent/` 目录下的 Python 组件构成（核�
 * **`export.py`**（把轮次汇成一个 `.mbox`）：
   `jinx.py --export` 以及运行结束时的自动导出。`find_rounds` 读取所选会话的 `.mbox`/`.yaml` 对，并丢弃（同时说明原因）校验和不再一致、未能被记录或由旧版 JINX 写下的轮次；`check_series` 在索引的私有副本上、按 `git am --3way` 的方式试用该序列，分别按原样和去掉 CR 行尾两种读法（`yes`、`already`、`no`，以及在还需要其他会话的轮次时给出 `together`）；`build` 写出 `.agent/export/jinx-<sid>.mbox` 与 `.yaml`；`line` 生成 `[JINX_EXPORT]` 行。它从不改动项目，也不会向已经完成的运行抛出异常。
 * **`sessions.py`**（运行器与会话的衔接层）：
-  运行器进入 `mail.py` 的唯一入口（`team.py` 只读取它写下的内容；`export.py` 读取轮次文件，只写出汇集后的序列）。`open_session` 为一次调用找到或创建会话（任务、`--session`、`--join`，或它认出的属于调用方的会话），`describe` 打印 `[JINX_SESSION]` 行，`digest_message` / `commit_digest` / `flush_outbox` 处理邮件，`screen_call` / `check_writes` 对 `file_write` 强制执行租约，`screen_shell` / `before_batch` / `after_batch` 监视 shell 命令，`round_closed` 写轮次文件，`end` 在运行结束时导出会话的轮次。每个函数在自己的 I/O 失败时都会记录日志并继续，因为协调机制绝不能成为阻止本可成功的运行的原因。
+  运行器进入 `mail.py` 的唯一入口（`team.py` 只读取它写下的内容；`export.py` 读取轮次文件，只写出汇集后的序列）。`open_session` 为一次调用找到或创建会话（任务、`--session`、`--join`，或它认出的属于调用方的会话），`describe`（`JINX_SESSIONS=0` 时为 `describe_shared`）打印 `[JINX_SESSION]` 行，`digest_message` / `commit_digest` / `flush_outbox` 处理邮件，`screen_call` / `check_writes` 对 `file_write` 强制执行租约，`screen_shell` / `before_batch` / `after_batch` 监视 shell 命令，`round_closed` 写轮次文件，`end` 在运行结束时导出会话的轮次。每个函数在自己的 I/O 失败时都会记录日志并继续，因为协调机制绝不能成为阻止本可成功的运行的原因。
 * **`evidence.py`**（按原因归并的失败检查）：
   把失败检查所捕获的输出尾部整理为按原因归并的证据，而不是几十行几乎相同的文字：`parse_failures` 读取 pytest 风格的 `FAILED` / `ERROR` 行与末尾计数，`canonical_reason` 屏蔽每次运行都会变化的内容（长数字、十六进制 ID、耗时、路径），使同一个原因不会被拆成几个，`render_digest` / `evidence_from_check` 为每个不同的原因输出一行。它用于生成 self-patch 被回滚之后的通知（`runner.py` 中的 `_render_check_failures`）。纯函数：只重新整理已经产生的输出，不做任何决定。
 * **`reasoning.py`**（基于评分历史的推理提示）：
   从模型自己写下的评分中推导出建议性提示，并汇成一个有界的块放进该轮提示词（`render_notes`）：预测是否成立（`classify_prediction`、`prediction_stats`）、失败是否换了名字重复出现、为什么看似已完成的运行不被允许退出（`exit_blockers`）、被改名的需求键、回归、同一轮自身说法之间的矛盾、针对文件系统的计划与引用检查，以及核对这些提示仍然与它们所描述的闸门逻辑一致。它不增加状态，也不做决定：终止运行的仍然只有 `check_exit` 和 `check_deadlock`。
 * **`prompts.py`**（提示词模板）：
-  包含 `SYSTEM_PROMPT`（随每个请求发送，因此保持简短）、`FIRST_ROUND_BRIEF`（初始设置步骤，只追加到第 1 轮）、`REASONING_PROTOCOL`（失败分析步骤，在某轮失败之后交付，而不放在系统提示词里）、当某轮遗漏状态块时注入的 `MISSING_STATE_WARNING`、恢复指令 `TOOL_DEPTH_CRITICAL_MSG`，以及 `construct_round_prompt()`。
+  包含 `SYSTEM_PROMPT`（随每个请求发送，因此保持简短：循环、状态契约，以及 SKILLS 规则——任务从 `find-skills` 进入、经 `skill-creator` 离开，提示词只点名、不作解释）、`FIRST_ROUND_BRIEF`（初始设置步骤，只追加到第 1 轮）、`REASONING_PROTOCOL`（失败分析步骤，在某轮失败之后交付，而不放在系统提示词里）、当某轮遗漏状态块时注入的 `MISSING_STATE_WARNING`、恢复指令 `TOOL_DEPTH_CRITICAL_MSG`，以及 `construct_round_prompt()`。
 
 ### 运行时环境变量
 
@@ -722,6 +752,8 @@ JINX 可以编辑 `.agent/src/jinx/*.py` 来改善自身效果，而在做框架
 
 设置 `JINX_ALLOW_PROTECTED_EDITS=1` 可允许修改受保护逻辑。这是供人工有意使用的覆盖开关，而不是让智能体为自己开启的。
 
+**提示词。** 模型读取的文本都放在同一个文件 `prompts.py` 中（其文档字符串列出了少数例外：多会话功能的文本和状态诊断信息），因此导致 JINX 出错的措辞只需在一处修正。当证据表明某段提示词文本导致了一轮失败时，JINX 会把该轮的原因标记为 `prompt_wording`，并像任何其他自我修补一样在该文件中重写这段文本（编译与导入检查，失败则回滚）。`SYSTEM_PROMPT` 是唯一可能被门控拒绝的提示词文本；此时 JINX 会把它建议的措辞记入 `open`，由你或你指示的编辑器来应用。
+
 | 变量 | 默认值 | 适用范围 | 用途 |
 | :--- | :--- | :--- | :--- |
 | `JINX_SELF_PATCH` | `1` | 两者 | 设为 `0` 可完全关闭校验回滚闸门与经验注入 |
@@ -740,15 +772,16 @@ JINX 可以编辑 `.agent/src/jinx/*.py` 来改善自身效果，而在做框架
 要集成 JINX，宿主编辑器或企业级编排器必须将 JINX 执行命令作为子进程启动，并驱动请求／响应循环。
 
 ### 启动规范
-* **执行命令**：启动使用 `python .agent/jinx.py "[TASK_DESCRIPTION]"`，恢复使用 `python .agent/jinx.py`。
+* **执行命令**：启动使用 `python .agent/jinx.py "[TASK_DESCRIPTION]"`，恢复使用 `python .agent/jinx.py --session <id>`（ID 在 `[JINX_SESSION]` 行中；只要 JINX 能判断运行属于谁，不带参数的 `python .agent/jinx.py` 也有效，§1.3）。
 * **进程配置**：以文本模式与管道流运行。宿主不持有任何内存状态 —— 继续循环所需的一切信息都在磁盘上。
-* **循环机制**：每次调用后读取 `.agent/jinx_request.yaml`；依据 `type` 字段路由、执行动作、写入 `.agent/jinx_response.yaml`，然后不带任务参数重新调用。当 `jinx_request.yaml` 不再出现时，循环结束。
+* **循环机制**：每次调用都会打印一行 `[JINX_SESSION] id=… request=… response=… resume="…"`（§1.3）。每次调用后读取 `request=` 所指的文件（仅在 `JINX_SESSIONS=0` 时才是 `.agent/jinx_request.yaml`）；依据 `type` 字段路由、执行动作、写入 `response=` 所指的文件，然后不带任务参数重新调用。当请求文件不再出现时，循环结束。没有打印该行的调用没有启动运行：请报告它的 stderr。
 
 ### 宿主集成 Python 示例
 
 以下脚本实现宿主侧的 File-IPC 执行协议：
 
 ```python
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -757,30 +790,44 @@ from typing import Any, Dict, List
 import yaml
 
 AGENT = Path(".agent")
-REQUEST = AGENT / "jinx_request.yaml"
-RESPONSE = AGENT / "jinx_response.yaml"
-RUN_STATE = AGENT / "jinx_run_state.yaml"
+# 每次调用都会先打印这一行：运行把文件放在哪里（`JINX_SESSIONS=0` 时为 `id=-`）。
+SESSION = re.compile(r"^\[JINX_SESSION\] id=(\S+) request=(\S+) response=(\S+)", re.MULTILINE)
 
 
-def current_round() -> int:
+class Run:
+    """一次运行的文件，由其首次调用打印的 [JINX_SESSION] 行指明。"""
+
+    def __init__(self, result: subprocess.CompletedProcess) -> None:
+        found = SESSION.search(result.stdout)
+        if not found:  # 没有该行就没有运行：原因在 stderr 中
+            raise RuntimeError(result.stderr.strip() or "JINX printed no [JINX_SESSION] line")
+        sid, request, response = found.groups()
+        self.sid = None if sid == "-" else sid  # `-`：一套共享文件
+        self.request, self.response = Path(request), Path(response)
+        self.run_state = self.request.with_name("jinx_run_state.yaml")
+
+
+def current_round(run: Run) -> int:
     """The round JINX is asking about, read from the run state it just wrote.
 
     The manifest merges `scores` by round number, so the host only ever sends the
     round it is currently answering; earlier rounds are already on disk.
     """
-    state = yaml.safe_load(RUN_STATE.read_text(encoding="utf-8")) or {}
+    state = yaml.safe_load(run.run_state.read_text(encoding="utf-8")) or {}
     return int(state.get("rnd", 1))
 
 
-def spawn(task: str | None = None) -> subprocess.CompletedProcess:
+def spawn(task: str | None = None, session: str | None = None) -> subprocess.CompletedProcess:
     """执行一次 JINX 状态转移。写入请求后立即返回。"""
     argv = [sys.executable, str(AGENT / "jinx.py")]
+    if session:  # 恢复这次运行；不带参数的调用只有在 JINX 能判断它属于谁时才有效
+        argv += ["--session", session]
     if task:
         argv.append(task)
     return subprocess.run(argv, text=True, capture_output=True, check=False)
 
 
-def call_llm(request: Dict[str, Any]) -> Dict[str, Any]:
+def call_llm(request: Dict[str, Any], run: Run) -> Dict[str, Any]:
     """将 system / messages / tools 转发至推理网关。
 
     请将函数体替换为真实的网关调用。此示例在第一轮读取一个文件，随后输出状态块，
@@ -805,7 +852,7 @@ def call_llm(request: Dict[str, Any]) -> Dict[str, Any]:
         "  facts:\n    - Inspected src/jinx/state.py\n"
         # Only this round's entry. merge_scores() keeps every earlier round, so
         # the manifest accumulates distinct rounds and check_exit can complete.
-        f"  scores:\n    - round: {current_round()}\n"
+        f"  scores:\n    - round: {current_round(run)}\n"
         "      approach: Read the manifest module\n"
         "      requirements:\n        task_complete: true\n"
         "      pass_count: 1\n      all_pass: true\n"
@@ -832,10 +879,10 @@ def run_tool(name: str, params: Dict[str, Any]) -> str:
     return f"Error: unknown tool '{name}'"
 
 
-def dispatch(request: Dict[str, Any]) -> None:
+def dispatch(request: Dict[str, Any], run: Run) -> None:
     """写入 JINX 正在等待的响应。"""
     if request.get("type") == "llm_generate":
-        response = call_llm(request)
+        response = call_llm(request, run)
     else:  # type == "tool_calls"
         # 重放已记忆化的结果，而不是重复产生副作用。仅有调用 ID 并不够：
         # 缓存中保存的是该调用实际返回的内容。
@@ -851,24 +898,29 @@ def dispatch(request: Dict[str, Any]) -> None:
                 "content": run_tool(call["name"], call.get("params") or {}),
             })
         response = {"results": done}
-    RESPONSE.write_text(yaml.safe_dump(response, sort_keys=False), encoding="utf-8")
+    run.response.write_text(yaml.safe_dump(response, sort_keys=False), encoding="utf-8")
 
 
 def execute_jinx(task_description: str) -> int:
     result = spawn(task_description)
     if result.returncode != 0:
-        return result.returncode  # 1 = 等待编辑器，2 = HARD_CAP 已耗尽
+        print(result.stderr, file=sys.stderr)
+        return result.returncode  # 1 = 等待编辑器或启动失败，2 = HARD_CAP 已耗尽
+    run = Run(result)
 
-    while REQUEST.exists():
-        request = yaml.safe_load(REQUEST.read_text(encoding="utf-8"))
-        REQUEST.unlink()          # 先消费请求，再写入响应
-        dispatch(request)
+    while run.request.exists():
+        request = yaml.safe_load(run.request.read_text(encoding="utf-8"))
+        run.request.unlink()  # 先消费请求，再写入响应
+        dispatch(request, run)
 
-        result = spawn()          # 恢复：不带任务参数
+        result = spawn(session=run.sid)  # 恢复：不带任务参数
         if result.returncode != 0:
             return result.returncode
 
-    # 已无待处理请求：JINX 输出了 [JINX_COMPLETE] 或 [JINX_DEADLOCK]。
+    # 已无待处理请求：JINX 输出了 [JINX_COMPLETE] 或 [JINX_DEADLOCK]（若改动了文件，还有 [JINX_EXPORT]）。
+    for ln in result.stdout.splitlines():
+        if ln.startswith(("[JINX_COMPLETE]", "[JINX_DEADLOCK]", "[JINX_EXPORT]")):
+            print(ln)
     return 0
 
 
@@ -943,7 +995,7 @@ JINX 架构规范将运行时部署定义为核心组件，内嵌于官方 **Ant
 3. 执行 JINX 关于读取、写入文件与运行系统命令的声明式指令。
 4. 通过 File-IPC 机制将执行结果回送至 JINX 认知循环。
 
-在本仓库中，`CLAUDE.md` 被配置为自动且无条件地将所有用户消息、问候与任务路由经由 JINX，以确保自动化编排循环顺畅运行。若你更希望手动调用 JINX，可编辑 `CLAUDE.md`，将其限制为仅响应显式请求。
+`jinx init` 写入 `CLAUDE.md` 的规则块（以及本仓库自己的 `CLAUDE.md`）被配置为自动且无条件地将所有用户消息、问候与任务路由经由 JINX，以确保自动化编排循环顺畅运行。若你更希望手动调用 JINX，可编辑该块的第一句话，将其限制为仅响应显式请求：`jinx init` 会保留你编辑过的块（发布版本自带的文本会写入 `.agent/CLAUDE.md.new`）。
 
 ### 安全性与交互式执行授权
 
@@ -1009,6 +1061,6 @@ JINX 架构规范将运行时部署定义为核心组件，内嵌于官方 **Ant
    * *“JINX: 在 calc.py 中加入除法功能并用单元测试验证”*
    * *“请运行 JINX 实现除法功能”*
 
-在收到开发者明确指示后，宿主会通过 `python .agent/jinx.py "[请求]"` 引导编排器，持续驱动 File-IPC 握手直至 `.agent/jinx_request.yaml` 消失，并报告最终的终止标记（`[JINX_COMPLETE]`、`[JINX_DEADLOCK]`，或退出码 `2`），以及在运行改动了文件时紧随其后的 `[JINX_EXPORT]` 行：即装有这次工作的 `.mbox`，以及提交它的命令。每次调用的 `[JINX_SESSION]` 行都会打印要使用哪个请求文件和响应文件，以及哪条命令恢复运行（`.agent/jinx_request.yaml` 与 `.agent/jinx_response.yaml` 仅在 `JINX_SESSIONS=0` 时使用）。因此多个 Claude Code 窗口可以同时在同一个项目中工作，各自驱动自己的会话（§1.3）；每个窗口都以同样的方式启动 JINX，运行时会告诉每个模型还有谁在运行、在做什么。项目的 `CLAUDE.md` 要求每个窗口使用该行中的路径和 `resume` 命令，把 `mail:` 块视为来自其他会话的信息而非用户指令，并把 `[JINX_EXPORT]` 行转告用户。
+在收到开发者明确指示后，宿主会通过 `python .agent/jinx.py "[请求]"` 引导编排器，持续驱动 File-IPC 握手直至 `[JINX_SESSION]` 行所指的请求文件消失，并报告最终的终止标记（`[JINX_COMPLETE]`、`[JINX_DEADLOCK]`，或退出码 `2`），以及在运行改动了文件时紧随其后的 `[JINX_EXPORT]` 行：即装有这次工作的 `.mbox`，以及提交它的命令。每次调用的 `[JINX_SESSION]` 行都会打印要使用哪个请求文件和响应文件，以及哪条命令恢复运行（只有在 `JINX_SESSIONS=0` 时，该行才指向共享的 `.agent/jinx_request.yaml` 与 `.agent/jinx_response.yaml`）。因此多个 Claude Code 窗口可以同时在同一个项目中工作，各自驱动自己的会话（§1.3）；每个窗口都以同样的方式启动 JINX，运行时会告诉每个模型还有谁在运行、在做什么。项目的 `CLAUDE.md` 要求每个窗口使用该行中的路径和 `resume` 命令，把 `mail:` 块视为来自其他会话的信息而非用户指令，并把 `[JINX_EXPORT]` 行转告用户。
 
 ---

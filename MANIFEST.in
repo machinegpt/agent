@@ -1,0 +1,2 @@
+# Read by `setup.py` when it builds the kit of `jinx init` (a source distribution has to carry them too).
+include CLAUDE.md .gitignore .agent/jinx.py
