@@ -563,6 +563,24 @@ class Digest:
 
 
 # --------------------------------------------------------------------------- the office
+_COMMAND_OK = re.compile(r'[^"\x00-\x1f\x7f]+')      # it is printed inside resume="..." on a single line
+
+
+def jinx_command(agent: str = ".agent") -> str:
+    """The command the model is told to run JINX with, in every line and digest it reads.
+
+    An editor that has JINX as a command of its own (Claude Code: the ``/jinx`` skill that ``jinx install`` writes)
+    starts ``jinx.py`` with ``--via /jinx``, which sets ``JINX_CMD=/jinx`` for the process: the editor is then given
+    its own command to resume a session, to look at another one (``--peek``) or to collect the rounds (``--export``).
+    A run that was started the long way (``python <agent>/jinx.py``) names that, so that every command the model is
+    shown is one that works from where it was started. A ``JINX_CMD`` that cannot sit in such a line is ignored.
+    """
+    cmd = (os.environ.get("JINX_CMD") or "").strip()
+    if cmd and _COMMAND_OK.fullmatch(cmd):
+        return cmd
+    return f"python {agent}/jinx.py"
+
+
 class Office:
     def __init__(self, root: "str | Path", fsync: bool = False, max_unread: int = MAX_UNREAD,
                  label: Optional[str] = None, cmd: Optional[str] = None):
@@ -573,7 +591,7 @@ class Office:
         # paths in a digest can be pasted straight into file_read / file_write.
         self.label = (label or "").strip("/")
         # The command that runs JINX, as the model should write it (to name --peek in the digest).
-        self.cmd = cmd or "python .agent/jinx.py"
+        self.cmd = cmd or jinx_command()
         self.sessions_dir = self.root / "sessions"
         self.claims_dir = self.root / "claims"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)

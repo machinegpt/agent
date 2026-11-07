@@ -1,16 +1,8 @@
 # Copyright 2026 JINX Enterprise Team. All Rights Reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Use of this software is governed by the JINX End User License Agreement (EULA) in the
+# LICENSE.md file at the root of this repository: free for personal, educational, research and
+# non-commercial use; commercial use needs a separate commercial license.
 # ==============================================================================
 """Several JINX sessions in one project at the same time.
 
@@ -101,7 +93,7 @@ SHELL_FRAMEWORK = (
 )
 SEVERAL_SESSIONS = (
     "Several JINX sessions are unfinished and this call cannot be matched to one of them: %s. Resume the one "
-    "you started with `python .agent/jinx.py --session <id>`; the id is printed on the [JINX_SESSION] line."
+    "you started with `%s --session <id>`; the id is printed on the [JINX_SESSION] line."
 )
 
 
@@ -175,8 +167,9 @@ def _office() -> mail.Office:
         agent = Path(os.path.relpath(AGENT_DIR, project_root())).as_posix()
     except ValueError:
         label, agent = str(root), str(AGENT_DIR)
-    # `cmd` is how the model is told to call JINX again (to look at another session, say).
-    return mail.Office(root, label=label, cmd=f"python {agent}/jinx.py")
+    # `cmd` is how the model is told to call JINX again: `/jinx` when the editor's own command started it (--via), else
+    # the long command (mail.jinx_command). It is what resumes a session, looks at another one (--peek) or joins it.
+    return mail.Office(root, label=label, cmd=mail.jinx_command(agent))
 
 
 def _lease() -> int:
@@ -229,7 +222,7 @@ def _resolve_bare(office: mail.Office, who: List[str]) -> mail.Session:
         sid, _ = identity.identify(who, marks)
         if sid:
             return office.session(sid)
-    raise SessionError(SEVERAL_SESSIONS % _unfinished(office))
+    raise SessionError(SEVERAL_SESSIONS % (_unfinished(office), office.cmd))
 
 
 def _join(office: mail.Office, host: str, task: Optional[str], session_id: Optional[str], who: List[str]) -> Context:
@@ -339,7 +332,7 @@ def _resume_command(ctx: Context) -> str:
 
 def describe(ctx: Context) -> str:
     """The one line every invocation prints, so the editor always has the exact paths, and how many others run."""
-    resume = ctx.resume_cmd or f"python {ctx.rel(AGENT_DIR)}/jinx.py --session {ctx.sid}"
+    resume = ctx.resume_cmd or f"{ctx.office.cmd} --session {ctx.sid}"
     line = '[JINX_SESSION] id=%s request=%s response=%s resume="%s"' % (
         ctx.sid, ctx.rel(ctx.request), ctx.rel(ctx.response), resume)
     return line + (f" others={ctx.others}" if ctx.others else "")
@@ -355,8 +348,8 @@ def describe_shared() -> str:
         agent = Path(os.path.relpath(AGENT_DIR, project_root())).as_posix()
     except ValueError:
         agent = str(AGENT_DIR)
-    return '[JINX_SESSION] id=- request=%s/%s response=%s/%s resume="python %s/jinx.py"' % (
-        agent, REQUEST_NAME, agent, RESPONSE_NAME, agent)
+    return '[JINX_SESSION] id=- request=%s/%s response=%s/%s resume="%s"' % (
+        agent, REQUEST_NAME, agent, RESPONSE_NAME, mail.jinx_command(agent))
 
 
 def heartbeat(ctx: Context, rnd: Optional[int] = None) -> None:

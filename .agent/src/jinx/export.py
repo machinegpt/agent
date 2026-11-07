@@ -1,16 +1,8 @@
 # Copyright 2026 JINX Enterprise Team. All Rights Reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Use of this software is governed by the JINX End User License Agreement (EULA) in the
+# LICENSE.md file at the root of this repository: free for personal, educational, research and
+# non-commercial use; commercial use needs a separate commercial license.
 # ==============================================================================
 """The rounds of JINX sessions as one .mbox and one .yaml: what ``jinx.py --export`` writes.
 
@@ -20,7 +12,7 @@ Every round that changed files leaves ``rounds/NNNN.mbox`` and ``rounds/NNNN.yam
     .agent/export/jinx-<session>.mbox    the series: `git am` applies it, one commit per round
     .agent/export/jinx-<session>.yaml    its record: the rounds, the checksums, and whether the series applies
 
-    python .agent/jinx.py --export [SESSION ...] [--out DIR]
+    /jinx --export [SESSION ...] [--out DIR]
 
 With no session every session of the project that is not archived is collected (``jinx-all``); an archived
 one can be named. A session whose run ended on its own terms is exported by itself, without being asked
@@ -403,7 +395,7 @@ def export_main(argv: Sequence[str], agent_dir: Path) -> int:
     try:
         label = Path(os.path.relpath(ipc, root)).as_posix()
         rel_agent = Path(os.path.relpath(agent_dir, root)).as_posix()
-        office = mail.Office(ipc, label=label, cmd=f"python {rel_agent}/jinx.py")
+        office = mail.Office(ipc, label=label, cmd=mail.jinx_command(rel_agent))
     except (OSError, ValueError, mail.MailError) as e:
         print(f"cannot read {ipc}: {e}")
         return 1

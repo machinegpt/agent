@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,10 @@ dynamic = ["version"]
 description = "Enterprise Sovereign Agent Framework for Editor Integrations"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+# The JINX End User License Agreement (PEP 639): `LicenseRef-` names a license that has no SPDX identifier, and the
+# files below carry its text (the English one governs).
+license = "LicenseRef-JINX-EULA"
+license-files = ["LICENSE.md", "LICENSE_RU.md"]
 authors = [
     { name = "JINX Enterprise Team" }
 ]
@@ -18,7 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
-# `jinx init` puts JINX into a project, `jinx doctor` checks it. `jinx-cli` is the runtime itself (what `.agent/jinx.py` runs).
+# `jinx install` puts JINX into a project, `jinx doctor` checks it. `jinx-cli` is the runtime itself (what `.agent/jinx.py` runs).
 jinx = "jinx.install:main"
 jinx-cli = "jinx.cli:main"
 

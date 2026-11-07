@@ -1,16 +1,8 @@
 # Copyright 2026 JINX Enterprise Team. All Rights Reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Use of this software is governed by the JINX End User License Agreement (EULA) in the
+# LICENSE.md file at the root of this repository: free for personal, educational, research and
+# non-commercial use; commercial use needs a separate commercial license.
 # ==============================================================================
 """Looking at the other sessions: what each one does, what it changed, and the briefing for a helper.
 
@@ -18,9 +10,10 @@ Nothing here changes anything. It reads what ``mail.py`` and ``sessions.py`` kee
 presence card, the ``.mbox`` and ``.yaml`` of every round, and the file that remembers the round still in
 progress) and prints a short text. An agent asks for it with one command,
 
-    python .agent/jinx.py --peek <id> [--diff] [--full]
+    /jinx --peek <id> [--diff] [--full]
 
-so the tokens are spent only when it wants to know. ``--peek`` alone lists every session in one line each.
+so the tokens are spent only when it wants to know (``/jinx`` is the command of the editor, see
+``mail.jinx_command``). ``--peek`` alone lists every session in one line each.
 The same data, cut down to a few lines, is what a session gets once when it joins another one to help
 (``--join <id>``, see :func:`briefing`).
 
@@ -405,7 +398,7 @@ def peek_main(argv: Sequence[str], agent_dir: Path) -> int:
     try:
         label = Path(os.path.relpath(ipc, root)).as_posix()
         rel_agent = Path(os.path.relpath(agent_dir, root)).as_posix()
-        office = mail.Office(ipc, label=label, cmd=f"python {rel_agent}/jinx.py")
+        office = mail.Office(ipc, label=label, cmd=mail.jinx_command(rel_agent))
     except (OSError, ValueError, mail.MailError) as e:
         print(f"cannot read {ipc}: {e}")
         return 1

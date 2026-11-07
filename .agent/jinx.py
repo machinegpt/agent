@@ -2,10 +2,9 @@
 """
 Direct entry point for JINX.
 Designed to be executed when the repository is dropped into a project as a `.agent` folder
-(`pip install git+https://github.com/machinegpt/agent`, then `jinx init` in the project, does that for you).
+(`pip install git+https://github.com/machinegpt/agent`, then `jinx install` in the project, does that for you).
 
-Usage:
-  python .agent/jinx.py "Analyze and fix the bug in auth"
+An editor calls it as its own command, `/jinx` (the skill that `jinx install` sets up for it).
 """
 import sys
 from pathlib import Path
@@ -14,6 +13,69 @@ from pathlib import Path
 # without needing a global pip installation.
 src_path = Path(__file__).resolve().parent / "src"
 sys.path.insert(0, str(src_path))
+
+
+# An editor that has JINX as a command of its own (Claude Code: the `/jinx` skill) does not build a shell command line
+# out of what the person wrote. The skill hands the words over in one piece:
+#
+#     jinx.py --via /jinx --stdin       the words are on stdin (a here-document of the skill)
+#     jinx.py --via /jinx --args ...    the words are everything after --args (for a shell without here-documents)
+#
+# so a message with quotes, `$`, backticks or any language in it arrives exactly as it was written. The words are
+# either options of JINX (`--session s1`, `--peek s2 --diff`, or nothing at all: go on) or a message to start a run with.
+# `--via NAME` is the name the editor calls JINX by: it is what JINX tells the editor to run next (JINX_CMD, see
+# mail.jinx_command). Without --via none of this applies, and a call by hand is parsed as it always was.
+_OPTIONS = ("--session", "--join", "--peek", "--diff", "--full", "--export", "--out", "--min", "--ipc")
+
+
+def _split_words(text):
+    """The words of an editor's call as a command line's arguments: options as they are, anything else one message."""
+    text = text.strip()
+    if not text:
+        return []
+    if text.split(None, 1)[0].split("=", 1)[0] in _OPTIONS:
+        import shlex
+        try:
+            return shlex.split(text)
+        except ValueError:          # an unbalanced quote: it was not options after all
+            pass
+    return [text]
+
+
+def _expand_call():
+    """Rewrites ``sys.argv`` for a call made through the editor's command. True when it was one."""
+    args = sys.argv[1:]
+    if args[:1] != ["--via"] or len(args) < 2:
+        return False
+    import os
+    os.environ["JINX_CMD"] = args[1]
+    rest = args[2:]
+    if rest[:1] == ["--stdin"]:
+        raw = b"" if sys.stdin is None or sys.stdin.isatty() else sys.stdin.buffer.read()
+        rest = _split_words(raw.decode("utf-8", "replace").lstrip("﻿"))
+    elif rest[:1] == ["--args"]:
+        rest = _split_words(" ".join(rest[1:]))
+    sys.argv[1:] = rest
+    return True
+
+
+_VIA = _expand_call()
+
+
+def _code(code):
+    """The exit code to leave with.
+
+    Through the editor's command a call is a success only when it exits 0, and one that does not is handed to the model
+    as a command that failed, not as what JINX printed. So there the code is printed on a line of its own and the call
+    ends well: that is how the model learns that a run ended without success (exit code 2) or that a launch failed (1).
+    """
+    if isinstance(code, str):       # sys.exit("message")
+        print(code, file=sys.stderr)
+        code = 1
+    if _VIA and code not in (None, 0):
+        print("[JINX_EXIT] %s" % code, flush=True)
+        return 0
+    return code
 
 
 def _load_selfpatch():
@@ -297,10 +359,10 @@ bootstrap_dependencies()
 # into one .mbox (--export) reads the round files and writes nothing but its own output (.agent/export/).
 if "--peek" in sys.argv[1:]:
     from jinx.team import peek_main
-    sys.exit(peek_main(sys.argv[1:], src_path.parent))
+    sys.exit(_code(peek_main(sys.argv[1:], src_path.parent)))
 if "--export" in sys.argv[1:]:
     from jinx.export import export_main
-    sys.exit(export_main(sys.argv[1:], src_path.parent))
+    sys.exit(_code(export_main(sys.argv[1:], src_path.parent)))
 
 # Revert a broken self-edit before importing the package, not after.
 self_patch_preflight()
@@ -309,7 +371,13 @@ try:
     from jinx.cli import main
 except ImportError as e:
     print(f"[JINX BOOTSTRAP ERROR] Failed to load JINX modules: {e}", file=sys.stderr)
-    sys.exit(1)
+    sys.exit(_code(1))
 
 if __name__ == "__main__":
-    main()
+    if _VIA:
+        try:
+            main()
+        except SystemExit as e:
+            sys.exit(_code(e.code))
+    else:
+        main()

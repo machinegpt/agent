@@ -1,9 +1,9 @@
-"""Build hook: puts the files a project is given (``jinx init``) next to the package inside the wheel.
+"""Build hook: puts the files a project is given (``jinx install``) next to the package inside the wheel.
 
 Everything else comes from ``pyproject.toml``. ``.agent/jinx.py`` (the entry point), ``CLAUDE.md`` (the rules) and
 ``.gitignore`` (the runtime-state lines) live outside ``.agent/src/jinx``, so setuptools does not pack them by
 itself. They are copied into ``jinx/_kit/`` in the build, so that they stay what they are in the repository, in one
-place, and ``pip install`` from GitHub carries them. In a checkout ``jinx init`` reads the same files in place.
+place, and ``pip install`` from GitHub carries them. In a checkout ``jinx install`` reads the same files in place.
 """
 import shutil
 from pathlib import Path
