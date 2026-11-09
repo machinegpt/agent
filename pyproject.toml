@@ -9,9 +9,9 @@ description = "Enterprise Sovereign Agent Framework for Editor Integrations"
 readme = "README.md"
 requires-python = ">=3.10"
 # The JINX End User License Agreement (PEP 639): `LicenseRef-` names a license that has no SPDX identifier, and the
-# files below carry its text (the English one governs).
+# files below carry its text, in English, Russian and Chinese (the English one governs).
 license = "LicenseRef-JINX-EULA"
-license-files = ["LICENSE.md", "LICENSE_RU.md"]
+license-files = ["LICENSE.md", "LICENSE_RU.md", "LICENSE_ZH.md"]
 authors = [
     { name = "JINX Enterprise Team" }
 ]

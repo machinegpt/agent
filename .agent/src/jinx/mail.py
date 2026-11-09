@@ -584,6 +584,10 @@ def jinx_command(agent: str = ".agent") -> str:
 class Office:
     def __init__(self, root: "str | Path", fsync: bool = False, max_unread: int = MAX_UNREAD,
                  label: Optional[str] = None, cmd: Optional[str] = None):
+        """``root``: the folder of the post office (made if it is missing). ``fsync``: flush every write to disk.
+        ``max_unread``: how many unread letters one inbox holds before the sender is told it is full. ``label``: how
+        ``root`` is written in text the model reads. ``cmd``: the command that runs JINX, as the model should write it
+        (by default ``jinx_command()``)."""
         self.root = Path(root)
         self.fsync = fsync
         self.max_unread = max_unread

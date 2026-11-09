@@ -1,8 +1,9 @@
 # Copyright 2026 JINX Enterprise Team. All Rights Reserved.
 #
-# Use of this software is governed by the JINX End User License Agreement (EULA) in the
-# LICENSE.md file at the root of this repository: free for personal, educational, research and
-# non-commercial use; commercial use needs a separate commercial license.
+# Use of this software is governed by the JINX End User License Agreement (EULA): the LICENSE.md file
+# at the root of the JINX repository (https://github.com/machinegpt/agent), and in the `.agent` folder of
+# a project where JINX is installed. It is free for personal, educational and non-commercial use,
+# including non-commercial research; commercial use needs a commercial license (section 2 of the EULA).
 # ==============================================================================
 """Several JINX sessions in one project at the same time.
 
@@ -107,10 +108,12 @@ def enabled() -> bool:
 
 
 def ipc_dir() -> Path:
+    """The folder of the sessions' files: ``JINX_IPC_DIR``, else ``.agent/ipc``."""
     return Path(os.environ.get("JINX_IPC_DIR") or (AGENT_DIR / "ipc"))
 
 
 def project_root() -> Path:
+    """The project folder: ``JINX_PROJECT_ROOT``, else the parent of ``.agent``."""
     return Path(os.environ.get("JINX_PROJECT_ROOT") or AGENT_DIR.parent).resolve()
 
 
@@ -123,6 +126,7 @@ class Context:
     """The session this process serves: its mail session, its round, and where its files are."""
 
     def __init__(self, office: mail.Office, session: mail.Session):
+        """``office``: the post office of the project. ``session``: the mail session that this process serves."""
         self.office = office
         self.session = session
         self.sid = session.sid
@@ -142,6 +146,7 @@ class Context:
 
     @property
     def round(self) -> mail.Round:
+        """The mail round of this session (made on first use)."""
         if self._round is None:
             tmp = self.dir / "tmp"
             tmp.mkdir(exist_ok=True)
@@ -157,10 +162,12 @@ class Context:
 
     @property
     def outbox_rel(self) -> str:
+        """The outbox of this session, written as ``rel`` writes a path."""
         return self.rel(self.session.outbox)
 
 
 def _office() -> mail.Office:
+    """The post office of this project: its folder, its label for the model, and the command that calls JINX again."""
     root = ipc_dir()
     try:
         label = Path(os.path.relpath(root, project_root())).as_posix()
@@ -173,6 +180,7 @@ def _office() -> mail.Office:
 
 
 def _lease() -> int:
+    """The seconds a heartbeat of a session holds: ``JINX_LEASE_S`` (at least 30), else the default."""
     try:
         return max(30, int(float(os.environ.get("JINX_LEASE_S", mail.DEFAULT_LEASE_S))))
     except (ValueError, OverflowError):
@@ -353,6 +361,7 @@ def describe_shared() -> str:
 
 
 def heartbeat(ctx: Context, rnd: Optional[int] = None) -> None:
+    """Tells the other sessions that this one is working (in round ``rnd``); a failure to write it is only logged."""
     try:
         fields: Dict[str, Any] = {"state": "working"}
         if rnd is not None:
@@ -363,6 +372,7 @@ def heartbeat(ctx: Context, rnd: Optional[int] = None) -> None:
 
 
 def alone(ctx: Context) -> bool:
+    """Whether no other session is running (True where that cannot be found out)."""
     try:
         return ctx.session.alone()
     except OSError:
@@ -427,6 +437,7 @@ def digest_message(ctx: Context, round_start: bool = True) -> Optional[Dict[str,
 
 
 def commit_digest(ctx: Context) -> None:
+    """Marks the mail that the last request showed as shown, and drops the briefing that request carried."""
     d, ctx.pending_digest = ctx.pending_digest, None
     if ctx.briefing_pending:
         ctx.briefing, ctx.briefing_pending = None, False          # told once: it is in a request that was written
@@ -445,6 +456,8 @@ def _note_outbox(ctx: Context, name: str, ok: bool, why: str) -> None:
 
 
 def flush_outbox(ctx: Context) -> None:
+    """Delivers the drafts in the outbox of this session; the ones that are refused are reported with the next
+    request."""
     try:
         for item in ctx.session.flush_outbox():
             _note_outbox(ctx, *item)
@@ -465,6 +478,7 @@ def project_rel(ctx: Context, raw: str) -> Optional[str]:
 
 
 def _in_ipc(ctx: Context, rel: str) -> bool:
+    """Whether ``rel`` (a path relative to the project) is the folder of the sessions' files or lies inside it."""
     ipc = ctx.rel(ipc_dir())
     return rel == ipc or rel.startswith(ipc + "/")
 

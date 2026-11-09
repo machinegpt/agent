@@ -1,15 +1,17 @@
 # Copyright 2026 JINX Enterprise Team. All Rights Reserved.
 #
-# Use of this software is governed by the JINX End User License Agreement (EULA) in the
-# LICENSE.md file at the root of this repository: free for personal, educational, research and
-# non-commercial use; commercial use needs a separate commercial license.
+# Use of this software is governed by the JINX End User License Agreement (EULA): the LICENSE.md file
+# at the root of the JINX repository (https://github.com/machinegpt/agent), and in the `.agent` folder of
+# a project where JINX is installed. It is free for personal, educational and non-commercial use,
+# including non-commercial research; commercial use needs a commercial license (section 2 of the EULA).
 # ==============================================================================
 """Installs JINX into a project: ``jinx install`` and ``jinx doctor``.
 
     pip install git+https://github.com/machinegpt/agent      # 1. the `jinx` command
     jinx install                                              # 2. in the project folder: set JINX up there
 
-``install`` puts the runtime into ``.agent/`` (``jinx.py`` and ``src/jinx/``), the JINX rules into the instruction file of
+``install`` puts the runtime into ``.agent/`` (``jinx.py`` and ``src/jinx/``, and with them the text of the license, ``LICENSE.md``
+and its translations: a copy of JINX does not go anywhere without it), the JINX rules into the instruction file of
 every editor (``CLAUDE.md`` for Claude Code, ``AGENTS.md`` for Codex CLI and OpenCode, ``GEMINI.md`` for Gemini CLI), the
 ``/jinx`` command into the skill folders the editors read (``.claude/skills/jinx/`` and ``.agents/skills/jinx/``) and the
 lines that keep the runtime state out of git into ``.gitignore``, then runs ``doctor``. Run it again after
@@ -58,6 +60,8 @@ SKILLS = ((CLAUDE_SKILL, "Claude Code"), (AGENTS_SKILL, "Gemini CLI, Codex CLI a
 # Where the release's text is left when the file in the project is the person's by now (a file of the project is never replaced then).
 _NEW_NAME = {".gitignore": "gitignore.new", CLAUDE_SKILL: "jinx-skill-claude.md.new", AGENTS_SKILL: "jinx-skill-agents.md.new"}
 _EDITORS = ("claude", "codex", "opencode", "gemini")        # how the editors are started
+# The text of the license, English first (it is the one that governs). A project that is given the runtime is given it with this.
+LICENSE_FILES = ("LICENSE.md", "LICENSE_RU.md", "LICENSE_ZH.md")
 
 
 class InstallError(Exception):
@@ -65,25 +69,38 @@ class InstallError(Exception):
 
 
 class Kit:
-    """What one JINX release hands a project: the runtime, the rules for the instruction files and the lines for .gitignore."""
+    """What one JINX release hands a project: the runtime, the text of the license, the rules for the instruction files and
+    the lines for .gitignore."""
 
-    def __init__(self, entry: Path, rules: Path, ignore: Path, package: Path):
+    def __init__(self, entry: Path, rules: Path, ignore: Path, package: Path, licenses: Optional[Dict[str, Path]] = None):
+        """``entry``: jinx.py. ``rules``: the file the rules are taken from. ``ignore``: the same for the .gitignore lines.
+        ``package``: the folder of the jinx package. ``licenses``: the files of the license text, by name."""
         self.entry, self.rules, self.ignore, self.package = entry, rules, ignore, package
+        self.licenses: Dict[str, Path] = licenses or {}
 
     @property
     def version(self) -> str:
+        """The version of this release (``unknown`` where it cannot be read)."""
         return read_version(self.package / "__init__.py") or "unknown"
+
+
+def _licenses(folder: Path) -> Dict[str, Path]:
+    """The files of the license text that are in ``folder``, by name."""
+    return {name: folder / name for name in LICENSE_FILES if (folder / name).is_file()}
 
 
 def find_kit() -> Kit:
     """The kit of this copy of JINX: packed next to the package by the build (``pip install``), or the checkout itself."""
     packed = PKG / "_kit"
     if (packed / "jinx.py").is_file():
-        return Kit(packed / "jinx.py", packed / "CLAUDE.md", packed / "gitignore", PKG)
-    agent = PKG.parent.parent                       # a checkout: .agent/src/jinx
-    root = agent.parent
-    kit = Kit(agent / "jinx.py", root / "CLAUDE.md", root / ".gitignore", PKG)
+        kit = Kit(packed / "jinx.py", packed / "CLAUDE.md", packed / "gitignore", PKG, _licenses(packed))
+    else:
+        agent = PKG.parent.parent                   # a checkout: .agent/src/jinx
+        root = agent.parent
+        kit = Kit(agent / "jinx.py", root / "CLAUDE.md", root / ".gitignore", PKG, _licenses(root))
     missing = [p.name for p in (kit.entry, kit.rules, kit.ignore) if not p.is_file()]
+    if LICENSE_FILES[0] not in kit.licenses:
+        missing.append(LICENSE_FILES[0])
     if missing:
         raise InstallError("this copy of JINX has no " + ", ".join(missing) + " to install from: "
                            "install the whole repository (pip install git+https://github.com/machinegpt/agent)")
@@ -91,6 +108,7 @@ def find_kit() -> Kit:
 
 
 def read_version(init: Path) -> Optional[str]:
+    """The ``__version__`` that ``init`` (the ``__init__.py`` of a jinx package) declares; None where it cannot be read."""
     try:
         m = _VERSION.search(init.read_text(encoding="utf-8"))
     except OSError:
@@ -106,7 +124,14 @@ _SKILL_DESCRIPTION = ("Runs a request through JINX. Use for every user message, 
 def claude_skill(python: str = "python", shell: str = "bash") -> str:
     """The skill of Claude Code. Its body is one shell command that Claude Code runs *before* the model reads the skill, so
     the model never sees the command, only what JINX printed; and it hands the arguments over in one piece (a here-document,
-    or a here-string in PowerShell) so that no quoting of the person's message is ever needed. See jinx.py (``--via``)."""
+    or a here-string in PowerShell) so that no quoting of the person's message is ever needed. See jinx.py (``--via``).
+
+    The message goes into the script as it is, so a line of it that is exactly ``JINX_ARGS`` (in PowerShell: one that begins
+    with ``'@``) ends the here-document early, and what follows it would be read as commands. No delimiter prevents that:
+    Claude Code fills ``${CLAUDE_SESSION_ID}`` into the person's text too, so a delimiter made of it can be written by the
+    message (tried on Claude Code 2.1), and ``exec python ...`` (which would end the script at the first command) is refused
+    by its permission check. What stops it is that check: ``allowed-tools`` lets only ``<python> .agent/jinx.py *`` through,
+    and any other command in the script has to be approved (where nobody can, the skill does not run)."""
     head = ("---\nname: jinx\ndescription: %s\nargument-hint: '<request> | --session <id>'\n" % _SKILL_DESCRIPTION)
     if shell == "powershell":
         return (head + "shell: powershell\nallowed-tools: PowerShell(%s .agent/jinx.py *)\n---\n" % python
@@ -119,13 +144,17 @@ def agents_skill(python: str = "python") -> str:
     """The skill of the other editors (Gemini CLI, Codex CLI, OpenCode): they load its text into the conversation and have no
     way to run a command for it, so it says which command the model is to run, and the model runs it with its shell tool."""
     return ("---\nname: jinx\ndescription: %s\n---\n" % _SKILL_DESCRIPTION
-            + "`/jinx <arguments>` means running this in the project folder:\n\n"
+            + "`/jinx <arguments>` means running this in the project folder, with your shell tool:\n\n"
               "    %s .agent/jinx.py <arguments>\n\n" % python
-            + "Give the user's message as one quoted argument, exactly as written. To go on with a run, run the `resume` command "
-              "from its `[JINX_SESSION]` line. The instruction file of the project says what to do with what JINX prints.\n")
+            + "Give the user's message as one quoted argument, exactly as written. What the command prints is what `/jinx` "
+              "returns: its `[JINX_SESSION]` line has the `resume` command, which you run again and again until the run ends. "
+              "Where the rules of the project say `[JINX_EXIT] <code>`, that is the exit code of this command when it is not 0 "
+              "(1: the launch or the run failed; 2: the run reached its limit of rounds). The instruction file of the project "
+              "says what to do with what JINX prints.\n")
 
 
 def skill_text(name: str, python: str, shell: str) -> str:
+    """The text this release writes to the skill file ``name`` (``CLAUDE_SKILL`` or ``AGENTS_SKILL``)."""
     return claude_skill(python, shell) if name == CLAUDE_SKILL else agents_skill(python)
 
 
@@ -135,6 +164,7 @@ def default_shell() -> str:
 
 
 def _skill_shell(text: str) -> str:
+    """The shell a skill of Claude Code is written for: the one its ``shell:`` line names, else bash."""
     return "powershell" if re.search(r"^shell:\s*powershell\s*$", text, re.M) else "bash"
 
 
@@ -153,6 +183,7 @@ def digest(data: bytes) -> str:
 
 
 def _write(path: Path, data: bytes) -> None:
+    """Writes ``data`` to ``path`` whole or not at all: into a temporary file beside it, which then takes its place."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".jinx-tmp")
     tmp.write_bytes(data)
@@ -160,11 +191,19 @@ def _write(path: Path, data: bytes) -> None:
 
 
 def runtime_files(kit: Kit) -> Dict[str, bytes]:
-    """{path under .agent/: content} of the runtime of this release."""
+    """{path under .agent/: content} of the runtime of this release, and of the text of the license that goes with it."""
     files = {"jinx.py": kit.entry.read_bytes()}
     for p in sorted(kit.package.glob("*.py")):
         files[f"src/jinx/{p.name}"] = p.read_bytes()
+    for name, path in sorted(kit.licenses.items()):
+        files[name] = path.read_bytes()
     return files
+
+
+def _save_manifest(agent: Path, version: str, files: Dict[str, str], blocks: Dict[str, str]) -> None:
+    """Records what an install wrote, for the next one (see ``_load_manifest``)."""
+    _write(agent / MANIFEST, (json.dumps({"jinx": version, "files": files, "blocks": blocks}, indent=2,
+                                         sort_keys=True) + "\n").encode("utf-8"))
 
 
 def _load_manifest(agent: Path) -> Dict[str, Dict[str, str]]:
@@ -199,16 +238,18 @@ def _active_runs(agent: Path) -> List[str]:
     return names
 
 
-def install_runtime(agent: Path, files: Dict[str, bytes], known: Dict[str, str],
-                    force: bool = False) -> Tuple[List[Tuple[str, str]], Dict[str, str]]:
+def install_runtime(agent: Path, files: Dict[str, bytes], known: Dict[str, str], force: bool = False,
+                    record: Optional[Dict[str, str]] = None) -> Tuple[List[Tuple[str, str]], Dict[str, str]]:
     """Writes the runtime into ``agent``. Returns (what happened, path) per file (added, updated, same, kept, removed)
     and the digests to record.
 
     A file that differs from the release is replaced only when it is what the last install wrote (nobody changed
     it since) or with ``force``; otherwise it stays, and the release's version is written beside it as ``.new``.
+    The digests go into ``record`` as the files are written (the dict is handed back), so that a caller whose install
+    fails half way still has the ones of the files that were written.
     """
     done: List[Tuple[str, str]] = []
-    record: Dict[str, str] = {}
+    record = {} if record is None else record
     for rel, data in sorted(files.items()):
         target, want = agent / rel, digest(data)
         leftover = target.with_name(target.name + ".new")
@@ -311,6 +352,7 @@ def _rules_state(path: Path) -> str:
 
 
 def _has_legacy_rules(path: Path) -> bool:
+    """The JINX rules are in the file without their markers (see ``_rules_state``)."""
     return _rules_state(path) == "legacy"
 
 
@@ -340,6 +382,7 @@ def _write_target(root: Path, name: str) -> Tuple[Optional[Path], str]:
 
 
 def _block(source: Path, pattern: "re.Pattern[str]", what: str) -> str:
+    """The block of ``source`` that ``pattern`` finds between its markers: the text a project is given (``what`` names it)."""
     try:
         m = pattern.search(source.read_text(encoding="utf-8").replace("\r\n", "\n"))
     except OSError as e:
@@ -350,11 +393,18 @@ def _block(source: Path, pattern: "re.Pattern[str]", what: str) -> str:
 
 
 def _new_name(name: str) -> str:
+    """The name, under .agent/, that this release's version of the project's file ``name`` is left under when the file stays."""
     return _NEW_NAME.get(name, f"{name}.new")
 
 
 # --------------------------------------------------------------------------- install
 def install(root: Path, force: bool = False, shell: Optional[str] = None, out=print) -> int:
+    """Installs JINX into the project at ``root`` (``jinx install``), then runs ``check``. Returns the exit code: 0 when the
+    project is ready for JINX.
+
+    ``force`` replaces what was changed since the last install; ``shell`` is the shell Claude Code runs the skill in (by
+    default the one the skill of the project is written for); ``out`` prints the report.
+    """
     root = root.resolve()
     if not root.is_dir():
         out(f"jinx: {root} is not a folder")
@@ -373,9 +423,13 @@ def install(root: Path, force: bool = False, shell: Optional[str] = None, out=pr
         return 1
     agent = root / AGENT_DIR
     out(f"JINX {kit.version} -> {root}")
+    files: Dict[str, str] = {}
+    blocks: Dict[str, str] = {}
+    progress: Dict[str, str] = {}
+    own_tree, written = True, False             # a manifest is kept only where the runtime is written (not in JINX's own tree)
     try:
         known = _load_manifest(agent)
-        files = dict(known["files"])
+        files, blocks = dict(known["files"]), dict(known["blocks"])
         own_tree = (agent / "src" / "jinx").resolve() == kit.package.resolve()
         if own_tree:
             out("  .agent/        this is JINX's own source tree: the runtime is here already")
@@ -385,7 +439,13 @@ def install(root: Path, force: bool = False, shell: Optional[str] = None, out=pr
                 out("jinx: a JINX run is in progress here (" + ", ".join(busy[:4]) + "): let it finish, then run this again "
                     "(or add --force to update the runtime under it)")
                 return 1
-            done, files = install_runtime(agent, runtime_files(kit), known["files"], force)
+            written = True
+            try:
+                done, files = install_runtime(agent, runtime_files(kit), known["files"], force, progress)
+            except OSError:
+                files = {**files, **progress}           # the files it wrote before it failed are on record all the same
+                raise
+            _save_manifest(agent, kit.version, files, blocks)       # at once: a failure below must not leave the runtime unrecorded
             if (agent / BASELINE).exists():             # --force: the baseline is the old release, it would undo this one
                 shutil.rmtree(agent / BASELINE, ignore_errors=True)
                 out(f"  .agent/        dropped {BASELINE}, the old runtime's reference for self-patches")
@@ -396,7 +456,6 @@ def install(root: Path, force: bool = False, shell: Optional[str] = None, out=pr
             for _status, rel in (d for d in done if d[0] == "kept"):
                 out(f"                 kept {AGENT_DIR}/{rel}: it is not what `jinx install` wrote; this release's is {AGENT_DIR}/{rel}.new"
                     + ("" if force else " (`jinx install --force` replaces it)"))
-        blocks = dict(known["blocks"])
         wanted = [(name, rules, _RULES, "rules") for name, _editor in INSTRUCTION_FILES]
         wanted.append((".gitignore", ignore, _IGNORE, ".gitignore lines"))
         created: List[str] = []
@@ -450,9 +509,13 @@ def install(root: Path, force: bool = False, shell: Optional[str] = None, out=pr
             elif (agent / new_name).exists():
                 (agent / new_name).unlink()
         if not own_tree:
-            _write(agent / MANIFEST, (json.dumps({"jinx": kit.version, "files": files, "blocks": blocks}, indent=2,
-                                                 sort_keys=True) + "\n").encode("utf-8"))
+            _save_manifest(agent, kit.version, files, blocks)
     except (OSError, InstallError) as e:
+        if written:                                     # what was written before the failure is on record, as far as it got
+            try:
+                _save_manifest(agent, kit.version, files, blocks)
+            except OSError:
+                pass
         out(f"jinx: {e}")
         return 1
     return 0 if report(check(root, kit), out) else 1
@@ -462,12 +525,19 @@ def install(root: Path, force: bool = False, shell: Optional[str] = None, out=pr
 Check = Tuple[str, str, str]            # (ok | warn | FAIL, what, hint)
 
 
-def _run(cmd: Sequence[str], cwd: Path, timeout: int = 120) -> Tuple[int, str]:
+def _run_full(cmd: Sequence[str], cwd: Path, timeout: int = 120) -> Tuple[int, str, str]:
+    """Runs a command in ``cwd``: (its exit code, what it printed, what it printed as an error). 127 where it does not start."""
     try:
-        r = subprocess.run(list(cmd), cwd=str(cwd), capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(list(cmd), cwd=str(cwd), capture_output=True, text=True, errors="replace", timeout=timeout)
     except (OSError, subprocess.SubprocessError) as e:
-        return 127, str(e)
-    return r.returncode, (r.stderr.strip() or r.stdout.strip())
+        return 127, "", str(e)
+    return r.returncode, r.stdout.strip(), r.stderr.strip()
+
+
+def _run(cmd: Sequence[str], cwd: Path, timeout: int = 120) -> Tuple[int, str]:
+    """Runs a command in ``cwd``: (its exit code, what it said: the error text if there is one, else the output)."""
+    code, stdout, stderr = _run_full(cmd, cwd, timeout)
+    return code, (stderr or stdout)
 
 
 def _interpreters(cwd: Path) -> List[str]:
@@ -480,6 +550,7 @@ _SKILL_COMMAND = re.compile(r"^\s*(\S+) \.agent/jinx\.py ", re.M)
 
 
 def _skill_python(text: str) -> Optional[str]:
+    """The command that starts Python in the JINX line of a skill (``python``, ``python3``, ``py``); None where there is none."""
     m = _SKILL_COMMAND.search(text)
     return m.group(1) if m else None
 
@@ -496,6 +567,10 @@ def check(root: Path, kit: Optional[Kit] = None) -> List[Check]:
         latest = kit.version if kit else have
         out.append(("ok" if have == latest else "warn", f"runtime version {have}",
                     "" if have == latest else f"this `jinx` is {latest}: `jinx install` updates it"))
+        own = (agent / "src" / "jinx").resolve() == PKG.resolve()          # JINX's own tree has its license at the top
+        licensed = (agent / LICENSE_FILES[0]).is_file() or (own and (root / LICENSE_FILES[0]).is_file())
+        out.append(("ok" if licensed else "warn", "the text of the JINX license is next to the runtime",
+                    "" if licensed else f"`jinx install` puts {LICENSE_FILES[0]} into {AGENT_DIR}/"))
     works = _interpreters(root)
     usable = works[0] if works else None
     out.extend(_check_editors(root, kit, usable))
@@ -520,9 +595,12 @@ def check(root: Path, kit: Optional[Kit] = None) -> List[Check]:
             out.append(("ok" if code == 0 else "FAIL", "the runtime loads",
                         "" if code == 0 else (why.splitlines() or ["see the error above"])[-1][:200]))
             # The call the /jinx skill of Claude Code makes (its words are --peek: it looks at the sessions and changes nothing).
-            code, why = _run([usable, f"{AGENT_DIR}/jinx.py", "--via", "/jinx", "--args", "--peek"], root, 60)
-            out.append(("ok" if code == 0 else "FAIL", "/jinx reaches the runtime",
-                        "" if code == 0 else (why.splitlines() or [""])[-1][:200]))
+            # Made through --via it ends with 0 even when it failed (the code is printed as `[JINX_EXIT] <code>`): look for that too.
+            code, stdout, stderr = _run_full([usable, f"{AGENT_DIR}/jinx.py", "--via", "/jinx", "--args", "--peek"], root, 60)
+            reached = code == 0 and not re.search(r"^\[JINX_EXIT\]", stdout, re.M)
+            said = [line for line in (stderr or stdout).splitlines() if line.strip()]
+            out.append(("ok" if reached else "FAIL", "/jinx reaches the runtime",
+                        "" if reached else (said or ["it printed nothing"])[-1][:200]))
     code, top = _run(["git", "rev-parse", "--show-toplevel"], root, 30)
     if code != 0:
         out.append(("warn", "git repository", "not one (or no git): JINX works, but writes no round files (.mbox/.yaml) "
@@ -621,6 +699,7 @@ def report(checks: Sequence[Check], out=print) -> bool:
 
 # --------------------------------------------------------------------------- command line
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """The ``jinx`` command (``install``, ``doctor``). Returns the exit code."""
     args_in = list(sys.argv[1:] if argv is None else argv)
     if args_in and args_in[0].lower() in ("install", "init", "doctor"):       # `jinx Install` is `jinx install`; `init` is its old name
         args_in[0] = {"init": "install"}.get(args_in[0].lower(), args_in[0].lower())

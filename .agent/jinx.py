@@ -6,6 +6,7 @@ Designed to be executed when the repository is dropped into a project as a `.age
 
 An editor calls it as its own command, `/jinx` (the skill that `jinx install` sets up for it).
 """
+import re
 import sys
 from pathlib import Path
 
@@ -22,24 +23,81 @@ sys.path.insert(0, str(src_path))
 #     jinx.py --via /jinx --args ...    the words are everything after --args (for a shell without here-documents)
 #
 # so a message with quotes, `$`, backticks or any language in it arrives exactly as it was written. The words are
-# either options of JINX (`--session s1`, `--peek s2 --diff`, or nothing at all: go on) or a message to start a run with.
+# either options of JINX (`--session s3fa1`, `--peek s7b2e --diff`, or nothing at all: go on) or a message to start a run with.
 # `--via NAME` is the name the editor calls JINX by: it is what JINX tells the editor to run next (JINX_CMD, see
 # mail.jinx_command). Without --via none of this applies, and a call by hand is parsed as it always was.
-_OPTIONS = ("--session", "--join", "--peek", "--diff", "--full", "--export", "--out", "--min", "--ipc")
+#
+# What each option takes after it, as cli.py declares them: (how many values, what a value looks like). The "how many" is
+# "0", "1", "?" (at most one) or "*". This file cannot import cli.py (the self-patch preflight below has to run before
+# anything of the package does), so the id of a session is written out here as it is in mail._SID_RE.
+_SESSION_ID = re.compile(r"[a-z][a-z0-9]{2,15}")
+_OPTIONS = {
+    "--session": ("1", _SESSION_ID),
+    "--join": ("1", _SESSION_ID),
+    "--peek": ("?", _SESSION_ID),
+    "--diff": ("0", None),
+    "--full": ("0", None),
+    "--export": ("*", _SESSION_ID),
+    "--out": ("1", re.compile(r"[^-].*", re.S)),
+    "--min": ("1", re.compile(r"[0-9]+")),
+    "--ipc": ("1", re.compile(r"file|rpc")),
+}
+_TASK_AFTER = ("--join",)       # `--join <id> ["task"]`: the one call of an editor with a message behind its options
+_WORD = re.compile(r"\"[^\"]*\"|'[^']*'|\S+")
+
+
+def _unquote(word):
+    """``"a b"`` or ``'a b'`` as ``a b``; anything else as it is."""
+    if len(word) >= 2 and word[0] in "\"'" and word[-1] == word[0] and word.count(word[0]) == 2:
+        return word[1:-1]
+    return word
+
+
+def _message(text):
+    """The words as one message. A message that begins with ``-`` goes behind ``--``, so that it is never read as an option."""
+    return ["--", text] if text.startswith("-") else [text]
 
 
 def _split_words(text):
-    """The words of an editor's call as a command line's arguments: options as they are, anything else one message."""
+    """The words of an editor's call as a command line's arguments: options as they are, anything else one message.
+
+    The words are options only when they are nothing but options and the values those take, and, after ``--join <id>``,
+    the task of the new session, which stays as it was written (blanks and line breaks included). Anything else is a
+    message, even when it begins like an option: ``--peek is broken`` is a sentence of the person's and must start a
+    run, not look at the sessions.
+    """
     text = text.strip()
     if not text:
         return []
-    if text.split(None, 1)[0].split("=", 1)[0] in _OPTIONS:
-        import shlex
-        try:
-            return shlex.split(text)
-        except ValueError:          # an unbalanced quote: it was not options after all
-            pass
-    return [text]
+    words = [(m.group(), m.start()) for m in _WORD.finditer(text)]
+    args, i, task_may_follow = [], 0, False
+    while i < len(words):
+        name, eq, value = words[i][0].partition("=")
+        spec = _OPTIONS.get(name)
+        if spec is None:
+            break                                       # not an option: from here on it is the message
+        count, shape = spec
+        i += 1
+        args.append(name)
+        if eq:                                          # --session=s1
+            if count == "0" or not shape.fullmatch(_unquote(value)):
+                return _message(text)
+            args.append(_unquote(value))
+        else:
+            taken = 0
+            while (count != "0" and i < len(words) and (count == "*" or not taken)
+                   and shape.fullmatch(_unquote(words[i][0]))):
+                args.append(_unquote(words[i][0]))
+                i += 1
+                taken += 1
+            if count == "1" and not taken:              # --session, and no id behind it
+                return _message(text)
+        task_may_follow = task_may_follow or name in _TASK_AFTER
+    if i < len(words):
+        if not task_may_follow:                         # words that no option takes: it was a message after all
+            return _message(text)
+        args.append(_unquote(text[words[i][1]:]))
+    return args
 
 
 def _expand_call():
@@ -335,6 +393,7 @@ def _record_feedback(message):
 
 
 def bootstrap_dependencies():
+    """Installs pydantic and pyyaml with pip when they are missing; exits with a hint when that fails."""
     try:
         import pydantic
         import yaml

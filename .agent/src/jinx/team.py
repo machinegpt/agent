@@ -1,8 +1,9 @@
 # Copyright 2026 JINX Enterprise Team. All Rights Reserved.
 #
-# Use of this software is governed by the JINX End User License Agreement (EULA) in the
-# LICENSE.md file at the root of this repository: free for personal, educational, research and
-# non-commercial use; commercial use needs a separate commercial license.
+# Use of this software is governed by the JINX End User License Agreement (EULA): the LICENSE.md file
+# at the root of the JINX repository (https://github.com/machinegpt/agent), and in the `.agent` folder of
+# a project where JINX is installed. It is free for personal, educational and non-commercial use,
+# including non-commercial research; commercial use needs a commercial license (section 2 of the EULA).
 # ==============================================================================
 """Looking at the other sessions: what each one does, what it changed, and the briefing for a helper.
 
@@ -60,6 +61,7 @@ def session_dir(office: mail.Office, sid: str) -> Optional[Path]:
 
 
 def _load(path: Path, limit: int = 1_000_000) -> Dict[str, Any]:
+    """The mapping in a YAML file of a session; {} where the file cannot be read, is not valid or holds something else."""
     try:
         data = mail.load_yaml(path.read_text("utf-8"), limit=limit)
     except (OSError, mail.InvalidMail):
@@ -68,6 +70,7 @@ def _load(path: Path, limit: int = 1_000_000) -> Dict[str, Any]:
 
 
 def read_card(d: Path) -> Dict[str, Any]:
+    """The presence card (``card.yaml``) in the folder ``d`` of a session."""
     return _load(d / "card.yaml")
 
 
@@ -113,6 +116,8 @@ def _chunks(diff: str) -> List[Tuple[str, List[str]]]:
 
 @dataclass
 class RoundInfo:
+    """One round of a session as ``--peek`` shows it: its number, summary and files, how much it changed, its diff,
+    whether it is intact, and what its record says about its own limits."""
     n: int
     summary: str
     files: List[str]
@@ -156,6 +161,7 @@ def rounds_of(d: Path) -> List[RoundInfo]:
 
 
 def _is_binary(data: bytes) -> bool:
+    """Whether ``data`` looks binary: there is a NUL byte in its first 8192 bytes."""
     return b"\0" in data[:8192]
 
 
@@ -213,6 +219,7 @@ def in_progress(root: Path, d: Path) -> List[Tuple[str, str]]:
 
 # --------------------------------------------------------------------------- one line per session, and the status
 def _ago(seconds: float) -> str:
+    """A length of time in its shortest form: ``45s``, ``20m``, ``3h``, ``2d``."""
     s = max(0, int(seconds))
     if s < 90:
         return f"{s}s"
@@ -236,6 +243,8 @@ def state_word(card: Dict[str, Any], now: float) -> str:
 
 
 def _line(sid: str, card: Dict[str, Any], now: float, mine: Sequence[str] = ()) -> str:
+    """The line of one session on the board: its id and state, the time since its last heartbeat while it works, then
+    what it does and holds."""
     word = state_word(card, now)
     head = f"{sid} {word}"
     if card.get("state") != "done" and word == "working":

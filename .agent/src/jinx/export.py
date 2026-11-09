@@ -1,8 +1,9 @@
 # Copyright 2026 JINX Enterprise Team. All Rights Reserved.
 #
-# Use of this software is governed by the JINX End User License Agreement (EULA) in the
-# LICENSE.md file at the root of this repository: free for personal, educational, research and
-# non-commercial use; commercial use needs a separate commercial license.
+# Use of this software is governed by the JINX End User License Agreement (EULA): the LICENSE.md file
+# at the root of the JINX repository (https://github.com/machinegpt/agent), and in the `.agent` folder of
+# a project where JINX is installed. It is free for personal, educational and non-commercial use,
+# including non-commercial research; commercial use needs a commercial license (section 2 of the EULA).
 # ==============================================================================
 """The rounds of JINX sessions as one .mbox and one .yaml: what ``jinx.py --export`` writes.
 
@@ -59,6 +60,8 @@ class Found:
 
 @dataclass
 class Result:
+    """The outcome of one export: the rounds collected, the ones left out and why, the files written, and whether
+    the series applies."""
     sessions: List[str]
     rounds: List[Found] = field(default_factory=list)
     skipped: List[Dict[str, Any]] = field(default_factory=list)
@@ -72,11 +75,15 @@ class Result:
 
     @property
     def clean(self) -> bool:
+        """True when there are rounds, none was left out, and the series applies (alone, already, or together with
+        the rounds of other sessions)."""
         return bool(self.rounds) and not self.skipped and self.applies in ("yes", "already", "together")
 
 
 # --------------------------------------------------------------------------- finding the rounds
 def _number(path: Path, record: Dict[str, Any]) -> int:
+    """The number of a round: the one its record gives, else the one its file name starts with (0 where neither is a
+    number)."""
     try:
         return int(record["round"] if record.get("round") is not None else path.name.split(".")[0])
     except (KeyError, TypeError, ValueError):
@@ -84,6 +91,7 @@ def _number(path: Path, record: Dict[str, Any]) -> int:
 
 
 def _stem_number(stem: str, record: Dict[str, Any]) -> int:
+    """The same as ``_number``, for a file name that is cut down to its stem already."""
     try:
         return int(record["round"] if record.get("round") is not None else stem)
     except (KeyError, TypeError, ValueError):
@@ -140,6 +148,7 @@ def find_rounds(office: mail.Office, sids: Sequence[str]) -> Tuple[List[Found], 
 
 # --------------------------------------------------------------------------- does the series apply?
 def _git_ok(repo: Path, *args: str, env: Optional[Dict[str, str]] = None) -> bool:
+    """Whether ``git -C <repo> <args>`` ends with exit code 0."""
     r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, env=env)
     return r.returncode == 0
 
@@ -164,6 +173,7 @@ def _apply_chain(repo: Path, diffs: List[bytes], reverse: bool,
             raise mail.MailError("git read-tree failed: " + r.stderr.decode(errors="replace").strip()[:MAX_DETAIL])
 
         def tree() -> str:
+            """The tree that the private index holds now ('' where git cannot write it)."""
             w = subprocess.run(["git", "-C", str(repo), "write-tree"], capture_output=True, env=env)
             return w.stdout.decode().strip() if w.returncode == 0 else ""
 
@@ -240,10 +250,14 @@ def check_series(repo: Path, rounds: Sequence[Found]) -> Tuple[str, str, bool]:
 
 # --------------------------------------------------------------------------- writing
 def label_of(sids: Sequence[str]) -> str:
+    """The part of the export's file name that names the sessions: their ids joined with '-', or 'all' for none
+    or for more than ``MAX_LABEL_SESSIONS``."""
     return "-".join(sids) if 0 < len(sids) <= MAX_LABEL_SESSIONS else "all"
 
 
 def _entry(f: Found) -> Dict[str, Any]:
+    """The .yaml entry of one round: its session and number, then what its own record says without what the series
+    does not need to repeat (``_DROP``); a round with no record of its own is marked unverified."""
     rest = {k: v for k, v in f.record.items() if k not in _DROP and k not in ("session", "round")}
     out: Dict[str, Any] = {"session": f.sid, "round": f.n, **rest}
     if not f.verified:
@@ -301,6 +315,7 @@ def _together(office: mail.Office, root: Path, found: Sequence[Found], sids: Seq
 
 
 def _rel(path: Path, root: Path) -> str:
+    """``path`` relative to ``root``, with forward slashes; as it is where there is no relative path (another drive)."""
     try:
         return Path(os.path.relpath(path, root)).as_posix()
     except ValueError:

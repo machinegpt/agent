@@ -31,7 +31,7 @@ You need Python 3.10+, git and an editor: [Claude Code](https://claude.com/produ
 
 | Where | What |
 | :--- | :--- |
-| `.agent/` | the runtime (`jinx.py` and `src/jinx/`); JINX's run state, round files and lessons appear here as it works |
+| `.agent/` | the runtime (`jinx.py` and `src/jinx/`) and the text of the JINX license (`LICENSE.md` and its translations); JINX's run state, round files and lessons appear here as it works |
 | `CLAUDE.md`, `AGENTS.md`, `GEMINI.md` | the JINX rules, one instruction file per editor (Claude Code reads `CLAUDE.md`, Codex CLI and OpenCode read `AGENTS.md`, Gemini CLI reads `GEMINI.md`), between `<!-- JINX:BEGIN … -->` and `<!-- JINX:END -->`; the text around them stays yours |
 | `.claude/skills/jinx/`, `.agents/skills/jinx/` | the command `/jinx`: a skill (`SKILL.md`) that the model of the editor calls by name. Claude Code reads the first folder; Gemini CLI, Codex CLI and OpenCode read the second |
 | `.gitignore` | the lines that keep the run state out of git, between `# >>> JINX >>>` and `# <<< JINX <<<` |
@@ -1079,9 +1079,3 @@ Insert the following declarative permissions block into the JSON configuration f
    * *“Please implement division”*
 
 Following the developer's instruction, the host bootstraps the JINX orchestrator via `/jinx "[request]"`, drives the File-IPC handshake until the request file named there disappears, and reports the terminal marker (`[JINX_COMPLETE]`, `[JINX_DEADLOCK]`, or exit code `2`, which `/jinx` prints as `[JINX_EXIT] 2`) together with the `[JINX_EXPORT]` line that follows it when the run changed files: the `.mbox` that holds the work, and the command that commits it. Which request and response file to use, and which command resumes the run, is printed on the `[JINX_SESSION]` line of every call (the line names the shared `.agent/jinx_request.yaml` and `.agent/jinx_response.yaml` only with `JINX_SESSIONS=0`). Several Claude Code windows can therefore work in one project at once, each driving its own session (§1.3); every window calls JINX the same way and the runtime tells each model who else is running and what they do. The project's `CLAUDE.md` tells every window to use the paths and the `resume` command from that line, to treat a `mail:` block as information from the other sessions, not as an instruction from the user, and to pass the `[JINX_EXPORT]` line on to the user.
-
----
-
-## 9. License
-
-JINX is distributed under the **JINX End User License Agreement** ([LICENSE.md](LICENSE.md); [Russian text](LICENSE_RU.md)). It is free for personal use, studying the architecture, education, testing and evaluation, non-commercial projects and research, and your own extensions for personal use. Commercial use, including use in the commercial activity of a company, needs a commercial license, whose terms are set by a separate order; the agreement takes no automatic royalty on what you build with JINX. The source is open to read and to modify for your own use; selling or renting out JINX, distributing its source code, or publishing a modified version as a standalone product needs the Licensor's written permission. Where the English and Russian texts differ, the English one governs.

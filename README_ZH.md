@@ -31,7 +31,7 @@ jinx install                                             # 2. 在你的项目文
 
 | 位置 | 内容 |
 | :--- | :--- |
-| `.agent/` | 运行时（`jinx.py` 和 `src/jinx/`）；JINX 的运行状态、轮次文件与教训会在工作过程中出现在这里 |
+| `.agent/` | 运行时（`jinx.py` 和 `src/jinx/`）以及 JINX 许可协议文本（`LICENSE.md` 及其译本）；JINX 的运行状态、轮次文件与教训会在工作过程中出现在这里 |
 | `CLAUDE.md`、`AGENTS.md`、`GEMINI.md` | JINX 规则，每个编辑器一个指令文件（Claude Code 读取 `CLAUDE.md`，Codex CLI 与 OpenCode 读取 `AGENTS.md`，Gemini CLI 读取 `GEMINI.md`），位于 `<!-- JINX:BEGIN … -->` 与 `<!-- JINX:END -->` 之间；它们周围的文字仍归你所有 |
 | `.claude/skills/jinx/`、`.agents/skills/jinx/` | 命令 `/jinx`：一个技能（`SKILL.md`），由编辑器的模型按名称调用。Claude Code 读取第一个文件夹；Gemini CLI、Codex CLI 与 OpenCode 读取第二个 |
 | `.gitignore` | 让运行状态不进入 git 的几行，位于 `# >>> JINX >>>` 与 `# <<< JINX <<<` 之间 |
@@ -1066,9 +1066,3 @@ JINX 架构规范将运行时部署定义为核心组件，内嵌于官方 **Ant
    * *“请实现除法功能”*
 
 在收到开发者明确指示后，宿主会通过 `/jinx "[请求]"` 引导编排器，持续驱动 File-IPC 握手直至 `[JINX_SESSION]` 行所指的请求文件消失，并报告最终的终止标记（`[JINX_COMPLETE]`、`[JINX_DEADLOCK]`，或退出码 `2`，`/jinx` 会把它打印为 `[JINX_EXIT] 2`），以及在运行改动了文件时紧随其后的 `[JINX_EXPORT]` 行：即装有这次工作的 `.mbox`，以及提交它的命令。每次调用的 `[JINX_SESSION]` 行都会打印要使用哪个请求文件和响应文件，以及哪条命令恢复运行（只有在 `JINX_SESSIONS=0` 时，该行才指向共享的 `.agent/jinx_request.yaml` 与 `.agent/jinx_response.yaml`）。因此多个 Claude Code 窗口可以同时在同一个项目中工作，各自驱动自己的会话（§1.3）；每个窗口都以同样的方式调用 JINX，运行时会告诉每个模型还有谁在运行、在做什么。项目的 `CLAUDE.md` 要求每个窗口使用该行中的路径和 `resume` 命令，把 `mail:` 块视为来自其他会话的信息而非用户指令，并把 `[JINX_EXPORT]` 行转告用户。
-
----
-
-## 9. 许可证
-
-JINX 依据 **JINX 最终用户许可协议**（[LICENSE.md](LICENSE.md)，英文文本，具有优先效力；[俄文文本](LICENSE_RU.md)）发布。个人使用、研究架构、教育、测试与评估、非商业项目与研究，以及为个人使用而开发的自有扩展，均可免费进行。商业使用（包括在公司的商业活动中使用）需要商业许可证，其条款由单独的订单确定；本协议不会对你使用 JINX 创建的成果自动收取任何版税。源代码可供阅读，也可为自身用途修改；出售或出租 JINX、分发其源代码，或将修改后的版本作为独立产品发布，需要许可方的书面许可。英文与俄文文本不一致时，以英文为准。
