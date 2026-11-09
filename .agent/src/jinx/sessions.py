@@ -1,16 +1,9 @@
 # Copyright 2026 JINX Enterprise Team. All Rights Reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Use of this software is governed by the JINX End User License Agreement (EULA): the LICENSE.md file
+# at the root of the JINX repository (https://github.com/machinegpt/agent), and in the `.agent` folder of
+# a project where JINX is installed. It is free for personal, educational and non-commercial use,
+# including non-commercial research; commercial use needs a commercial license (section 2 of the EULA).
 # ==============================================================================
 """Several JINX sessions in one project at the same time.
 
@@ -101,7 +94,7 @@ SHELL_FRAMEWORK = (
 )
 SEVERAL_SESSIONS = (
     "Several JINX sessions are unfinished and this call cannot be matched to one of them: %s. Resume the one "
-    "you started with `python .agent/jinx.py --session <id>`; the id is printed on the [JINX_SESSION] line."
+    "you started with `%s --session <id>`; the id is printed on the [JINX_SESSION] line."
 )
 
 
@@ -115,10 +108,12 @@ def enabled() -> bool:
 
 
 def ipc_dir() -> Path:
+    """The folder of the sessions' files: ``JINX_IPC_DIR``, else ``.agent/ipc``."""
     return Path(os.environ.get("JINX_IPC_DIR") or (AGENT_DIR / "ipc"))
 
 
 def project_root() -> Path:
+    """The project folder: ``JINX_PROJECT_ROOT``, else the parent of ``.agent``."""
     return Path(os.environ.get("JINX_PROJECT_ROOT") or AGENT_DIR.parent).resolve()
 
 
@@ -131,6 +126,7 @@ class Context:
     """The session this process serves: its mail session, its round, and where its files are."""
 
     def __init__(self, office: mail.Office, session: mail.Session):
+        """``office``: the post office of the project. ``session``: the mail session that this process serves."""
         self.office = office
         self.session = session
         self.sid = session.sid
@@ -150,6 +146,7 @@ class Context:
 
     @property
     def round(self) -> mail.Round:
+        """The mail round of this session (made on first use)."""
         if self._round is None:
             tmp = self.dir / "tmp"
             tmp.mkdir(exist_ok=True)
@@ -165,21 +162,25 @@ class Context:
 
     @property
     def outbox_rel(self) -> str:
+        """The outbox of this session, written as ``rel`` writes a path."""
         return self.rel(self.session.outbox)
 
 
 def _office() -> mail.Office:
+    """The post office of this project: its folder, its label for the model, and the command that calls JINX again."""
     root = ipc_dir()
     try:
         label = Path(os.path.relpath(root, project_root())).as_posix()
         agent = Path(os.path.relpath(AGENT_DIR, project_root())).as_posix()
     except ValueError:
         label, agent = str(root), str(AGENT_DIR)
-    # `cmd` is how the model is told to call JINX again (to look at another session, say).
-    return mail.Office(root, label=label, cmd=f"python {agent}/jinx.py")
+    # `cmd` is how the model is told to call JINX again: `/jinx` when the editor's own command started it (--via), else
+    # the long command (mail.jinx_command). It is what resumes a session, looks at another one (--peek) or joins it.
+    return mail.Office(root, label=label, cmd=mail.jinx_command(agent))
 
 
 def _lease() -> int:
+    """The seconds a heartbeat of a session holds: ``JINX_LEASE_S`` (at least 30), else the default."""
     try:
         return max(30, int(float(os.environ.get("JINX_LEASE_S", mail.DEFAULT_LEASE_S))))
     except (ValueError, OverflowError):
@@ -229,7 +230,7 @@ def _resolve_bare(office: mail.Office, who: List[str]) -> mail.Session:
         sid, _ = identity.identify(who, marks)
         if sid:
             return office.session(sid)
-    raise SessionError(SEVERAL_SESSIONS % _unfinished(office))
+    raise SessionError(SEVERAL_SESSIONS % (_unfinished(office), office.cmd))
 
 
 def _join(office: mail.Office, host: str, task: Optional[str], session_id: Optional[str], who: List[str]) -> Context:
@@ -339,7 +340,7 @@ def _resume_command(ctx: Context) -> str:
 
 def describe(ctx: Context) -> str:
     """The one line every invocation prints, so the editor always has the exact paths, and how many others run."""
-    resume = ctx.resume_cmd or f"python {ctx.rel(AGENT_DIR)}/jinx.py --session {ctx.sid}"
+    resume = ctx.resume_cmd or f"{ctx.office.cmd} --session {ctx.sid}"
     line = '[JINX_SESSION] id=%s request=%s response=%s resume="%s"' % (
         ctx.sid, ctx.rel(ctx.request), ctx.rel(ctx.response), resume)
     return line + (f" others={ctx.others}" if ctx.others else "")
@@ -355,11 +356,12 @@ def describe_shared() -> str:
         agent = Path(os.path.relpath(AGENT_DIR, project_root())).as_posix()
     except ValueError:
         agent = str(AGENT_DIR)
-    return '[JINX_SESSION] id=- request=%s/%s response=%s/%s resume="python %s/jinx.py"' % (
-        agent, REQUEST_NAME, agent, RESPONSE_NAME, agent)
+    return '[JINX_SESSION] id=- request=%s/%s response=%s/%s resume="%s"' % (
+        agent, REQUEST_NAME, agent, RESPONSE_NAME, mail.jinx_command(agent))
 
 
 def heartbeat(ctx: Context, rnd: Optional[int] = None) -> None:
+    """Tells the other sessions that this one is working (in round ``rnd``); a failure to write it is only logged."""
     try:
         fields: Dict[str, Any] = {"state": "working"}
         if rnd is not None:
@@ -370,6 +372,7 @@ def heartbeat(ctx: Context, rnd: Optional[int] = None) -> None:
 
 
 def alone(ctx: Context) -> bool:
+    """Whether no other session is running (True where that cannot be found out)."""
     try:
         return ctx.session.alone()
     except OSError:
@@ -434,6 +437,7 @@ def digest_message(ctx: Context, round_start: bool = True) -> Optional[Dict[str,
 
 
 def commit_digest(ctx: Context) -> None:
+    """Marks the mail that the last request showed as shown, and drops the briefing that request carried."""
     d, ctx.pending_digest = ctx.pending_digest, None
     if ctx.briefing_pending:
         ctx.briefing, ctx.briefing_pending = None, False          # told once: it is in a request that was written
@@ -452,6 +456,8 @@ def _note_outbox(ctx: Context, name: str, ok: bool, why: str) -> None:
 
 
 def flush_outbox(ctx: Context) -> None:
+    """Delivers the drafts in the outbox of this session; the ones that are refused are reported with the next
+    request."""
     try:
         for item in ctx.session.flush_outbox():
             _note_outbox(ctx, *item)
@@ -472,6 +478,7 @@ def project_rel(ctx: Context, raw: str) -> Optional[str]:
 
 
 def _in_ipc(ctx: Context, rel: str) -> bool:
+    """Whether ``rel`` (a path relative to the project) is the folder of the sessions' files or lies inside it."""
     ipc = ctx.rel(ipc_dir())
     return rel == ipc or rel.startswith(ipc + "/")
 

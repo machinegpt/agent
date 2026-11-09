@@ -1,16 +1,9 @@
 # Copyright 2026 JINX Enterprise Team. All Rights Reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Use of this software is governed by the JINX End User License Agreement (EULA): the LICENSE.md file
+# at the root of the JINX repository (https://github.com/machinegpt/agent), and in the `.agent` folder of
+# a project where JINX is installed. It is free for personal, educational and non-commercial use,
+# including non-commercial research; commercial use needs a commercial license (section 2 of the EULA).
 # ==============================================================================
 """Durable, cross-run lesson ledger — JINX's first-class learning memory.
 
@@ -113,6 +106,8 @@ def normalize_lesson_text(value: Any) -> Optional[str]:
 
 
 def _coerce_kind(value: Any) -> str:
+    """The kind of a lesson as one of ``VALID_KINDS``: a known name as it is, a near miss by its wording
+    ('avoid', 'never' make an antipattern; 'skill', 'how' a skill), anything else a rule."""
     kind = str(value or "rule").strip().lower()
     if kind in VALID_KINDS:
         return kind

@@ -1,16 +1,9 @@
 # Copyright 2026 JINX Enterprise Team. All Rights Reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Use of this software is governed by the JINX End User License Agreement (EULA): the LICENSE.md file
+# at the root of the JINX repository (https://github.com/machinegpt/agent), and in the `.agent` folder of
+# a project where JINX is installed. It is free for personal, educational and non-commercial use,
+# including non-commercial research; commercial use needs a commercial license (section 2 of the EULA).
 # ==============================================================================
 """Prompt definitions and constructor constants for the JINX Sovereign Agent Framework.
 
@@ -591,6 +584,7 @@ def note_requirement_keys(dropped: str, flickering: str) -> str:
 # built from them says as much, so a blocker that this round's own entry will
 # clear (a second scored round, a passing entry) is not mistaken for a verdict.
 def exit_blocker_min_rounds(min_rounds: int, rnd: int) -> str:
+    """The exit blocker of a run that has not reached its minimum round yet."""
     return (
         "exit is not considered before round %d and this is round %d"
         % (min_rounds, rnd)
@@ -598,6 +592,7 @@ def exit_blocker_min_rounds(min_rounds: int, rnd: int) -> str:
 
 
 def exit_blocker_evidence(count: int) -> str:
+    """The exit blocker of a run with fewer than two scored rounds on record."""
     return (
         "exit needs 2 scored rounds in total and only %d is on record before this round"
         % count
@@ -605,10 +600,13 @@ def exit_blocker_evidence(count: int) -> str:
 
 
 def exit_blocker_not_all_pass() -> str:
+    """The exit blocker of a run whose latest recorded round is not all_pass."""
     return "the latest recorded round is not all_pass"
 
 
 def exit_blocker_plateau(last3: int, prior_best: int) -> str:
+    """The exit blocker of a run whose pass_count is still rising: ``last3`` is the best pass_count of
+    the last three recorded rounds, ``prior_best`` the best before them."""
     return (
         "pass_count is still rising (%d in the last three recorded rounds against a"
         " best of %d before them) and exit waits for it to plateau"
@@ -669,6 +667,7 @@ def note_repeat_attempt(rounds: List[str], approach: str, streak: int) -> str:
 # corrections: a file that cannot be found, a line past the end of it, and a
 # symbol that has moved since the fact was written.
 def citation_unreadable(path_text: str) -> str:
+    """A stale citation: the file a fact cites cannot be found."""
     return (
         "a fact cites %s, which cannot be found under the working directory, the"
         " package or the system temp directory" % path_text
@@ -676,10 +675,12 @@ def citation_unreadable(path_text: str) -> str:
 
 
 def citation_past_end(path_text: str, cited: int, length: int) -> str:
+    """A stale citation: the line a fact cites is past the end of the file."""
     return "a fact cites %s:%d but the file has only %d lines" % (path_text, cited, length)
 
 
 def citation_symbol_moved(path_text: str, cited: int, symbol: str, start: int) -> str:
+    """A stale citation: the symbol a fact cites starts at another line now."""
     return (
         "a fact cites %s:%d for %s, which now starts at line %d"
         % (path_text, cited, symbol, start)
@@ -687,6 +688,7 @@ def citation_symbol_moved(path_text: str, cited: int, symbol: str, start: int) -
 
 
 def note_citation(problems: List[str]) -> str:
+    """The note that lists the stale citations (``problems``) of the model's facts."""
     return (
         "STALE CITATION: %s. Re-read the file and correct the fact; do not reason from"
         " an unchecked line number." % "; ".join(problems)
@@ -718,6 +720,7 @@ def note_plan(named: str, all_pass: bool) -> str:
 # disagree. `plural` is passed in rather than derived from a count here, so the
 # grammar of the sentence is decided once, next to the sentence.
 def contradiction_non_bool(named: str, plural: bool) -> str:
+    """A score contradiction: the verdicts named (``plural``: more than one) are not true or false."""
     return (
         "the verdict%s for %s %s not true/false, and the checks read verdicts by"
         " truthiness" % ("s" if plural else "", named,
@@ -726,22 +729,26 @@ def contradiction_non_bool(named: str, plural: bool) -> str:
 
 
 def contradiction_pass_count(claimed: int, actual: int) -> str:
+    """A score contradiction: ``pass_count`` is not the number of true verdicts in the entry."""
     return "pass_count is %d but the requirements map holds %d true verdict(s)" % (
         claimed, actual
     )
 
 
 def contradiction_all_pass_true(named: str, plural: bool) -> str:
+    """A score contradiction: ``all_pass`` is true while some verdicts of the entry are false."""
     return "all_pass is true while %s %s false in the same entry" % (
         named, "are" if plural else "is"
     )
 
 
 def contradiction_all_pass_false(total: int) -> str:
+    """A score contradiction: ``all_pass`` is false while all ``total`` verdicts of the entry are true."""
     return "all_pass is false while all %d requirement(s) in the same entry are true" % total
 
 
 def note_score_contradiction(problems: List[str]) -> str:
+    """The note that lists the contradictions (``problems``) of a score entry."""
     return (
         "SCORE CONTRADICTION: %s. Recompute `pass_count` and `all_pass` from"
         " `requirements` and resend the entry." % "; ".join(problems)
@@ -765,6 +772,8 @@ MIRROR_LOST_LABELS: Dict[str, str] = {
 
 
 def note_mirror_drift(keys: List[str]) -> str:
+    """The note that names the advisory notes (``keys``) that are withheld because their logic no longer
+    matches the protected rule."""
     lost = [MIRROR_LOST_LABELS[key] for key in keys if key in MIRROR_LOST_LABELS]
     return (
         "ADVISORY NOTES WITHHELD: %s cannot be reported because its advisory logic no"

@@ -2,11 +2,11 @@
 """
 Direct entry point for JINX.
 Designed to be executed when the repository is dropped into a project as a `.agent` folder
-(`pip install git+https://github.com/machinegpt/agent`, then `jinx init` in the project, does that for you).
+(`pip install git+https://github.com/machinegpt/agent`, then `jinx install` in the project, does that for you).
 
-Usage:
-  python .agent/jinx.py "Analyze and fix the bug in auth"
+An editor calls it as its own command, `/jinx` (the skill that `jinx install` sets up for it).
 """
+import re
 import sys
 from pathlib import Path
 
@@ -14,6 +14,126 @@ from pathlib import Path
 # without needing a global pip installation.
 src_path = Path(__file__).resolve().parent / "src"
 sys.path.insert(0, str(src_path))
+
+
+# An editor that has JINX as a command of its own (Claude Code: the `/jinx` skill) does not build a shell command line
+# out of what the person wrote. The skill hands the words over in one piece:
+#
+#     jinx.py --via /jinx --stdin       the words are on stdin (a here-document of the skill)
+#     jinx.py --via /jinx --args ...    the words are everything after --args (for a shell without here-documents)
+#
+# so a message with quotes, `$`, backticks or any language in it arrives exactly as it was written. The words are
+# either options of JINX (`--session s3fa1`, `--peek s7b2e --diff`, or nothing at all: go on) or a message to start a run with.
+# `--via NAME` is the name the editor calls JINX by: it is what JINX tells the editor to run next (JINX_CMD, see
+# mail.jinx_command). Without --via none of this applies, and a call by hand is parsed as it always was.
+#
+# What each option takes after it, as cli.py declares them: (how many values, what a value looks like). The "how many" is
+# "0", "1", "?" (at most one) or "*". This file cannot import cli.py (the self-patch preflight below has to run before
+# anything of the package does), so the id of a session is written out here as it is in mail._SID_RE.
+_SESSION_ID = re.compile(r"[a-z][a-z0-9]{2,15}")
+_OPTIONS = {
+    "--session": ("1", _SESSION_ID),
+    "--join": ("1", _SESSION_ID),
+    "--peek": ("?", _SESSION_ID),
+    "--diff": ("0", None),
+    "--full": ("0", None),
+    "--export": ("*", _SESSION_ID),
+    "--out": ("1", re.compile(r"[^-].*", re.S)),
+    "--min": ("1", re.compile(r"[0-9]+")),
+    "--ipc": ("1", re.compile(r"file|rpc")),
+}
+_TASK_AFTER = ("--join",)       # `--join <id> ["task"]`: the one call of an editor with a message behind its options
+_WORD = re.compile(r"\"[^\"]*\"|'[^']*'|\S+")
+
+
+def _unquote(word):
+    """``"a b"`` or ``'a b'`` as ``a b``; anything else as it is."""
+    if len(word) >= 2 and word[0] in "\"'" and word[-1] == word[0] and word.count(word[0]) == 2:
+        return word[1:-1]
+    return word
+
+
+def _message(text):
+    """The words as one message. A message that begins with ``-`` goes behind ``--``, so that it is never read as an option."""
+    return ["--", text] if text.startswith("-") else [text]
+
+
+def _split_words(text):
+    """The words of an editor's call as a command line's arguments: options as they are, anything else one message.
+
+    The words are options only when they are nothing but options and the values those take, and, after ``--join <id>``,
+    the task of the new session, which stays as it was written (blanks and line breaks included). Anything else is a
+    message, even when it begins like an option: ``--peek is broken`` is a sentence of the person's and must start a
+    run, not look at the sessions.
+    """
+    text = text.strip()
+    if not text:
+        return []
+    words = [(m.group(), m.start()) for m in _WORD.finditer(text)]
+    args, i, task_may_follow = [], 0, False
+    while i < len(words):
+        name, eq, value = words[i][0].partition("=")
+        spec = _OPTIONS.get(name)
+        if spec is None:
+            break                                       # not an option: from here on it is the message
+        count, shape = spec
+        i += 1
+        args.append(name)
+        if eq:                                          # --session=s1
+            if count == "0" or not shape.fullmatch(_unquote(value)):
+                return _message(text)
+            args.append(_unquote(value))
+        else:
+            taken = 0
+            while (count != "0" and i < len(words) and (count == "*" or not taken)
+                   and shape.fullmatch(_unquote(words[i][0]))):
+                args.append(_unquote(words[i][0]))
+                i += 1
+                taken += 1
+            if count == "1" and not taken:              # --session, and no id behind it
+                return _message(text)
+        task_may_follow = task_may_follow or name in _TASK_AFTER
+    if i < len(words):
+        if not task_may_follow:                         # words that no option takes: it was a message after all
+            return _message(text)
+        args.append(_unquote(text[words[i][1]:]))
+    return args
+
+
+def _expand_call():
+    """Rewrites ``sys.argv`` for a call made through the editor's command. True when it was one."""
+    args = sys.argv[1:]
+    if args[:1] != ["--via"] or len(args) < 2:
+        return False
+    import os
+    os.environ["JINX_CMD"] = args[1]
+    rest = args[2:]
+    if rest[:1] == ["--stdin"]:
+        raw = b"" if sys.stdin is None or sys.stdin.isatty() else sys.stdin.buffer.read()
+        rest = _split_words(raw.decode("utf-8", "replace").lstrip("﻿"))
+    elif rest[:1] == ["--args"]:
+        rest = _split_words(" ".join(rest[1:]))
+    sys.argv[1:] = rest
+    return True
+
+
+_VIA = _expand_call()
+
+
+def _code(code):
+    """The exit code to leave with.
+
+    Through the editor's command a call is a success only when it exits 0, and one that does not is handed to the model
+    as a command that failed, not as what JINX printed. So there the code is printed on a line of its own and the call
+    ends well: that is how the model learns that a run ended without success (exit code 2) or that a launch failed (1).
+    """
+    if isinstance(code, str):       # sys.exit("message")
+        print(code, file=sys.stderr)
+        code = 1
+    if _VIA and code not in (None, 0):
+        print("[JINX_EXIT] %s" % code, flush=True)
+        return 0
+    return code
 
 
 def _load_selfpatch():
@@ -273,6 +393,7 @@ def _record_feedback(message):
 
 
 def bootstrap_dependencies():
+    """Installs pydantic and pyyaml with pip when they are missing; exits with a hint when that fails."""
     try:
         import pydantic
         import yaml
@@ -297,10 +418,10 @@ bootstrap_dependencies()
 # into one .mbox (--export) reads the round files and writes nothing but its own output (.agent/export/).
 if "--peek" in sys.argv[1:]:
     from jinx.team import peek_main
-    sys.exit(peek_main(sys.argv[1:], src_path.parent))
+    sys.exit(_code(peek_main(sys.argv[1:], src_path.parent)))
 if "--export" in sys.argv[1:]:
     from jinx.export import export_main
-    sys.exit(export_main(sys.argv[1:], src_path.parent))
+    sys.exit(_code(export_main(sys.argv[1:], src_path.parent)))
 
 # Revert a broken self-edit before importing the package, not after.
 self_patch_preflight()
@@ -309,7 +430,13 @@ try:
     from jinx.cli import main
 except ImportError as e:
     print(f"[JINX BOOTSTRAP ERROR] Failed to load JINX modules: {e}", file=sys.stderr)
-    sys.exit(1)
+    sys.exit(_code(1))
 
 if __name__ == "__main__":
-    main()
+    if _VIA:
+        try:
+            main()
+        except SystemExit as e:
+            sys.exit(_code(e.code))
+    else:
+        main()

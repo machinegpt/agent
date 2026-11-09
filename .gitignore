@@ -48,7 +48,7 @@ Thumbs.db
 .pytest_cache/
 *.log
 
-# >>> JINX >>> (kept up to date by `jinx init`; write your own lines outside these markers)
+# >>> JINX >>> (kept up to date by `jinx install`; write your own lines outside these markers)
 # --- JINX Runtime State ---
 # Per-run IPC files and the run manifest are session state, not source.
 .agent/JINX.yaml
