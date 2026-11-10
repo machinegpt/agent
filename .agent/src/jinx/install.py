@@ -231,9 +231,11 @@ def _load_manifest(agent: Path) -> Dict[str, Dict[str, str]]:
         if isinstance(part, dict):
             out[key] = {str(k): str(v) for k, v in part.items()}
     # The manifest is a file of the project, and a project is not always one's own. An install deletes the files
-    # it lists that a release no longer has, so a path that leads out of .agent/ (``../..``, absolute) is never
-    # one that it wrote: it is dropped here, before anything is done with it.
-    out["files"] = {rel: digest_ for rel, digest_ in out["files"].items() if _stays_under_agent(rel)}
+    # it lists that a release no longer has, so a path that leads out of .agent/ (``../..``, absolute, or through
+    # a link such as ``.agent/link`` to a folder elsewhere) is never one that it wrote: it is dropped here, before
+    # anything is done with it.
+    out["files"] = {rel: digest_ for rel, digest_ in out["files"].items()
+                    if _stays_under_agent(rel) and _real_inside(agent, rel)}
     return out
 
 
@@ -241,6 +243,21 @@ def _stays_under_agent(rel: str) -> bool:
     """``rel`` is a relative path that stays below the folder it is taken from: no ``..``, no root, no drive."""
     path = Path(rel.replace("\\", "/"))
     return bool(path.parts) and not path.is_absolute() and ".." not in path.parts and ":" not in path.parts[0]
+
+
+def _real_inside(agent: Path, rel: str) -> bool:
+    """The folder that holds ``rel`` is really below ``agent``: no folder on the way to it is a link that leads out.
+
+    ``_stays_under_agent`` reads the path as written; this one asks the file system, because ``.agent/link`` can be
+    a link to a folder elsewhere, and ``link/file`` then names a file that is not under ``.agent/`` at all.
+    (``agent`` itself may be a link: both sides are resolved. A file that is a link is another matter: removing it
+    removes the link, and the file it points to stays.)
+    """
+    try:
+        (agent / rel).parent.resolve().relative_to(agent.resolve())
+    except (OSError, ValueError, RuntimeError):                 # not below it, or a chain of links that loops
+        return False
+    return True
 
 
 def _active_runs(agent: Path) -> List[str]:
