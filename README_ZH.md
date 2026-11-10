@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.3.0--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.3.1--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-File_Based_IPC_State_Machine-0D9488?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-ReEntrant_Single_Step_Process-059669?style=for-the-badge" alt="Integration Badge" />
   <img src="https://img.shields.io/badge/license-JINX_EULA-B45309?style=for-the-badge" alt="License Badge" />
@@ -25,18 +25,18 @@ pip install git+https://github.com/machinegpt/agent     # 1. 获得 `jinx` 命�
 jinx install                                             # 2. 在你的项目文件夹中运行
 ```
 
-需要 Python 3.10+、git 和一个编辑器：[Claude Code](https://claude.com/product/claude-code)、Codex CLI、OpenCode 或 Gemini CLI。然后用该编辑器打开文件夹，像往常一样写下你的请求。你无需自己输入 `/jinx`：`jinx install` 写入编辑器指令文件的规则会让编辑器对每条消息都调用它自己的命令 `/jinx`（§8），它也确实这样做。
+需要 Python 3.10+、git 和一个编辑器：[Claude Code](https://claude.com/product/claude-code)、Codex CLI、OpenCode、Gemini CLI、Grok Build 或 Kimi Code CLI。然后用该编辑器打开文件夹，像往常一样写下你的请求。你无需自己输入 `/jinx`：`jinx install` 写入编辑器指令文件的规则会让编辑器对每条消息都调用它自己的命令 `/jinx`（§8），它也确实这样做。
 
 `jinx install` 会设置以下内容，然后运行 `jinx doctor`：
 
 | 位置 | 内容 |
 | :--- | :--- |
 | `.agent/` | 运行时（`jinx.py` 和 `src/jinx/`）以及 JINX 许可协议文本（`LICENSE.md` 及其译本）；JINX 的运行状态、轮次文件与教训会在工作过程中出现在这里 |
-| `CLAUDE.md`、`AGENTS.md`、`GEMINI.md` | JINX 规则，每个编辑器一个指令文件（Claude Code 读取 `CLAUDE.md`，Codex CLI 与 OpenCode 读取 `AGENTS.md`，Gemini CLI 读取 `GEMINI.md`），位于 `<!-- JINX:BEGIN … -->` 与 `<!-- JINX:END -->` 之间；它们周围的文字仍归你所有 |
-| `.claude/skills/jinx/`、`.agents/skills/jinx/` | 命令 `/jinx`：一个技能（`SKILL.md`），由编辑器的模型按名称调用。Claude Code 读取第一个文件夹；Gemini CLI、Codex CLI 与 OpenCode 读取第二个 |
+| `CLAUDE.md`、`AGENTS.md`、`GEMINI.md` | JINX 规则，每个编辑器一个指令文件（Claude Code 读取 `CLAUDE.md`，Codex CLI、OpenCode、Grok Build 与 Kimi Code CLI 读取 `AGENTS.md`，Gemini CLI 读取 `GEMINI.md`），位于 `<!-- JINX:BEGIN … -->` 与 `<!-- JINX:END -->` 之间；它们周围的文字仍归你所有 |
+| `.claude/skills/jinx/`、`.agents/skills/jinx/` | 命令 `/jinx`：一个技能（`SKILL.md`），由编辑器的模型按名称调用。Claude Code 读取第一个文件夹；Gemini CLI、Codex CLI、OpenCode、Grok Build 与 Kimi Code CLI 读取第二个 |
 | `.gitignore` | 让运行状态不进入 git 的几行，位于 `# >>> JINX >>>` 与 `# <<< JINX <<<` 之间 |
 
-**`/jinx` 是什么。** 它是编辑器自己的命令，由编辑器调用，而不是由你调用。它按原样接收你的消息，并返回 JINX 打印的内容。在 Claude Code 中，技能自己运行运行时：模型不写任何 shell 命令，你的消息也无需转义（引号、`$`、反引号和任何语言都会原样送达）。Codex CLI、OpenCode 和 Gemini CLI 无法为技能运行命令，因此它们的技能副本会告诉模型该运行哪条命令。
+**`/jinx` 是什么。** 它是编辑器自己的命令，由编辑器调用，而不是由你调用。它按原样接收你的消息，并返回 JINX 打印的内容。在 Claude Code 中，技能自己运行运行时：模型不写任何 shell 命令，你的消息也无需转义（引号、`$`、反引号和任何语言都会原样送达）。Codex CLI、OpenCode、Gemini CLI、Grok Build 和 Kimi Code CLI 无法为技能运行命令，因此它们的技能副本会告诉模型该运行哪条命令（以及如何为 bash 或 PowerShell 给你的消息加引号）。
 
 `jinx doctor` 可随时运行：它会检查 Python、`pyyaml` 和 `pydantic`、运行时能否加载、`/jinx` 能否到达它、各编辑器的规则和技能是否就位、git 以及 `PATH` 中的编辑器，并指出需要修复什么。`jinx install` 结尾会给出同样的报告（`JINX is ready`）。
 
@@ -1001,7 +1001,7 @@ JINX 架构规范将运行时部署定义为核心组件，内嵌于官方 **Ant
 3. 执行 JINX 关于读取、写入文件与运行系统命令的声明式指令。
 4. 通过 File-IPC 机制将执行结果回送至 JINX 认知循环。
 
-`jinx install` 写入 `CLAUDE.md` 的规则块（对 Codex CLI、OpenCode 和 Gemini CLI 则写入 `AGENTS.md` 与 `GEMINI.md`；同一个块也在本仓库自己的 `CLAUDE.md`、`AGENTS.md` 和 `GEMINI.md` 中）被配置为自动且无条件地将所有用户消息、问候与任务路由经由 JINX，以确保自动化编排循环顺畅运行。编辑器通过它的命令 `/jinx` 调用 JINX，这是 `jinx install` 写入 `.claude/skills/jinx/` 与 `.agents/skills/jinx/` 的技能。若你更希望手动调用 JINX，可编辑该块的第一句话，将其限制为仅响应显式请求：`jinx install` 会保留你编辑过的块（发布版本自带的文本会写入 `.agent/CLAUDE.md.new`）。
+`jinx install` 写入 `CLAUDE.md` 的规则块（对 Codex CLI、OpenCode、Grok Build、Kimi Code CLI 和 Gemini CLI 则写入 `AGENTS.md` 与 `GEMINI.md`；同一个块也在本仓库自己的 `CLAUDE.md`、`AGENTS.md` 和 `GEMINI.md` 中）被配置为自动且无条件地将所有用户消息、问候与任务路由经由 JINX，以确保自动化编排循环顺畅运行。编辑器通过它的命令 `/jinx` 调用 JINX，这是 `jinx install` 写入 `.claude/skills/jinx/` 与 `.agents/skills/jinx/` 的技能。若你更希望手动调用 JINX，可编辑该块的第一句话，将其限制为仅响应显式请求：`jinx install` 会保留你编辑过的块（发布版本自带的文本会写入 `.agent/CLAUDE.md.new`）。
 
 ### 安全性与交互式执行授权
 

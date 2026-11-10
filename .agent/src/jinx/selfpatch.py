@@ -543,6 +543,7 @@ def _run(cmd: List[str], cwd: Path, timeout: int) -> Tuple[bool, str]:
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            errors="replace",          # what a child printed in another code page is not worth an exception
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:

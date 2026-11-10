@@ -63,7 +63,7 @@ def session_dir(office: mail.Office, sid: str) -> Optional[Path]:
 def _load(path: Path, limit: int = 1_000_000) -> Dict[str, Any]:
     """The mapping in a YAML file of a session; {} where the file cannot be read, is not valid or holds something else."""
     try:
-        data = mail.load_yaml(path.read_text("utf-8"), limit=limit)
+        data = mail.load_yaml(path.read_text("utf-8", errors="replace"), limit=limit)
     except (OSError, mail.InvalidMail):
         return {}
     return data if isinstance(data, dict) else {}

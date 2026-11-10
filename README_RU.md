@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.3.0--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.3.1--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-File_Based_IPC_State_Machine-0D9488?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-ReEntrant_Single_Step_Process-059669?style=for-the-badge" alt="Integration Badge" />
   <img src="https://img.shields.io/badge/license-JINX_EULA-B45309?style=for-the-badge" alt="License Badge" />
@@ -25,18 +25,18 @@ pip install git+https://github.com/machinegpt/agent     # 1. получить к
 jinx install                                             # 2. запустить в папке вашего проекта
 ```
 
-Нужны Python 3.10+, git и редактор: [Claude Code](https://claude.com/product/claude-code), Codex CLI, OpenCode или Gemini CLI. Затем откройте папку редактором и пишите запросы как обычно. Команду `/jinx` вы сами никогда не вводите: правила, которые `jinx install` добавил в файл инструкций редактора, велят редактору вызывать свою команду `/jinx` для каждого сообщения (§8), и он это делает.
+Нужны Python 3.10+, git и редактор: [Claude Code](https://claude.com/product/claude-code), Codex CLI, OpenCode, Gemini CLI, Grok Build или Kimi Code CLI. Затем откройте папку редактором и пишите запросы как обычно. Команду `/jinx` вы сами никогда не вводите: правила, которые `jinx install` добавил в файл инструкций редактора, велят редактору вызывать свою команду `/jinx` для каждого сообщения (§8), и он это делает.
 
 `jinx install` настраивает следующее, а затем запускает `jinx doctor`:
 
 | Где | Что |
 | :--- | :--- |
 | `.agent/` | среда выполнения (`jinx.py` и `src/jinx/`) и текст лицензии JINX (`LICENSE.md` и её переводы); состояние запусков, файлы раундов и уроки JINX появляются здесь по мере работы |
-| `CLAUDE.md`, `AGENTS.md`, `GEMINI.md` | правила JINX, по одному файлу инструкций на редактор (Claude Code читает `CLAUDE.md`, Codex CLI и OpenCode — `AGENTS.md`, Gemini CLI — `GEMINI.md`), между `<!-- JINX:BEGIN … -->` и `<!-- JINX:END -->`; текст вокруг них остаётся вашим |
-| `.claude/skills/jinx/`, `.agents/skills/jinx/` | команда `/jinx`: навык (`SKILL.md`), который модель редактора вызывает по имени. Claude Code читает первую папку; Gemini CLI, Codex CLI и OpenCode — вторую |
+| `CLAUDE.md`, `AGENTS.md`, `GEMINI.md` | правила JINX, по одному файлу инструкций на редактор (Claude Code читает `CLAUDE.md`, Codex CLI, OpenCode, Grok Build и Kimi Code CLI — `AGENTS.md`, Gemini CLI — `GEMINI.md`), между `<!-- JINX:BEGIN … -->` и `<!-- JINX:END -->`; текст вокруг них остаётся вашим |
+| `.claude/skills/jinx/`, `.agents/skills/jinx/` | команда `/jinx`: навык (`SKILL.md`), который модель редактора вызывает по имени. Claude Code читает первую папку; Gemini CLI, Codex CLI, OpenCode, Grok Build и Kimi Code CLI — вторую |
 | `.gitignore` | строки, которые не пускают состояние запусков в git, между `# >>> JINX >>>` и `# <<< JINX <<<` |
 
-**Что такое `/jinx`.** Это собственная команда редактора, и вызывает её редактор, а не вы. Она принимает ваше сообщение как оно написано и возвращает то, что напечатал JINX. В Claude Code навык сам запускает среду выполнения: модель не пишет никакой shell-команды, а ваше сообщение не нужно экранировать (кавычки, `$`, обратные апострофы и любой язык доходят как есть). Codex CLI, OpenCode и Gemini CLI не умеют выполнять команду за навык, поэтому в их копии навыка модели сказано, какую команду запустить.
+**Что такое `/jinx`.** Это собственная команда редактора, и вызывает её редактор, а не вы. Она принимает ваше сообщение как оно написано и возвращает то, что напечатал JINX. В Claude Code навык сам запускает среду выполнения: модель не пишет никакой shell-команды, а ваше сообщение не нужно экранировать (кавычки, `$`, обратные апострофы и любой язык доходят как есть). Codex CLI, OpenCode, Gemini CLI, Grok Build и Kimi Code CLI не умеют выполнять команду за навык, поэтому в их копии навыка модели сказано, какую команду запустить (и как заключить ваше сообщение в кавычки для bash или PowerShell).
 
 `jinx doctor` можно запускать в любой момент: он проверяет Python, `pyyaml` и `pydantic`, что среда выполнения загружается и что `/jinx` до неё доходит, что правила и навык на месте для каждого редактора, git и редакторы в `PATH`, и подсказывает, что исправить. `jinx install` заканчивает тем же отчётом (`JINX is ready`).
 
@@ -1007,7 +1007,7 @@ JINX не поставляет и не повторяет автоматичес
 3. Исполнение декларативных директив JINX на чтение, модификацию файлов и выполнение системных команд.
 4. Возврат результатов выполнения обратно в когнитивный цикл JINX через механизм File-IPC.
 
-Блок, который `jinx install` добавляет в `CLAUDE.md` (а для Codex CLI, OpenCode и Gemini CLI — в `AGENTS.md` и `GEMINI.md`; тот же блок лежит в `CLAUDE.md`, `AGENTS.md` и `GEMINI.md` этого репозитория), настроен на автоматическую и безусловную маршрутизацию всех сообщений, приветствий и задач пользователя через JINX для обеспечения бесшовной работы цикла автоматической оркестровки. Редактор вызывает JINX его командой `/jinx` — навыком, который `jinx install` записывает в `.claude/skills/jinx/` и `.agents/skills/jinx/`. Если вы предпочитаете запускать JINX вручную, отредактируйте первое предложение этого блока, ограничив запуск только явными запросами: `jinx install` сохраняет отредактированный вами блок (текст релиза кладётся в `.agent/CLAUDE.md.new`).
+Блок, который `jinx install` добавляет в `CLAUDE.md` (а для Codex CLI, OpenCode, Grok Build, Kimi Code CLI и Gemini CLI — в `AGENTS.md` и `GEMINI.md`; тот же блок лежит в `CLAUDE.md`, `AGENTS.md` и `GEMINI.md` этого репозитория), настроен на автоматическую и безусловную маршрутизацию всех сообщений, приветствий и задач пользователя через JINX для обеспечения бесшовной работы цикла автоматической оркестровки. Редактор вызывает JINX его командой `/jinx` — навыком, который `jinx install` записывает в `.claude/skills/jinx/` и `.agents/skills/jinx/`. Если вы предпочитаете запускать JINX вручную, отредактируйте первое предложение этого блока, ограничив запуск только явными запросами: `jinx install` сохраняет отредактированный вами блок (текст релиза кладётся в `.agent/CLAUDE.md.new`).
 
 ### Безопасность и Интерактивная Авторизация Выполнения
 

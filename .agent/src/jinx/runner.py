@@ -26,7 +26,7 @@ import queue as _queue
 from . import prompts
 from .prompts import SYSTEM_PROMPT, TOOL_DEPTH_CRITICAL_MSG, construct_round_prompt
 from .state import (
-    AGENT_SET_KEY, CONFIG_MIN_KEY, is_count, merge_state, read_jinx, write_jinx,
+    AGENT_SET_KEY, CONFIG_MIN_KEY, is_count, merge_state, read_jinx, replace_file, write_jinx,
 )
 from .tools import tool_schema
 from . import evidence, learning, selfpatch, sessions
@@ -136,9 +136,9 @@ class Yaml:
             clean_yaml = Yaml.dump_to_string(data, width=width)
             temp_path = path.with_suffix(path.suffix + ".tmp")
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(temp_path, "w", encoding="utf-8") as f:
+            with open(temp_path, "w", encoding="utf-8", newline="\n") as f:      # newline: no CR added on Windows
                 f.write(clean_yaml)
-            temp_path.replace(path)
+            replace_file(temp_path, path)
         except Exception as e:
             logger.error("Atomic write failed on %s: %s", path, e, exc_info=True)
             try:
@@ -224,6 +224,21 @@ def _validate_tool_use_block(block: Dict[str, Any]) -> Tuple[Optional[str], Opti
         }
 
     return tool_use_id, name, params, None
+
+
+def _clean_block(block: Any) -> Dict[str, Any]:
+    """A content block of the editor's reply as a dict whose text, for a text block, is a string.
+
+    The editor writes the reply by hand, as YAML, and a bare scalar there becomes a number, a boolean or
+    nothing (``text: 42``, ``text: yes``, an empty ``text:``). Such a reply is still a reply: its text is
+    what it says, not a reason to stop the run with a traceback.
+    """
+    if not isinstance(block, dict):
+        return {"type": "text", "text": "" if block is None else str(block)}
+    if block.get("type") == "text" and not isinstance(block.get("text"), str):
+        text = block.get("text")
+        return {**block, "text": "" if text is None else str(text)}
+    return block
 
 
 def check_exit(scores: List[Dict[str, Any]], min_rounds: int, rnd: int) -> bool:
@@ -408,10 +423,10 @@ def request_llm_from_editor(
         if line is None:
             raise IPCError(f"Timeout waiting for LLM response from editor after {IPC_TIMEOUT}s x{IPC_RETRIES} attempts")
         data = json.loads(line)
-        content = data.get("content") or []
+        content = (data.get("content") if isinstance(data, dict) else None) or []
         if not isinstance(content, list):
             raise IPCError("Invalid LLM response content format (expected list)")
-        return content
+        return [_clean_block(b) for b in content]
     except (json.JSONDecodeError, OSError, IPCError) as e:
         logger.error("Error receiving LLM response: %s", e)
         raise IPCError(f"Error receiving LLM response: {e}") from e
@@ -1715,7 +1730,9 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
     try:
         with open(RUN_STATE_PATH, "r", encoding="utf-8") as f:
             run_state = yaml.safe_load(f) or {}
-    except (yaml.YAMLError, OSError) as e:
+        if not isinstance(run_state, dict):
+            raise ValueError("the run state is not a mapping")
+    except (yaml.YAMLError, OSError, ValueError) as e:       # a file that is not UTF-8 raises UnicodeDecodeError: a ValueError
         logger.error("Failed to load run state: %s", e)
         clean_up_ipc_files()
         sys.exit(1)
@@ -1753,7 +1770,7 @@ def run_file_ipc(task: Optional[str], min_override: Optional[int]) -> None:
     try:
         with open(RESPONSE_PATH, "r", encoding="utf-8") as f:
             response_data = yaml.safe_load(f) or {}
-    except (yaml.YAMLError, OSError) as e:
+    except (yaml.YAMLError, OSError, ValueError) as e:       # not UTF-8 (a file that Windows PowerShell wrote): UnicodeDecodeError
         logger.error("Failed to read response YAML: %s", e)
         sys.exit(1)
 
@@ -1793,14 +1810,13 @@ def _handle_llm_response(
     run_state: Dict[str, Any]
 ) -> None:
     """Handles the response from an LLM generation request."""
-    raw_content = response_data.get("content")
+    # The reply is a file the editor wrote by hand: a bare string or a list of blocks, with no mapping around
+    # it, is still the reply, and so is a block whose text YAML read as a number, a boolean or nothing.
+    raw_content = response_data.get("content") if isinstance(response_data, dict) else response_data
     if isinstance(raw_content, str):
         content_blocks = [{"type": "text", "text": raw_content}]
     elif isinstance(raw_content, list):
-        content_blocks = [
-            b if isinstance(b, dict) else {"type": "text", "text": str(b)}
-            for b in raw_content
-        ]
+        content_blocks = [_clean_block(b) for b in raw_content]
     elif raw_content is not None:
         content_blocks = [{"type": "text", "text": str(raw_content)}]
     else:
@@ -2007,7 +2023,12 @@ def _handle_tool_response(
     run_state: Dict[str, Any]
 ) -> None:
     """Handles the response from tool execution."""
-    results = response_data.get("results") or []
+    # Written by hand, like the reply: a list of results with no mapping around it, or a single result, is
+    # understood; whatever is not a mapping cannot be matched to a call and is left out, not a reason to crash.
+    raw_results = response_data.get("results") if isinstance(response_data, dict) else response_data
+    if isinstance(raw_results, dict):
+        raw_results = [raw_results]
+    results = [r for r in raw_results if isinstance(r, dict)] if isinstance(raw_results, list) else []
     tool_results = [
         {"type": "tool_result", "tool_use_id": r.get("tool_use_id"), "content": r.get("content") or ""}
         for r in results
@@ -2030,7 +2051,7 @@ def _handle_tool_response(
         # overwritten that session's work; say so, and tell that session.
         answered = [
             calls_by_id[r["tool_use_id"]] for r in results
-            if isinstance(r, dict) and r.get("tool_use_id") in calls_by_id
+            if isinstance(r.get("tool_use_id"), str) and r["tool_use_id"] in calls_by_id
         ]
         for note in sessions.check_writes(SESSION, answered) + sessions.after_batch(SESSION):
             tool_results.append({"type": "text", "text": note})

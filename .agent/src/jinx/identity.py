@@ -65,7 +65,7 @@ def _read_ps(pid: int) -> Optional[Tuple[int, int]]:
     """The same through ``ps``, for systems without /proc (macOS, BSD). The start time is a checksum of ps's text."""
     try:
         out = subprocess.run(["ps", "-o", "ppid=,lstart=", "-p", str(pid)], capture_output=True, text=True,
-                             timeout=2).stdout.strip()
+                             errors="replace", timeout=2).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None
     parts = out.split(None, 1)

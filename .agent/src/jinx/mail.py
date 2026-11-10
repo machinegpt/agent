@@ -46,6 +46,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -166,9 +167,12 @@ def _tmp_name() -> str:
     return f".{os.getpid()}.{secrets.token_hex(4)}.tmp"
 
 
+_BINARY = getattr(os, "O_BINARY", 0)       # Windows only: without it os.open() makes a text file and os.write() adds a CR to every LF
+
+
 def _write_new(path: Path, data: bytes, fsync: bool = False) -> None:
-    """Create path exclusively and write all of data. The caller decides when it becomes visible."""
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    """Create path exclusively and write all of data, byte for byte. The caller decides when it becomes visible."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _BINARY, 0o644)
     try:
         view = memoryview(data)
         while view:
@@ -245,7 +249,7 @@ def link_new(src: Path, dst: Path, *, exclusive: bool = True) -> bool:
             raise
     if exclusive:
         try:
-            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _BINARY, 0o644)
         except FileExistsError:
             return False
         try:
@@ -564,6 +568,26 @@ class Digest:
 
 # --------------------------------------------------------------------------- the office
 _COMMAND_OK = re.compile(r'[^"\x00-\x1f\x7f]+')      # it is printed inside resume="..." on a single line
+_WORD_OK = re.compile(r"[A-Za-z0-9_.+/-]+")          # a word that a bash and a PowerShell line both take as it is
+
+
+def _interpreter() -> str:
+    """The word that starts this Python where JINX was started: ``python``, ``python3``, ``py`` or a path.
+
+    ``python`` is not there everywhere (Debian, Ubuntu and macOS have ``python3`` only), and a command that names the
+    wrong word fails with "command not found" for the editor that was told to run it. ``sys.orig_argv[0]`` is the word
+    this process was started with, so it is one that worked from where JINX was started. A word that cannot go into a
+    shell line as it is (the full path that ``py`` starts the interpreter by, with its backslashes) is not used: the
+    first of ``python``, ``python3`` and ``py`` that is on PATH is.
+    """
+    argv = getattr(sys, "orig_argv", None) or []
+    word = str(argv[0]) if argv else ""
+    if word and _WORD_OK.fullmatch(word):
+        return word
+    for name in ("python", "python3", "py"):
+        if shutil.which(name):
+            return name
+    return "python"
 
 
 def jinx_command(agent: str = ".agent") -> str:
@@ -572,13 +596,14 @@ def jinx_command(agent: str = ".agent") -> str:
     An editor that has JINX as a command of its own (Claude Code: the ``/jinx`` skill that ``jinx install`` writes)
     starts ``jinx.py`` with ``--via /jinx``, which sets ``JINX_CMD=/jinx`` for the process: the editor is then given
     its own command to resume a session, to look at another one (``--peek``) or to collect the rounds (``--export``).
-    A run that was started the long way (``python <agent>/jinx.py``) names that, so that every command the model is
-    shown is one that works from where it was started. A ``JINX_CMD`` that cannot sit in such a line is ignored.
+    A run that was started the long way (``python <agent>/jinx.py``, or ``python3`` where that is the one there is)
+    names that, so that every command the model is shown is one that works from where it was started. A ``JINX_CMD``
+    that cannot sit in such a line is ignored.
     """
     cmd = (os.environ.get("JINX_CMD") or "").strip()
     if cmd and _COMMAND_OK.fullmatch(cmd):
         return cmd
-    return f"python {agent}/jinx.py"
+    return f"{_interpreter()} {agent}/jinx.py"
 
 
 class Office:
@@ -638,7 +663,7 @@ class Office:
 
     def card(self, sid: str) -> Dict[str, Any]:
         try:
-            data = load_yaml((self.sessions_dir / sid / "card.yaml").read_text("utf-8"))
+            data = load_yaml((self.sessions_dir / sid / "card.yaml").read_text("utf-8", errors="replace"))
         except (OSError, InvalidMail):
             return {}
         return data if isinstance(data, dict) else {}
@@ -1126,7 +1151,7 @@ class Session:
 
     def _mail_state(self) -> Dict[str, Any]:
         try:
-            data = load_yaml((self.dir / "mail.yaml").read_text("utf-8")) or {}
+            data = load_yaml((self.dir / "mail.yaml").read_text("utf-8", errors="replace")) or {}
         except (OSError, InvalidMail):
             return {}
         return data if isinstance(data, dict) else {}
@@ -1299,7 +1324,7 @@ class Session:
         while names:
             name = names.pop()
             try:
-                data = load_yaml((d / name).read_text("utf-8"))
+                data = load_yaml((d / name).read_text("utf-8", errors="replace"))
             except FileNotFoundError:
                 continue                      # pruned between listing and reading
             except InvalidMail:
@@ -1756,7 +1781,7 @@ class Round:
         data: Dict[str, Any] = {}
         if self.file.exists():
             try:
-                data = load_yaml(self.file.read_text("utf-8")) or {}
+                data = load_yaml(self.file.read_text("utf-8", errors="replace")) or {}
             except (OSError, InvalidMail):
                 data = {}
         self.base: Dict[str, Optional[List[str]]] = dict(data.get("base") or {})
