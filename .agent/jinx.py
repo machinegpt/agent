@@ -410,6 +410,25 @@ def bootstrap_dependencies():
                   "activate it, install there, and start the editor from that shell.", file=sys.stderr)
             sys.exit(1)
 
+def _utf8_output():
+    """Print as UTF-8, and never fail on a character that cannot be printed.
+
+    A pipe (which is what an editor reads) gets the ANSI code page on Windows, cp1251 or cp1252: a Cyrillic task or file
+    name then reaches an editor that reads UTF-8 as garbage, and an arrow or an emoji in a name or a diff (``--peek``,
+    ``--export``) raises UnicodeEncodeError instead of being printed. The same goes for the bytes of a POSIX file name that
+    are not UTF-8: they are printed as U+FFFD instead of ending the run.
+    """
+    for stream, errors in ((sys.stdout, "replace"), (sys.stderr, None)):
+        try:
+            if errors:
+                stream.reconfigure(encoding="utf-8", errors=errors)
+            else:
+                stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError, OSError):
+            pass                              # no such stream (pythonw), or one that cannot be changed
+
+_utf8_output()
+
 # Check and install dependencies before importing JINX package modules
 bootstrap_dependencies()
 

@@ -12,8 +12,8 @@
 
 ``install`` puts the runtime into ``.agent/`` (``jinx.py`` and ``src/jinx/``, and with them the text of the license, ``LICENSE.md``
 and its translations: a copy of JINX does not go anywhere without it), the JINX rules into the instruction file of
-every editor (``CLAUDE.md`` for Claude Code, ``AGENTS.md`` for Codex CLI and OpenCode, ``GEMINI.md`` for Gemini CLI), the
-``/jinx`` command into the skill folders the editors read (``.claude/skills/jinx/`` and ``.agents/skills/jinx/``) and the
+every editor (``CLAUDE.md`` for Claude Code, ``AGENTS.md`` for Codex CLI, OpenCode, Grok Build and Kimi Code CLI, ``GEMINI.md``
+for Gemini CLI), the ``/jinx`` command into the skill folders the editors read (``.claude/skills/jinx/`` and ``.agents/skills/jinx/``) and the
 lines that keep the runtime state out of git into ``.gitignore``, then runs ``doctor``. Run it again after
 ``pip install -U`` and it brings the runtime up to date: a file that was changed since it was installed (by a person, or
 by JINX improving its own source) is left alone, and the new version is written beside it as ``<name>.new``.
@@ -50,16 +50,21 @@ _VERSION = re.compile(r"""__version__\s*=\s*["']([^"']+)["']""")
 _PYTHON_MIN = (3, 10)
 
 # The instruction file each editor reads (always, for the whole session), and the editors that read it. OpenCode reads
-# AGENTS.md and falls back to CLAUDE.md only where there is no AGENTS.md.
-INSTRUCTION_FILES = (("CLAUDE.md", "Claude Code"), ("AGENTS.md", "Codex CLI and OpenCode"), ("GEMINI.md", "Gemini CLI"))
+# AGENTS.md and falls back to CLAUDE.md only where there is no AGENTS.md; Grok Build reads both files; Kimi Code CLI reads
+# AGENTS.md and no other of the three.
+INSTRUCTION_FILES = (("CLAUDE.md", "Claude Code"),
+                     ("AGENTS.md", "Codex CLI, OpenCode, Grok Build and Kimi Code CLI"),
+                     ("GEMINI.md", "Gemini CLI"))
 # The skill that is `/jinx`, in the folder each group of editors reads. A skill is a SKILL.md that the model of the editor
-# loads by its name when the rules (or the person) tell it to. OpenCode reads both folders and takes the second.
+# loads by its name when the rules (or the person) tell it to. OpenCode reads both folders and takes the second; so does
+# Grok Build (its search tries `.agents` before `.claude`, and the first skill of a name is the one it keeps). Kimi Code CLI
+# reads `.agents/skills` (and its own `.kimi-code/skills`), not `.claude/skills`.
 CLAUDE_SKILL = ".claude/skills/jinx/SKILL.md"
 AGENTS_SKILL = ".agents/skills/jinx/SKILL.md"
-SKILLS = ((CLAUDE_SKILL, "Claude Code"), (AGENTS_SKILL, "Gemini CLI, Codex CLI and OpenCode"))
+SKILLS = ((CLAUDE_SKILL, "Claude Code"), (AGENTS_SKILL, "Gemini CLI, Codex CLI, OpenCode, Grok Build and Kimi Code CLI"))
 # Where the release's text is left when the file in the project is the person's by now (a file of the project is never replaced then).
 _NEW_NAME = {".gitignore": "gitignore.new", CLAUDE_SKILL: "jinx-skill-claude.md.new", AGENTS_SKILL: "jinx-skill-agents.md.new"}
-_EDITORS = ("claude", "codex", "opencode", "gemini")        # how the editors are started
+_EDITORS = ("claude", "codex", "opencode", "gemini", "grok", "kimi")        # how the editors are started
 # The text of the license, English first (it is the one that governs). A project that is given the runtime is given it with this.
 LICENSE_FILES = ("LICENSE.md", "LICENSE_RU.md", "LICENSE_ZH.md")
 
@@ -141,12 +146,16 @@ def claude_skill(python: str = "python", shell: str = "bash") -> str:
 
 
 def agents_skill(python: str = "python") -> str:
-    """The skill of the other editors (Gemini CLI, Codex CLI, OpenCode): they load its text into the conversation and have no
-    way to run a command for it, so it says which command the model is to run, and the model runs it with its shell tool."""
+    """The skill of the other editors (Gemini CLI, Codex CLI, OpenCode, Grok Build, Kimi Code CLI): they load its text into the
+    conversation and have no way to run a command for it, so it says which command the model is to run, and the model runs it
+    with its shell tool."""
     return ("---\nname: jinx\ndescription: %s\n---\n" % _SKILL_DESCRIPTION
             + "`/jinx <arguments>` means running this in the project folder, with your shell tool:\n\n"
               "    %s .agent/jinx.py <arguments>\n\n" % python
-            + "Give the user's message as one quoted argument, exactly as written. What the command prints is what `/jinx` "
+            + "The arguments are options of JINX (`--session <id>`, `--peek <id>`, `--join <id>`, `--export`: pass them as they "
+              "are) or the user's message. Give the message as ONE argument, exactly as written: in single quotes, so that the "
+              "shell reads nothing in it (a `'` inside it is written `'\\''` in bash and `''` in PowerShell), and after `--` "
+              "when it begins with `-`. What the command prints is what `/jinx` "
               "returns: its `[JINX_SESSION]` line has the `resume` command, which you run again and again until the run ends. "
               "Where the rules of the project say `[JINX_EXIT] <code>`, that is the exit code of this command when it is not 0 "
               "(1: the launch or the run failed; 2: the run reached its limit of rounds). The instruction file of the project "
@@ -221,7 +230,17 @@ def _load_manifest(agent: Path) -> Dict[str, Dict[str, str]]:
         part = data.get(key) if isinstance(data, dict) else None
         if isinstance(part, dict):
             out[key] = {str(k): str(v) for k, v in part.items()}
+    # The manifest is a file of the project, and a project is not always one's own. An install deletes the files
+    # it lists that a release no longer has, so a path that leads out of .agent/ (``../..``, absolute) is never
+    # one that it wrote: it is dropped here, before anything is done with it.
+    out["files"] = {rel: digest_ for rel, digest_ in out["files"].items() if _stays_under_agent(rel)}
     return out
+
+
+def _stays_under_agent(rel: str) -> bool:
+    """``rel`` is a relative path that stays below the folder it is taken from: no ``..``, no root, no drive."""
+    path = Path(rel.replace("\\", "/"))
+    return bool(path.parts) and not path.is_absolute() and ".." not in path.parts and ":" not in path.parts[0]
 
 
 def _active_runs(agent: Path) -> List[str]:
@@ -486,8 +505,9 @@ def install(root: Path, force: bool = False, shell: Optional[str] = None, out=pr
             elif (agent / new_name).exists():
                 (agent / new_name).unlink()
         if "AGENTS.md" in created and _has_own_text(root / "CLAUDE.md"):
-            out("                 OpenCode reads AGENTS.md instead of CLAUDE.md where there is one: it sees the project's own "
-                "rules in CLAUDE.md only if they are in AGENTS.md too (or one of the two files is a link to the other)")
+            out("                 OpenCode reads AGENTS.md instead of CLAUDE.md where there is one, and Kimi Code CLI reads AGENTS.md "
+                "only: they see the project's own rules in CLAUDE.md only if they are in AGENTS.md too (or one of the two "
+                "files is a link to the other)")
         python = (_interpreters(root) or ["python"])[0]
         shell = shell or _chosen_shell(root)
         for name, editors in SKILLS:
@@ -613,7 +633,8 @@ def check(root: Path, kit: Optional[Kit] = None) -> List[Check]:
     editors = [e for e in _EDITORS if shutil.which(e)]
     out.append(("ok" if editors else "warn", "an editor is on PATH",
                 ", ".join(editors) if editors else "JINX needs an editor to drive it: Claude Code (`claude`), Codex CLI "
-                                                   "(`codex`), OpenCode (`opencode`) or Gemini CLI (`gemini`)"))
+                                                   "(`codex`), OpenCode (`opencode`), Gemini CLI (`gemini`), Grok Build "
+                                                   "(`grok`) or Kimi Code CLI (`kimi`)"))
     return out
 
 
@@ -692,14 +713,19 @@ def report(checks: Sequence[Check], out=print) -> bool:
     if failed:
         out(f"{len(failed)} problem(s) above. Fix them and run `jinx doctor` again.")
         return False
-    out("JINX is ready. Open this folder in your editor (Claude Code, Codex CLI, OpenCode or Gemini CLI) and give it a task: "
-        "every message goes through JINX.")
+    out("JINX is ready. Open this folder in your editor (Claude Code, Codex CLI, OpenCode, Gemini CLI, Grok Build or Kimi Code "
+        "CLI) and give it a task: every message goes through JINX.")
     return True
 
 
 # --------------------------------------------------------------------------- command line
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """The ``jinx`` command (``install``, ``doctor``). Returns the exit code."""
+    for stream in (sys.stdout, sys.stderr):                 # a pipe is cp1251 or cp1252 on Windows: a name must not end the run
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
     args_in = list(sys.argv[1:] if argv is None else argv)
     if args_in and args_in[0].lower() in ("install", "init", "doctor"):       # `jinx Install` is `jinx install`; `init` is its old name
         args_in[0] = {"init": "install"}.get(args_in[0].lower(), args_in[0].lower())

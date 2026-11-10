@@ -11,6 +11,7 @@ import logging
 import os
 from pathlib import Path
 import sys
+import time
 from typing import Any, Dict, List, Optional, Union
 import yaml
 from pydantic import BaseModel, Field
@@ -61,6 +62,23 @@ def _resolve_jinx_path() -> Path:
 JINX_PATH: Path = _resolve_jinx_path()
 
 
+def replace_file(src: Path, dst: Path) -> None:
+    """``os.replace`` that waits where Windows says no for a moment.
+
+    A virus scanner, an indexer or an editor that has ``dst`` open for a few milliseconds makes Windows refuse the
+    replacement with PermissionError (WinError 5 or 32); a second try a moment later goes through. On other systems a
+    PermissionError is a real one and is raised at once. (``mail.atomic_write`` does the same for its files.)
+    """
+    for attempt in range(25):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt >= 24:
+                raise
+            time.sleep(0.01 * (attempt + 1))
+
+
 def atomic_write_yaml(path: Path, data: Any, width: int = sys.maxsize) -> None:
     """Atomically writes data to a YAML file via a temporary staging file.
 
@@ -84,9 +102,9 @@ def atomic_write_yaml(path: Path, data: Any, width: int = sys.maxsize) -> None:
         clean_yaml = buf.getvalue()
         if clean_yaml and not clean_yaml.endswith('\n'):
             clean_yaml += '\n'
-        with open(temp_path, "w", encoding="utf-8") as f:
+        with open(temp_path, "w", encoding="utf-8", newline="\n") as f:      # newline: no CR added on Windows
             f.write(clean_yaml)
-        temp_path.replace(path)
+        replace_file(temp_path, path)
     except Exception as e:
         logger.error("Atomic write failed on %s: %s", path, e, exc_info=True)
         try:

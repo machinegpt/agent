@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.3.0--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.3.1--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-File_Based_IPC_State_Machine-0D9488?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-ReEntrant_Single_Step_Process-059669?style=for-the-badge" alt="Integration Badge" />
   <img src="https://img.shields.io/badge/license-JINX_EULA-B45309?style=for-the-badge" alt="License Badge" />
@@ -25,18 +25,18 @@ pip install git+https://github.com/machinegpt/agent     # 1. get the `jinx` comm
 jinx install                                             # 2. run it in your project's folder
 ```
 
-You need Python 3.10+, git and an editor: [Claude Code](https://claude.com/product/claude-code), Codex CLI, OpenCode or Gemini CLI. Then open the folder with the editor and write your request as you always do. You never type `/jinx`: the rules that `jinx install` put into the editor's instruction file tell the editor to call its command `/jinx` for every message (§8), and it does.
+You need Python 3.10+, git and an editor: [Claude Code](https://claude.com/product/claude-code), Codex CLI, OpenCode, Gemini CLI, Grok Build or Kimi Code CLI. Then open the folder with the editor and write your request as you always do. You never type `/jinx`: the rules that `jinx install` put into the editor's instruction file tell the editor to call its command `/jinx` for every message (§8), and it does.
 
 `jinx install` sets up these things, then runs `jinx doctor`:
 
 | Where | What |
 | :--- | :--- |
 | `.agent/` | the runtime (`jinx.py` and `src/jinx/`) and the text of the JINX license (`LICENSE.md` and its translations); JINX's run state, round files and lessons appear here as it works |
-| `CLAUDE.md`, `AGENTS.md`, `GEMINI.md` | the JINX rules, one instruction file per editor (Claude Code reads `CLAUDE.md`, Codex CLI and OpenCode read `AGENTS.md`, Gemini CLI reads `GEMINI.md`), between `<!-- JINX:BEGIN … -->` and `<!-- JINX:END -->`; the text around them stays yours |
-| `.claude/skills/jinx/`, `.agents/skills/jinx/` | the command `/jinx`: a skill (`SKILL.md`) that the model of the editor calls by name. Claude Code reads the first folder; Gemini CLI, Codex CLI and OpenCode read the second |
+| `CLAUDE.md`, `AGENTS.md`, `GEMINI.md` | the JINX rules, one instruction file per editor (Claude Code reads `CLAUDE.md`; Codex CLI, OpenCode, Grok Build and Kimi Code CLI read `AGENTS.md`; Gemini CLI reads `GEMINI.md`), between `<!-- JINX:BEGIN … -->` and `<!-- JINX:END -->`; the text around them stays yours |
+| `.claude/skills/jinx/`, `.agents/skills/jinx/` | the command `/jinx`: a skill (`SKILL.md`) that the model of the editor calls by name. Claude Code reads the first folder; Gemini CLI, Codex CLI, OpenCode, Grok Build and Kimi Code CLI read the second |
 | `.gitignore` | the lines that keep the run state out of git, between `# >>> JINX >>>` and `# <<< JINX <<<` |
 
-**What `/jinx` is.** It is the editor's own command, and the editor calls it, not you. It takes your message as it was written and gives back what JINX printed. In Claude Code the skill runs the runtime itself: the model writes no shell command, and your message needs no quoting (quotes, `$`, backticks and any language arrive as they are). Codex CLI, OpenCode and Gemini CLI cannot run a command for a skill, so their copy of it tells the model which command to run.
+**What `/jinx` is.** It is the editor's own command, and the editor calls it, not you. It takes your message as it was written and gives back what JINX printed. In Claude Code the skill runs the runtime itself: the model writes no shell command, and your message needs no quoting (quotes, `$`, backticks and any language arrive as they are). Codex CLI, OpenCode, Gemini CLI, Grok Build and Kimi Code CLI cannot run a command for a skill, so their copy of it tells the model which command to run (and how to quote your message for bash or PowerShell).
 
 `jinx doctor` can be run at any time: it checks Python, `pyyaml` and `pydantic`, that the runtime loads and that `/jinx` reaches it, that the rules and the skill are in place for each editor, git and the editors on `PATH`, and says what to fix. `jinx install` ends with the same report (`JINX is ready`).
 
@@ -1014,7 +1014,7 @@ The orchestration host manages:
 3. Executing JINX declarative directives for file read, write, and system command execution.
 4. Feeding results back into the JINX cognitive loop via the File-IPC mechanism.
 
-The block that `jinx install` puts into `CLAUDE.md` (and into `AGENTS.md` and `GEMINI.md`, for Codex CLI, OpenCode and Gemini CLI; the same block is in the `CLAUDE.md`, `AGENTS.md` and `GEMINI.md` of this repository) is configured to automatically and unconditionally route all user messages, greetings, and tasks through JINX to ensure the automated orchestration loop works seamlessly. The editor calls JINX by its command `/jinx`, a skill that `jinx install` writes to `.claude/skills/jinx/` and `.agents/skills/jinx/`. If you prefer to invoke JINX manually, edit the first sentence of that block to restrict it to explicit requests only: `jinx install` keeps a block you edited (the release's own text goes to `.agent/CLAUDE.md.new`).
+The block that `jinx install` puts into `CLAUDE.md` (and into `AGENTS.md` and `GEMINI.md`, for Codex CLI, OpenCode, Grok Build, Kimi Code CLI and Gemini CLI; the same block is in the `CLAUDE.md`, `AGENTS.md` and `GEMINI.md` of this repository) is configured to automatically and unconditionally route all user messages, greetings, and tasks through JINX to ensure the automated orchestration loop works seamlessly. The editor calls JINX by its command `/jinx`, a skill that `jinx install` writes to `.claude/skills/jinx/` and `.agents/skills/jinx/`. If you prefer to invoke JINX manually, edit the first sentence of that block to restrict it to explicit requests only: `jinx install` keeps a block you edited (the release's own text goes to `.agent/CLAUDE.md.new`).
 
 ### Security and Interactive Execution Authorization
 
