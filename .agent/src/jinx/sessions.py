@@ -252,9 +252,10 @@ def _join(office: mail.Office, host: str, task: Optional[str], session_id: Optio
     if session_id and (office.sessions_dir / session_id).exists():
         raise SessionError(f"session {session_id} already exists; leave --session out to start a new one")
     text = " ".join((task or "").split()) or f"Help session {host}: {hcard.get('task') or ''}".strip()
-    scope.admit(office, scope.cards_of(office), text, None)      # a helper is no child, but it is one more open session
-    sess = office.new_session(text, sid=session_id or None, editor=os.environ.get("JINX_EDITOR", ""),
-                              lease_s=_lease(), room=hcard.get("room") or host, who=who)
+    with scope.admission(office):
+        scope.admit(office, scope.cards_of(office), text, None)  # a helper is no child, but it is one more open session
+        sess = office.new_session(text, sid=session_id or None, editor=os.environ.get("JINX_EDITOR", ""),
+                                  lease_s=_lease(), room=hcard.get("room") or host, who=who)
     ctx = Context(office, sess)
     _seed(ctx, office)
     try:
@@ -327,9 +328,10 @@ def open_session(task: Optional[str], session_id: Optional[str], join: Optional[
                         f"by leaving --session out")
                 logger.info("JINX_SESSION=%s names a session that exists; the task starts a new one", session_id)
                 session_id = None
-            extra = _lineage(office, task, parent)
-            sess = office.new_session(task, sid=session_id or None, editor=os.environ.get("JINX_EDITOR", ""),
-                                      lease_s=_lease(), who=who, extra=extra)
+            with scope.admission(office):        # launches that start together are counted and given a card one by one
+                extra = _lineage(office, task, parent)
+                sess = office.new_session(task, sid=session_id or None, editor=os.environ.get("JINX_EDITOR", ""),
+                                          lease_s=_lease(), who=who, extra=extra)
             ctx = Context(office, sess)
             _hold(ctx, hold)
             _seed(ctx, office)
@@ -351,12 +353,25 @@ def open_session(task: Optional[str], session_id: Optional[str], join: Optional[
 
 
 def _require_open(ctx: Context) -> None:
-    """A session that is closed (finished, cancelled with its parent, closed by hand) cannot be resumed."""
+    """A session that is closed (finished, cancelled with its parent, closed by hand) cannot be resumed.
+
+    Closed is closed, whatever files are left: a run state that outlived the close (the process was killed between
+    marking the card and removing its files) must not bring the session back, so it is removed here instead of
+    being resumed. The same goes for a session whose parent run is closed: it is closed now, with the runs inside it
+    (``scope.orphan_close``), which is how a child that a call was advancing when its parent ended finds out.
+    """
     card = ctx.session.card()
-    if card.get("state") == "done" and not ctx.run_state.exists():
-        raise scope.Closed(
-            f"session {ctx.sid} is closed ({scope.how_ended(card)}), so there is nothing to resume. "
-            f"`{ctx.office.cmd} --peek {ctx.sid}` shows what it did; start a new session with a task.")
+    ended = {k: card.get(k) for k in ("ended", "closed_by")}
+    if card.get("state") != "done":
+        orphaned = scope.orphan_close(ctx.office, ctx.sid, card)
+        if orphaned is None:
+            return
+        ended = orphaned
+    else:
+        scope.discard_files(ctx.office, ctx.sid)
+    raise scope.Closed(
+        f"session {ctx.sid} is closed ({scope.how_ended(ended)}), so there is nothing to resume. "
+        f"`{ctx.office.cmd} --peek {ctx.sid}` shows what it did; start a new session with a task.")
 
 
 def _finish(ctx: Context, who: List[str], fresh: bool) -> Context:
@@ -445,18 +460,35 @@ def mark_waiting(ctx: Context, kind: str) -> None:
         logger.warning("Could not record what session %s waits for: %s", ctx.sid, e)
 
 
+def declare_scope(ctx: Context, protocol: Any) -> None:
+    """Puts what the model asked for in ``protocol.scope`` on the card, where the launches of the runs inside this one read it.
+
+    The model sizes its rounds in its state block, and nobody has to set the room it needs for runs inside it either
+    (``scope.sized``). A run that never asks has no ``scope`` in its manifest and costs nothing here; a failure to write
+    is only logged, and the defaults go on applying.
+    """
+    try:
+        if not isinstance(protocol, dict) or "scope" not in protocol:
+            return
+        sized = scope.sized(protocol)
+        if sized != (ctx.session.card().get("limits") or {}):
+            ctx.session.beat(limits=sized)
+    except (OSError, ValueError, TypeError, mail.MailError) as e:
+        logger.warning("Could not record the room session %s asked for: %s", ctx.sid, e)
+
+
 def hold_exit(ctx: Context) -> Optional[str]:
     """The note that holds back the end of a run while runs it started are still open, or None when it may end.
 
     A run that ends with open runs inside it leaves them with nobody to report to. It is held back for at most
-    ``JINX_EXIT_HOLDS`` rounds (counted on the card, so the count survives the process): the model gets one line
+    ``scope.EXIT_HOLDS`` rounds (counted on the card, so the count survives the process): the model gets one line
     naming the open runs, and in the next round can take them to their end. After that the run ends anyway and
     :func:`end` closes whatever is left, so a child that nobody drives cannot keep its parent from finishing.
+    The caller holds nothing back in the last round the loop has (there is none left to read the note in).
     """
     try:
-        cap = scope.exit_holds()
         held = int(ctx.session.card().get("exit_held") or 0)
-        if held >= cap:
+        if held >= scope.EXIT_HOLDS:
             return None
         kids = scope.children(ctx.office, scope.cards_of(ctx.office), ctx.sid)
         if not kids:

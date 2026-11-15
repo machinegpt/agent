@@ -1943,6 +1943,9 @@ def _handle_llm_response(
         # give the file leases back. A block that was rejected says nothing about this round.
         said = scores if closed["applied"] else []
         sessions.round_closed(SESSION, rnd, _round_summary(said), _round_evidence(said))
+        if closed["applied"]:
+            # The room the model asks for the runs inside this one (protocol.scope, as it sizes its rounds).
+            sessions.declare_scope(SESSION, jinx.get("protocol"))
     if update:
         outcome: Dict[str, Any] = closed["outcome"]
 
@@ -1974,8 +1977,9 @@ def _handle_llm_response(
             if verdict == "exit":
                 # Runs that this one started and that are still open keep it from ending, for a bounded number
                 # of rounds: the model is told which in one line (scope.py). After that it ends, and they are
-                # closed with it.
-                held = sessions.hold_exit(SESSION) if SESSION is not None else None
+                # closed with it. Not when no round is left to read the line in: the run would end as a hard
+                # cap (exit 2) although it did what it was asked, and an exit has to stay reachable.
+                held = sessions.hold_exit(SESSION) if SESSION is not None and rnd + 1 < HARD_CAP else None
                 if held is None:
                     print("[JINX_COMPLETE] Task resolved successfully!", flush=True)
                     _finish_run("exit")

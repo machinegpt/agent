@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/JINX-Enterprise_Agent_Runtime-0F172A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsOCA0IDgtNE0yIDEybDggNCA4LTQiLz48L3N2Zz4=" alt="JINX Badge" />
-  <img src="https://img.shields.io/badge/version-1.3.1--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
+  <img src="https://img.shields.io/badge/version-1.3.2--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-File_Based_IPC_State_Machine-0D9488?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-ReEntrant_Single_Step_Process-059669?style=for-the-badge" alt="Integration Badge" />
   <img src="https://img.shields.io/badge/license-JINX_EULA-B45309?style=for-the-badge" alt="License Badge" />
@@ -291,8 +291,9 @@ history:                       # 最近消息的有界窗口
 | `.agent/ipc/` 下的路径 | 用途 |
 | :--- | :--- |
 | `sessions/<sid>/jinx_request.yaml`、`jinx_response.yaml`、`jinx_run_state.yaml`、`JINX.yaml` | §1.1 与 §3 中的文件，每个会话一套。若 `.agent/JINX.yaml` 存在，新会话从它开始 |
-| `sessions/<sid>/card.yaml` | 在线卡片：任务、房间（团队）、轮次、状态、心跳、持有的路径、上一轮尝试的内容（`doing`）、最近几轮改动的文件（`touched`）、调用它的编辑器的指纹（`who`）、可选的 `JINX_EDITOR` 标签，是否有 shell 批次在运行（`shell`、`shell_ended`）、会话在等待什么（`waiting`）、它是在哪个运行之内启动的（`parent`、`root`、`depth`、`via`），以及它是如何结束的（`ended`、`closed_by`、`closed_at`） |
+| `sessions/<sid>/card.yaml` | 在线卡片：任务、房间（团队）、轮次、状态、心跳、持有的路径、上一轮尝试的内容（`doing`）、最近几轮改动的文件（`touched`）、调用它的编辑器的指纹（`who`）、可选的 `JINX_EDITOR` 标签，是否有 shell 批次在运行（`shell`、`shell_ended`）、会话在等待什么（`waiting`）、它是在哪个运行之内启动的（`parent`、`root`、`depth`、`via`）、模型为其内部的运行申请的空间（`limits`），以及它是如何结束的（`ended`、`closed_by`、`closed_at`） |
 | `sessions/<sid>/.step.lock` | 一次调用在推进该会话期间持有的操作系统锁，使两次调用不会在同一时刻推进它（见「嵌套运行」） |
+| `sessions/.admit.lock` | 一把操作系统锁：启动请求在它之下被计入上限并领到自己的卡片，因此同时启动的请求会被逐个计数（见「嵌套运行」） |
 | `sessions/<sid>/mail.yaml` | 已向模型展示过的内容（已显示的邮件、上次显示时的看板）以及进行中的草稿 |
 | `sessions/<sid>/round.yaml` | 进行中的轮次：会话取得每个文件时该文件的内容（`--peek` 以此为比较基准），以及其 shell 批次的状态 |
 | `sessions/<sid>/inbox/{new,cur,bad}/` | 发给该会话的邮件：多个写入者，一个读取者 |
@@ -327,15 +328,15 @@ mail:
 
 **嵌套运行。** 一次运行的工具调用可以再次启动 JINX：任务要求运行一个本身由 `/jinx` 驱动的程序，或者模型把一部分工作交给一个嵌套运行。过去文件里没有任何东西说明第二次运行位于第一次之内、两者是否仍然打开、由谁来关闭它们：两者都只是“未完成”的会话，一次运行可以无休止地再次启动自己，而一次结束的运行会让它启动的那些运行无人可报告。现在会话有了由运行时维护并强制执行的作用域：从第一次调用起保持打开，直到被关闭——只关闭一次，并记录是如何、由谁关闭的；在另一个运行之内启动的运行会被记录为它的子运行。这一切都存在于卡片和代码里；只有「代价」一项中所述的两种情形，模型才会读到相关内容。
 
-* **打开与关闭。** 会话在租约期内有消息时为打开（open），心跳过期后为失联（lost），卡片记载它已结束时为已关闭（closed），其目录被归档后为已消失（gone）。卡片记录它如何结束（`ended`：`complete`、`deadlock`、`hard_cap`、`aborted`、`cancelled`、`orphaned` 或 `lost`）、由谁结束（`closed_by`：`self`、`parent:<sid>`、`user` 或 `sweep`）以及何时结束（`closed_at`）。已关闭的会话不能再恢复：它的请求、响应和运行状态文件会被删除，`--session <sid>` 会打印 `[JINX_CLOSED] …` 并以退出码 `1` 结束。`--peek` 和看板会说明它是如何结束的（`s4700 orphaned (in s47fd)`）。
-* **溯源。** 在另一个运行之内启动的运行，卡片上从第一刻起就带有 `parent`、`root`、`depth`（子运行为 1）和 `via`，它的 `[JINX_SESSION]` 行以 `parent=<sid> depth=<n>` 结尾。JINX 只在证据确凿时才会自己找出父运行：恰好有一个存活的会话在等待工具批次（卡片上 `waiting: tool_calls`；批次从它的请求文件读取，宿主在执行批次前删除了请求时则从运行状态读取），且该批次里的某个 `bash_exec` 既启动了 JINX（`jinx.py`、`jinx-cli`、`jinx.cli`），又包含新任务的字词（只比较字母和数字，忽略大小写，至少 12 个）。出现两个候选、任务太短而无法与其他文本区分，或脚本中看不到该任务时，都不会得到父运行：该运行是一个普通会话，下面的全项目上限仍然会把它计算在内。知道得更清楚的调用方可以直接说明：`--parent <sid>`（该会话不能已关闭），或在命令的环境中设置 `JINX_PARENT=<sid>`；后者只在该会话存活且正在等待它的工具批次时才算数，因此遗留在 shell 中的值不会关联任何东西。
-* **上限。** 启动请求在写入任何内容之前先被检查。出现以下情形时会被拒绝：嵌套深度会超过 `JINX_MAX_DEPTH`（3）层；它的任务与某个祖先的任务相同（会无休止地再次启动自己）；它的父运行已经有 `JINX_MAX_CHILDREN`（4）个打开的子运行；以及（对任何启动都适用）已有 `JINX_MAX_SESSIONS`（12）个会话处于打开状态（租约已过期的会话不计）。被拒绝的启动不创建任何东西，只打印一行 `[JINX_REFUSED] <问题所在，以及应改做什么>`，没有 `[JINX_SESSION]` 行，并以退出码 `3` 结束。这段文字会作为模型自己那条命令的输出到达模型——它正好能据此行动。
+* **打开与关闭。** 会话在租约期内有消息时为打开（open），心跳过期后为失联（lost），卡片记载它已结束时为已关闭（closed），其目录被归档后为已消失（gone）。卡片记录它如何结束（`ended`：`complete`、`deadlock`、`hard_cap`、`aborted`、`cancelled`、`orphaned` 或 `lost`）、由谁结束（`closed_by`：`self`、`parent:<sid>`、`user` 或 `sweep`）以及何时结束（`closed_at`）。已关闭的会话不能再恢复，无论它还剩下什么文件（进程在标记卡片与删除文件之间被杀死，也不会让它复活）：它的请求、响应和运行状态文件会被删除，`--session <sid>` 会打印 `[JINX_CLOSED] …` 并以退出码 `1` 结束。`--peek` 和看板会说明它是如何结束的（`s4700 orphaned (in s47fd)`）。
+* **溯源。** 在另一个运行之内启动的运行，卡片上从第一刻起就带有 `parent`、`root`、`depth`（子运行为 1）和 `via`，它的 `[JINX_SESSION]` 行以 `parent=<sid> depth=<n>` 结尾。JINX 只在证据确凿时才会自己找出父运行：恰好有一个存活的会话在等待工具批次（卡片上 `waiting: tool_calls`；批次从它的请求文件读取，宿主在执行批次前删除了请求时则从运行状态读取），且该批次里的某个 `bash_exec` 既启动了 JINX（`jinx.py`、`jinx-cli`、`jinx.cli`），又包含新任务的字词（只比较字母和数字，忽略大小写，至少 12 个）。出现两个候选、任务太短而无法与其他文本区分，或脚本中看不到该任务时，都不会得到父运行：该运行是一个普通会话，下面的全项目上限仍然会把它计算在内。字词是在命令的整个脚本里查找的，而不只是启动命令的参数，因此脚本在自己的变量里保存的任务也能找到；代价是，若脚本在另一个任务的启动旁边恰好有同样的字词，它可能被当作那次启动的父运行（仅当它是唯一的候选时）。知道得更清楚的调用方可以直接说明：`--parent <sid>`（该会话不能已关闭），或在命令的环境中设置 `JINX_PARENT=<sid>`；后者只在该会话存活且正在等待它的工具批次时才算数，因此遗留在 shell 中的值不会关联任何东西。
+* **上限。** 启动请求在写入任何内容之前先被检查。出现以下情形时会被拒绝：它嵌套得比允许的更深（三层，除非它所在的运行或更上层的运行申请了别的数字）；它的任务与某个祖先的任务相同（会无休止地再次启动自己）；它的父运行已经有了被允许的那么多个打开的子运行（四个，除非它申请了别的数字）；以及（对任何启动都适用）项目中打开的会话太多（租约已过期的会话不计）：这是针对无人能关联的递归的兜底，数量是父运行所允许的每个子运行三个会话，且不少于十二个。被拒绝的启动不创建任何东西，只打印一行 `[JINX_REFUSED] <问题所在，以及应改做什么>`，没有 `[JINX_SESSION]` 行，并以退出码 `3` 结束。这段文字会作为模型自己那条命令的输出到达模型——它正好能据此行动。**这些数字不由任何人设置。** 模型像估算轮次（`protocol.loop.min`，§2）那样估算自己需要多少空间：状态块可以带有 `protocol: {scope: {children: <n>, depth: <n>}}`。只有整个状态块通过校验之后才会读取它；它被记在会话的卡片上（`limits`），该运行内部的启动就按它来检查。代码为它设定边界（`children` 为 1 到 8，`depth` 为 1 到 5；不是普通整数的值会被忽略），因此要求“不设上限”的模型只会得到最高值，不会更多；新运行周围有多个运行申请了深度时，取最低的那个。没有任何提示词说明这些：什么都不申请的运行使用默认值，被拒绝的模型会在拒绝文本里读到如何申请更多（只有申请确实有用时才会有这条提示：当前上限是默认值或父运行自己申请的，并且低于最高值）。它没有对应的环境变量。同时启动的请求（一个在后台启动多个的批次）在 `sessions/.admit.lock` 之下被逐个计数，免得有的请求因为其余请求还没有卡片而越过上限。
 * **一次只走一步。** 一次调用在向其会话写入任何内容之前获取操作系统锁 `sessions/<sid>/.step.lock`，并在推进会话期间持有它，因此两次调用（同一会话被恢复了两次，或某批次中的命令恢复了正在为它运行的会话）不会都读取同一个运行状态、各写一个后继状态。第二次调用打印 `[JINX_BUSY] …`，什么都不改，并以退出码 `3` 结束。持有者终止时由系统释放该锁；根本不可能存在的锁不算被任何人持有：调用会警告并继续。
-* **结束。** 一个运行在它启动的运行仍然打开时已准备好退出，最多会被拦下 `JINX_EXIT_HOLDS`（1）轮（计数记在它的卡片上），下一轮的提示词带有一行：`[scope] Runs you started are still open: s4700 ("Create file child_out.txt con…"). Take each to its end (/jinx --session <id>) before you finish: what is open when this run ends is closed with it.` 之后（或在 `JINX_EXIT_HOLDS=0` 时立即）运行结束，并关闭其内部仍然打开的运行，以及这些运行之内的运行，最深的先关：运行已完成时为 `orphaned`，被中途截断（中断、信号、错误）时为 `cancelled`。它们的请求、响应和运行状态文件被删除，租约被释放。已被推进到结束的子运行不会被动；此刻有某次调用正在推进的子运行不会被切断：它会被记入日志，若之后无人驱动它，下面的清扫会把它关闭。
-* **被放弃的运行。** 子运行在 `max(1 小时, 四个租约期)` 内无人驱动，而它所在的运行也已不活着（已关闭、失联或消失）时，会在下一个会话启动时由 `sweep` 以 `lost` 关闭。不是在另一个运行之内启动的会话不会被清扫：它照旧在七天后归档。
+* **结束。** 一个运行在它启动的运行仍然打开时已准备好退出，会被拦下一轮（计数记在它的卡片上；循环的最后一轮不拦，使退出始终可达），下一轮的提示词带有一行：`[scope] Runs you started are still open: s4700 ("Create file child_out.txt con…"). Take each to its end (/jinx --session <id>) before you finish: what is open when this run ends is closed with it.` 之后运行结束，并关闭其内部仍然打开的运行，以及这些运行之内的运行，最深的先关：运行已完成时为 `orphaned`，被中途截断（中断、信号、错误）时为 `cancelled`。它们的请求、响应和运行状态文件被删除，租约被释放。已被推进到结束的子运行不会被动。此刻有某次调用正在推进的子运行不会在一步中间被切断，在其父运行关闭前一刻才被接纳的子运行也已经没有可以汇报的上层运行：它们各自会在下一次调用时发现这一点，在那里与其余的一样以 `orphaned` 或 `cancelled` 结束（连同其内部的运行），并打印 `[JINX_CLOSED] …`（退出码 `1`）。若之后无人驱动它，下面的清扫会把它关闭。
+* **被放弃的运行。** 子运行在 `max(1 小时, 四个租约期)` 内无人驱动，而它所在的运行也已不活着（已关闭、失联或消失）时，会在下一个会话启动时由 `sweep` 以 `lost` 关闭；每个候选在关闭前都会在它自己的步骤锁之下被再问一次，因此自名单列出之后被驱动过（或其父运行有过动静）的子运行不会被动。不是在另一个运行之内启动的会话不会被清扫：它照旧在七天后归档。
 * **`--close`。** `/jinx --close <sid> [<sid> ...] [--force]` 关闭指定的会话及其内部的运行，不运行任何东西（`cancelled`，由 `user` 关闭），用于已经没有人来结束它们的情形。仍然活着、或内部有活着的运行的会话需要 `--force`，免得误敲的命令把运行从它的编辑器手里夺走；已失联的则不需要。在 `JINX_SESSIONS=0` 且不给 id 时，它关闭那唯一的共享运行。它打印 `[JINX_CLOSED] id=<sid> ended=cancelled [with=<ids>]` 并以 `0` 退出；被拒绝，或有会话正被推进而无法关闭（`busy=<ids>`）时，以 `1` 退出。与 `--peek`、`--export` 一样，它先于 self-patch 预检、也先于导入运行器而被处理。
 * **共享文件。** 在 `JINX_SESSIONS=0` 下，由某个工具批次启动的运行会替换正在等待这个批次的运行，因为两者使用同一套文件。当共享文件中的运行正在等待一个不足一个租约期之前发出的工具批次时，新任务会被拒绝（`[JINX_REFUSED]`，退出码 `3`）；`--close --force` 会结束该运行，使任务得以启动（拒绝信息会指出这一点；通过 `/jinx` 输入时写法相同；与任务一起作为参数给出的 `--force` 则一步替换它，一如既往），更早的运行不经询问就被替换，恢复调用则永远不会被拒绝。嵌套运行需要会话，而会话是默认开启的。
-* **代价。** 对于内部没有运行的会话，系统提示词、摘要和任何请求中都不会增加任何内容：它的请求与以前逐字节相同，额外的文件操作只是一把锁和卡片上的几个字段。模型只在两种情形下会读到作用域：上面那一行 `[scope]`，以及它自己那条被拒绝或遇忙的启动命令的输出。在有多个会话的项目里，看板还会标出父运行和子运行（`r3 parent …`、`r2 child …`），并写明从外部被关闭的会话是如何结束的（用 `s9c21 cancelled`、`orphaned` 或 `lost` 取代 `finished`；其他任何结束方式仍写作 `finished`）；单独运行的会话看不到其中任何一项。
+* **代价。** 对于内部没有运行的会话，系统提示词、摘要和任何请求中都不会增加任何内容：它的请求与以前逐字节相同，额外的文件操作只是一两把锁（会话的步骤锁，以及启动请求的准入锁）和卡片上的几个字段。模型只在两种情形下会读到作用域：上面那一行 `[scope]`，以及它自己那条被拒绝或遇忙的启动命令的输出；正是拒绝文本告诉它如何申请更多空间。在有多个会话的项目里，看板还会标出父运行和子运行（`r3 parent …`、`r2 child …`），并写明从外部被关闭的会话是如何结束的（用 `s9c21 cancelled`、`orphaned` 或 `lost` 取代 `finished`；其他任何结束方式仍写作 `finished`）；单独运行的会话看不到其中任何一项。
 
 **邮件。** 编辑器通过 `file_write` 把 YAML 草稿写入自己的 outbox 来发送消息（摘要中的 `use` 行指明了目录）：
 
@@ -396,7 +397,7 @@ evidence:                     # 仅包含模型自己对该轮所说的内容
 
 **Shell 命令。** `bash_exec` 会改动文件，却不说明改动了哪些。在每个包含 shell 命令的批次前后，运行器会比较工作树，并把新增的改动归到运行该命令的那一轮。当另一个会话的 shell 批次在时间上重叠时，只归属脚本中点名的文件，其余的列为 `shell_unattributed`。对另一个会话所持有的文件的改动，会给编辑器一条冲突提示，并给持有者一条 `conflict` 消息，纯追加（一行日志、一个列表项）除外，它不算冲突。
 
-**同步。** 邮件和租约只需要文件系统。文件先以隐藏的临时名称（`.<pid>.<random>.tmp`；超过十分钟的残留文件会被清扫）完整写入，再重命名或硬链接为最终名称，消息通过重命名被取走，因此没有任何进程会在等待期间持有锁。例外是两个共享文件，因为多个会话会就地更新它们：经验账本（`.agent/lessons.yaml`）和 self-patch 基线由操作系统文件锁（`flock`，Windows 上为 `msvcrt.locking`）保护，锁文件为 `.agent/lessons.yaml.lock` 和 `.agent/.selfpatch.lock`。持有者死亡时，系统会自动释放这种锁，因此不存在需要打破的陈旧锁。当另一个会话在整个超时时间内（账本为 5 秒，基线为 30 秒）一直持有它时，该周期会被跳过，绝不会在没有锁的情况下执行：该轮的经验更新不会被写入（不会丢失任何人的数据），self-patch 检查则顺延到下一轮。根本不可能存在的锁（文件系统不支持文件锁，或用户无法打开锁文件）不算“被别人持有”：JINX 会警告（每个进程、每个锁文件一次），然后像单个会话那样不带锁继续。会话的步骤锁（`sessions/<sid>/.step.lock`，在一次调用期间持有；见「嵌套运行」）属于同一类，处理方式也相同，只是遇到它被持有的调用不会等待：它会以 `[JINX_BUSY]` 停下。在没有硬链接的文件系统（某些网络共享和 FAT 共享）上，会用复制代替链接，此时租约代文件在一次小规模写入的时间内可能被读到写了一半的状态；读取者会把无法读取的代文件视为无人持有的租约。
+**同步。** 邮件和租约只需要文件系统。文件先以隐藏的临时名称（`.<pid>.<random>.tmp`；超过十分钟的残留文件会被清扫）完整写入，再重命名或硬链接为最终名称，消息通过重命名被取走，因此没有任何进程会在等待期间持有锁。例外是两个共享文件，因为多个会话会就地更新它们：经验账本（`.agent/lessons.yaml`）和 self-patch 基线由操作系统文件锁（`flock`，Windows 上为 `msvcrt.locking`）保护，锁文件为 `.agent/lessons.yaml.lock` 和 `.agent/.selfpatch.lock`。持有者死亡时，系统会自动释放这种锁，因此不存在需要打破的陈旧锁。当另一个会话在整个超时时间内（账本为 5 秒，基线为 30 秒）一直持有它时，该周期会被跳过，绝不会在没有锁的情况下执行：该轮的经验更新不会被写入（不会丢失任何人的数据），self-patch 检查则顺延到下一轮。根本不可能存在的锁（文件系统不支持文件锁，或用户无法打开锁文件）不算“被别人持有”：JINX 会警告（每个进程、每个锁文件一次），然后像单个会话那样不带锁继续。会话的步骤锁（`sessions/<sid>/.step.lock`，在一次调用期间持有；见「嵌套运行」）属于同一类，处理方式也相同，只是遇到它被持有的调用不会等待：它会以 `[JINX_BUSY]` 停下。会话文件夹的准入锁（`sessions/.admit.lock`，在启动请求被计入上限并领到卡片期间持有）也属同类：遇到它被持有的启动请求最多等待 10 秒轮到自己，之后不带锁继续，因为它从不会拦停一个启动请求。在没有硬链接的文件系统（某些网络共享和 FAT 共享）上，会用复制代替链接，此时租约代文件在一次小规模写入的时间内可能被读到写了一半的状态；读取者会把无法读取的代文件视为无人持有的租约。
 
 **已知限制。**
 * Shell 命令只会被*察觉*，不会被*阻止*：租约保护的是 `file_write`，而不是 `bash_exec`。两条 shell 命令（或一条 shell 命令和一次 `file_write`）在同一时刻重写同一个文件，可能丢失一次更新：后写入者胜出，与没有 JINX 时一样。这种重叠会被报告（冲突提示，以及轮次文件中的 `shell_unattributed`），但 JINX 无法找回丢失的文本。
@@ -404,7 +405,7 @@ evidence:                     # 仅包含模型自己对该轮所说的内容
 * JSON-RPC 传输（`--ipc rpc`）完全不使用会话（单进程、单次运行，与以前一样）；`JINX_SESSIONS` 对它没有影响，「嵌套运行」中的内容也都不适用于它。
 * 运行时无法区分同一编辑器进程中的子智能体（它们共用进程及其环境），因此每个子智能体都应继续使用各自的 `--session <id>`。若模型无视打印出的 `resume=` 命令、从这样的进程里发起不带参数的调用，当有两个这样的会话未完成时会被拒绝；只有一个时则会得到那一个。
 * 被放弃的会话（其编辑器已经放弃）在归档之前一直处于“未完成”状态，并使启动它的编辑器无法通过不带参数的调用被识别；它的 id 仍然有效。`--close <sid> --force` 会立即结束它；在另一个运行之内启动的运行会随其父运行一起关闭，或在长期无人驱动时以 `lost` 关闭（见「嵌套运行」）。
-* 嵌套运行只有在被明确告知（`--parent`、`JINX_PARENT`），或父运行待处理的批次里同时能看到 JINX 的启动和任务的字词时，才会关联到它的父运行。由脚本在运行时从变量或文件拼出来的启动两者都看不到，因此它只是一个普通会话：它计入 `JINX_MAX_SESSIONS`，`--close` 能结束它，但它不会随引发它的运行一起关闭，深度和循环检查也看不到它。为自己的目的启动 JINX 的脚本应当传入 `JINX_PARENT`。
+* 嵌套运行只有在被明确告知（`--parent`、`JINX_PARENT`），或父运行待处理的批次里同时能看到 JINX 的启动和任务的字词时，才会关联到它的父运行。由脚本在运行时从变量或文件拼出来的启动两者都看不到，因此它只是一个普通会话：它计入项目中打开会话数的上限，`--close` 能结束它，但它不会随引发它的运行一起关闭，深度和循环检查也看不到它。字词是在整个脚本里查找的，而不只是启动命令的参数（所以脚本在自己的变量里保存的任务也能找到），代价是：若脚本在另一个任务的启动旁边恰好有同样的字词，它可能被当作那次启动的父运行（仅当它是唯一的候选时）。为自己的目的启动 JINX 的脚本应当传入 `JINX_PARENT`；它先于任何猜测被采用。
 * 关闭作用域是记账，不是隔离：它删除该运行的文件并释放它的租约，但不会杀死该运行启动的进程（仍在执行的 shell 命令），它写下的文件也仍留在工作树中。步骤锁防止两次调用在同一时刻推进一个会话；它并不规定应由哪个编辑器来驱动，因此轮流操作同一个会话的两个编辑器仍会像以前一样互相回应对方的请求。
 * `--peek` 显示文本差异；二进制文件仅报告为已更改。进行中的轮次与会话取得每个文件时记录的状态进行比较，因此其间其他进程对该文件所做的事也会出现在比较中。
 * 租约只约束 JINX 会话。在 IDE 中编辑的人不会被租约拦住，而这类编辑在某一轮中造成的改动会被报告为 `includes_unrecorded`，而不是被隐藏。
@@ -472,7 +473,7 @@ flowchart LR
    * **硬上限**：迭代轮次总数被严格限制为 40（`HARD_CAP`）；达到后进程以状态码 `2` 退出，以防令牌消耗无度增长。
    * **工具深度上限**：单轮内最多串联 20 次工具调用（`TOOL_DEPTH_CAP`）。一旦突破，JINX 会注入恢复指令并发出一次 `tools: []` 的最终 `llm_generate`，强制要求输出状态块而非被截断。
 
-   `loop.min` 取自 `JINX.yaml` 中的 `protocol.loop.min`（默认 **10**），或由 `--min` 命令行参数覆盖；并且在两种传输方式（包括 JSON-RPC 循环）下都会在每一轮之后重新解析，因此模型输出的协议变更可以在会话中途即时生效 —— 但只能向上调整，详见下文。`protocol` 段只有在整个状态块通过校验之后才会合并进清单，而新任务会丢弃上一个任务中模型写入的估算值（人工配置的值会保留），因此为某个问题估出的轮数不会泄漏到下一个任务。
+   `loop.min` 取自 `JINX.yaml` 中的 `protocol.loop.min`（默认 **10**），或由 `--min` 命令行参数覆盖；并且在两种传输方式（包括 JSON-RPC 循环）下都会在每一轮之后重新解析，因此模型输出的协议变更可以在会话中途即时生效 —— 但只能向上调整，详见下文。`protocol` 段只有在整个状态块通过校验之后才会合并进清单，而新任务会丢弃上一个任务中模型写入的估算值（人工配置的值会保留），因此为某个问题估出的轮数不会泄漏到下一个任务。同一个段里还有模型估算的另一项：该运行内部的运行所需的空间（`protocol.scope`，见 §1.3「嵌套运行」）；它在同样的校验之后才被读取，也没有对应的环境变量。
 
    **自适应轮数。** 循环要求多少轮，会在每一轮之后根据模型自己的估算以及运行器亲自观察到的情况重新计算，并且**只升不降**：疲惫或赶时间的模型没有任何办法把循环变短，而偷懒恰恰只在这个方向上划算。每个轮次提示的标签（`ROUND n (at least m rounds ...)`）都会显示当前生效的轮数。
    * **估算。** 模型通过 `protocol.loop.min` 估算循环长度。在它估算之前，默认值（**10**）生效。它在第 1 或第 2 轮发送的第一个值会按原样采纳（一句话的问题不需要十轮）；此后，新值只能抬高轮数，而晚于第 2 轮才发送的第一个值不能低于已配置或默认的轮数。数值会被限制在 `[2, HARD_CAP - 1]` 内。`--min N` 把估算固定为恰好 `N`；下面的规则仍然叠加其上。
@@ -698,9 +699,9 @@ JINX 运行时由以下位于 `.agent/` 目录下的 Python 组件构成（核�
 * **`export.py`**（把轮次汇成一个 `.mbox`）：
   `jinx.py --export` 以及运行结束时的自动导出。`find_rounds` 读取所选会话的 `.mbox`/`.yaml` 对，并丢弃（同时说明原因）校验和不再一致、未能被记录或由旧版 JINX 写下的轮次；`check_series` 在索引的私有副本上、按 `git am --3way` 的方式试用该序列，分别按原样和去掉 CR 行尾两种读法（`yes`、`already`、`no`，以及在还需要其他会话的轮次时给出 `together`）；`build` 写出 `.agent/export/jinx-<sid>.mbox` 与 `.yaml`；`line` 生成 `[JINX_EXPORT]` 行。它从不改动项目，也不会向已经完成的运行抛出异常。
 * **`sessions.py`**（运行器与会话的衔接层）：
-  运行器进入 `mail.py` 的唯一入口（`team.py` 只读取它写下的内容；`export.py` 读取轮次文件，只写出汇集后的序列）。`open_session` 为一次调用找到或创建会话（任务、`--session`、`--join`、`--parent`，或它认出的属于调用方的会话），并记录它是在哪个运行之内启动的（`_lineage`；被拒绝的启动会抛出 `scope.Refused`），并在向会话写入任何内容之前获取该会话的步骤锁（若另一次调用持有它则抛出 `scope.Busy`），`describe`（`JINX_SESSIONS=0` 时为 `describe_shared`）打印 `[JINX_SESSION]` 行，`digest_message` / `commit_digest` / `flush_outbox` 处理邮件，`screen_call` / `check_writes` 对 `file_write` 强制执行租约，`screen_shell` / `before_batch` / `after_batch` 监视 shell 命令，`round_closed` 写轮次文件，`mark_waiting` 与 `hold_exit` 服务于 §1.3 的作用域（会话在等待什么；对内部仍有打开运行的运行，延后其结束），`end` 在运行结束时导出会话的轮次，并关闭该会话以及其内部仍然打开的运行。每个函数在自己的 I/O 失败时都会记录日志并继续，因为协调机制绝不能成为阻止本可成功的运行的原因。
+  运行器进入 `mail.py` 的唯一入口（`team.py` 只读取它写下的内容；`export.py` 读取轮次文件，只写出汇集后的序列）。`open_session` 为一次调用找到或创建会话（任务、`--session`、`--join`、`--parent`，或它认出的属于调用方的会话），并记录它是在哪个运行之内启动的（`_lineage`；被拒绝的启动会抛出 `scope.Refused`），在准入锁之下逐个计数启动请求（`scope.admission`），并在向会话写入任何内容之前获取该会话的步骤锁（若另一次调用持有它则抛出 `scope.Busy`），`describe`（`JINX_SESSIONS=0` 时为 `describe_shared`）打印 `[JINX_SESSION]` 行，`digest_message` / `commit_digest` / `flush_outbox` 处理邮件，`screen_call` / `check_writes` 对 `file_write` 强制执行租约，`screen_shell` / `before_batch` / `after_batch` 监视 shell 命令，`round_closed` 写轮次文件，`mark_waiting`、`declare_scope` 与 `hold_exit` 服务于 §1.3 的作用域（会话在等待什么；模型在 `protocol.scope` 中申请了多少空间；对内部仍有打开运行的运行，延后其结束），`end` 在运行结束时导出会话的轮次，并关闭该会话以及其内部仍然打开的运行。每个函数在自己的 I/O 失败时都会记录日志并继续，因为协调机制绝不能成为阻止本可成功的运行的原因。
 * **`scope.py`**（打开与关闭：嵌套运行）：
-  运行时所强制执行的会话生命周期（§1.3「嵌套运行」），除 `mail.py` 和 PyYAML 外没有其他依赖。`state_of` 把卡片读作打开、失联、已关闭或已消失；`resolve_parent` 与 `find_parent_by_batch` 判断一次启动位于哪个运行之内，`admit` 应用各项上限（深度、重复祖先任务的任务、打开的子运行、打开的会话），否则抛出 `Refused`；`step_lock` 是每个会话的调用锁；`close_tree` 把会话及其内部的运行各关闭一次，最深的先关，并记录如何、由谁关闭；`reap` 关闭再无人驱动的子运行；`hold_note` 是退出被延后时模型读到的那一行；`shared_refusal` 把同样的规则用于 `JINX_SESSIONS=0`；`close_main` 处理 `--close`。与 `sessions.py` 一样，它在自己的 I/O 失败时会记录日志并继续。它承载着刹车逻辑，因此 `selfpatch.py` 把它列入自我补丁不得触碰的文件。
+  运行时所强制执行的会话生命周期（§1.3「嵌套运行」），除 `mail.py` 和 PyYAML 外没有其他依赖。`state_of` 把卡片读作打开、失联、已关闭或已消失；`resolve_parent` 与 `find_parent_by_batch` 判断一次启动位于哪个运行之内，`admit` 应用各项上限（深度、重复祖先任务的任务、打开的子运行、打开的会话），否则抛出 `Refused`，运行所获的空间取自其模型在 `protocol.scope` 中的申请（`sized`，以 `CEILING` 为界；`children_allowed`、`depth_allowed`、`sessions_allowed`）；`step_lock` 是每个会话的调用锁，`admission` 是启动请求被计数时所用的锁；`close_tree` 把会话及其内部的运行各关闭一次，最深的先关，并记录如何、由谁关闭；`orphan_close` 在上层运行已关闭时，于某个运行的下一次调用处结束它；`reap` 关闭再无人驱动的子运行；`hold_note` 是退出被延后时模型读到的那一行；`shared_refusal` 把同样的规则用于 `JINX_SESSIONS=0`；`close_main` 处理 `--close`。与 `sessions.py` 一样，它在自己的 I/O 失败时会记录日志并继续。它承载着刹车逻辑，因此 `selfpatch.py` 把它列入自我补丁不得触碰的文件。
 * **`evidence.py`**（按原因归并的失败检查）：
   把失败检查所捕获的输出尾部整理为按原因归并的证据，而不是几十行几乎相同的文字：`parse_failures` 读取 pytest 风格的 `FAILED` / `ERROR` 行与末尾计数，`canonical_reason` 屏蔽每次运行都会变化的内容（长数字、十六进制 ID、耗时、路径），使同一个原因不会被拆成几个，`render_digest` / `evidence_from_check` 为每个不同的原因输出一行。它用于生成 self-patch 被回滚之后的通知（`runner.py` 中的 `_render_check_failures`）。纯函数：只重新整理已经产生的输出，不做任何决定。
 * **`reasoning.py`**（基于评分历史的推理提示）：
@@ -725,10 +726,6 @@ JINX 运行时由以下位于 `.agent/` 目录下的 Python 组件构成（核�
 | `JINX_SESSIONS` | `1` | `--ipc file` | `0`、`false`、`no` 或 `off` 关闭会话：`.agent/` 中只有一套共享文件（§1.3） |
 | `JINX_SESSION` | *(未设置)* | `--ipc file` | 未给出 `--session` 时要恢复的会话 |
 | `JINX_PARENT` | *(未设置)* | `--ipc file` | 新运行所在的会话（与 `--parent` 相同）；只在该会话存活且正在等待它的工具批次时才算数，因此遗留在 shell 中的值不会关联任何东西（§1.3） |
-| `JINX_MAX_DEPTH` | `3` | `--ipc file` | 运行可以嵌套多深；`0` 表示不允许在运行之内再启动运行 |
-| `JINX_MAX_CHILDREN` | `4` | `--ipc file` | 一个运行同时可以拥有的打开的子运行数 |
-| `JINX_MAX_SESSIONS` | `12` | `--ipc file` | 项目中打开的会话数；超出时拒绝启动（租约已过期的会话不计） |
-| `JINX_EXIT_HOLDS` | `1` | `--ipc file` | 已准备好退出的运行为等待它所启动的运行而延后的轮数；`0` 表示不等待 |
 | `JINX_EDITOR` | *(未设置)* | `--ipc file` | 编辑器的自由文本标签，创建会话时存入在线卡片；其他会话会在看板上看到它（`r4 (标签) …`） |
 | `JINX_LEASE_S` | `900` | `--ipc file` | 会话在最后一次心跳之后仍被视为存活的秒数（可以是小数，如 `45.5`），也就是它的写租约能保持多久（最小 `30`）；在创建会话时读取 |
 | `JINX_IPC_DIR` | `.agent/ipc` | `--ipc file` | 办公目录：会话与租约 |
@@ -802,7 +799,7 @@ JINX 可以编辑 `.agent/src/jinx/*.py` 来改善自身效果，而在做框架
 ### 启动规范
 * **执行命令**：入口 `.agent/jinx.py`，编辑器把它当作自己的命令 `/jinx`：启动使用 `/jinx "[TASK_DESCRIPTION]"`，恢复使用 `/jinx --session <id>`（ID 在 `[JINX_SESSION]` 行中；只要 JINX 能判断运行属于谁，不带参数的 `/jinx` 也有效，§1.3）。
 * **进程配置**：以文本模式与管道流运行。宿主不持有任何内存状态 —— 继续循环所需的一切信息都在磁盘上。
-* **循环机制**：每次调用都会打印一行 `[JINX_SESSION] id=… request=… response=… resume="…"`（§1.3）。每次调用后读取 `request=` 所指的文件（仅在 `JINX_SESSIONS=0` 时才是 `.agent/jinx_request.yaml`）；依据 `type` 字段路由、执行动作、写入 `response=` 所指的文件，然后不带任务参数重新调用。当请求文件不再出现时，循环结束。没有打印该行的调用没有启动运行：请报告它打印的内容（它的 stderr，或一行 `[JINX_REFUSED]`、`[JINX_BUSY]` 或 `[JINX_CLOSED]`）。
+* **循环机制**：每次调用都会打印一行 `[JINX_SESSION] id=… request=… response=… resume="…"`（§1.3）。每次调用后读取 `request=` 所指的文件（仅在 `JINX_SESSIONS=0` 时才是 `.agent/jinx_request.yaml`）；依据 `type` 字段路由、执行动作、写入 `response=` 所指的文件，然后不带任务参数重新调用。当请求文件不再出现时，循环结束。没有打印该行的调用没有启动运行：请报告它打印的内容（它的 stderr，或一行 `[JINX_REFUSED]`、`[JINX_BUSY]` 或 `[JINX_CLOSED]`）；以非零退出码停下的恢复调用也同样处理，因为会话可能已在它之下被关闭。
 
 ### 宿主集成 Python 示例
 
@@ -929,11 +926,19 @@ def dispatch(request: Dict[str, Any], run: Run) -> None:
     run.response.write_text(yaml.safe_dump(response, sort_keys=False), encoding="utf-8")
 
 
+def fail(result: subprocess.CompletedProcess) -> int:
+    """说明调用为何停止，并把它的退出码传下去。
+
+    [JINX_REFUSED]、[JINX_BUSY] 和 [JINX_CLOSED] 打印在 stdout，其他错误打印在 stderr。
+    """
+    print((result.stdout + result.stderr).strip(), file=sys.stderr)
+    return result.returncode
+
+
 def execute_jinx(task_description: str) -> int:
     result = spawn(task_description)
     if result.returncode != 0:
-        print(result.stdout if result.returncode == 3 else result.stderr, file=sys.stderr)
-        return result.returncode  # 1 = 等待编辑器或启动失败，2 = HARD_CAP 已耗尽，3 = 启动被拒绝或会话正忙
+        return fail(result)  # 1 = 等待编辑器、启动失败或会话已关闭，2 = HARD_CAP 已耗尽，3 = 启动被拒绝或会话正忙
     run = Run(result)
 
     while run.request.exists():
@@ -943,7 +948,7 @@ def execute_jinx(task_description: str) -> int:
 
         result = spawn(session=run.sid)  # 恢复：不带任务参数
         if result.returncode != 0:
-            return result.returncode
+            return fail(result)  # 恢复调用也会说明它为何停止：会话可能已在它之下被关闭
 
     # 已无待处理请求：JINX 输出了 [JINX_COMPLETE] 或 [JINX_DEADLOCK]（若改动了文件，还有 [JINX_EXPORT]）。
     for ln in result.stdout.splitlines():

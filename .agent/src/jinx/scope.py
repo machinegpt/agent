@@ -28,16 +28,21 @@ lineage
 
 rules (all enforced here, in code)
     * a child that would be too deep, would repeat the task of one of its ancestors, or would be one too many for its
-      parent is refused, and so is any launch once too many sessions are open at all (:func:`admit`);
-    * two calls never advance one session at the same moment (:func:`step_lock`);
+      parent is refused, and so is any launch once too many sessions are open at all (:func:`admit`). How many is
+      too many is for the editor to say, as it sizes its rounds (:func:`sized`): nobody has to set a number, and the
+      code bounds what can be asked for;
+    * two calls never advance one session at the same moment (:func:`step_lock`), and launches that start together are
+      counted one at a time (:func:`admission`);
     * a run that is ready to end waits (a bounded number of rounds) for the children that are still open, and when it
       ends, the children that are left are closed with it (:func:`close_tree`): no scope outlives the one it was
-      started in;
+      started in. A child that a call was advancing at that moment, or that was admitted a moment before, finds out
+      at its next call and ends there (:func:`orphan_close`);
     * a child that nobody has driven for a long time, whose parent is gone too, is closed as ``lost`` instead of
       staying "unfinished" for a week (:func:`reap`).
 
 Nothing here adds a word to a prompt. The model reads a sentence from this module only when a rule actually acts on
-it: as the output of the command that was refused, or as one line of the round in which an exit is held back.
+it: as the output of the command that was refused (which says how to ask for more room, where there is more), or as
+one line of the round in which an exit is held back.
 
 The module needs nothing but ``mail.py``, so ``jinx.py --close`` runs without the runner, as ``--peek`` does.
 """
@@ -51,7 +56,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Sequence, Tuple
 
 import yaml
 
@@ -62,12 +67,16 @@ logger = logging.getLogger("jinx.scope")
 DEFAULT_MAX_DEPTH = 3          # runs inside runs: the first run is level 0, so three more can be nested in it
 DEFAULT_MAX_CHILDREN = 4       # open runs that one run has started
 DEFAULT_MAX_SESSIONS = 12      # open sessions in one project: the backstop for a recursion nobody could link
+SESSIONS_PER_CHILD = 3         # ... which grows with the room a run was given for its children: three sessions for each
+CEILING = {"children": 8, "depth": 5}    # the most that can be asked for (what HARD_CAP is to the rounds): the code's call
 EXIT_HOLDS = 1                 # rounds in which a run that is ready to end waits for its open children
 REAP_AFTER_S = 3600.0          # a child nobody has driven this long (and at least four leases) may be closed as lost
 TASK_KEY_MIN = 12              # letters and digits a task needs before it can be recognised inside a script
 TASK_KEY_LEN = 60              # ... and how many of them are compared
 REQUEST_READ_CAP = 2_000_000   # bytes of a request that are read to look for a launch in it
 LOCK_NAME = ".step.lock"       # the lock file of one session, inside its directory
+ADMIT_LOCK = ".admit.lock"     # in the sessions folder: launches are counted and given their cards one at a time
+ADMIT_WAIT_S = 10.0            # how long a launch waits for its turn; after that it goes on without the lock
 
 OPEN, LOST, CLOSED, GONE = "open", "lost", "closed", "gone"
 
@@ -94,30 +103,80 @@ class Busy(Exception):
 
 
 def _env_int(name: str, default: int, floor: int) -> int:
+    """An integer setting of the environment that the rest of JINX already has (the lease of a session)."""
     try:
         return max(floor, int(float(os.environ.get(name, default))))
     except (TypeError, ValueError, OverflowError):
         return default
 
 
-def max_depth() -> int:
-    """``JINX_MAX_DEPTH``: how many levels of runs may be nested (0 allows none)."""
-    return _env_int("JINX_MAX_DEPTH", DEFAULT_MAX_DEPTH, 0)
+# --------------------------------------------------------------------------- how much room a run needs
+# The rounds of a run are sized by the model (``protocol.loop.min``), because nobody else knows what the task needs and
+# a person who set the number would more likely get it wrong. The room a run needs for the runs it starts is the same
+# kind of number and is treated the same way: the defaults above apply until the model says otherwise, what it says is
+# read from the state block it sends (only once the whole block has validated), and the code bounds it.
+def _count(value: Any) -> Optional[int]:
+    """``value`` when it is a plain integer (``bool`` is an ``int`` in Python and is not a count), else None."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def max_children() -> int:
-    """``JINX_MAX_CHILDREN``: how many open runs one run may have started."""
-    return _env_int("JINX_MAX_CHILDREN", DEFAULT_MAX_CHILDREN, 1)
+def sized(protocol: Any) -> Dict[str, int]:
+    """What the model asked for in ``protocol.scope`` of its state block, as numbers that can be trusted.
+
+    ``children`` is how many runs it may keep open at once, ``depth`` how many levels of runs may be nested, counted as
+    :func:`admit` counts them (the first run is level 0). Anything that is not a plain integer is ignored and an
+    integer out of range is brought into ``[1, CEILING]``, so a model that asks for no limit at all gets the ceiling and
+    no more. ``{}`` when it asked for nothing.
+    """
+    raw = protocol.get("scope") if isinstance(protocol, dict) else None
+    out: Dict[str, int] = {}
+    if isinstance(raw, dict):
+        for key, top in CEILING.items():
+            value = _count(raw.get(key))
+            if value is not None:
+                out[key] = max(1, min(value, top))
+    return out
 
 
-def max_sessions() -> int:
-    """``JINX_MAX_SESSIONS``: how many sessions may be open in one project."""
-    return _env_int("JINX_MAX_SESSIONS", DEFAULT_MAX_SESSIONS, 1)
+def asked(card: Dict[str, Any], key: str) -> Optional[int]:
+    """What the run of ``card`` asked for under ``key`` (``children`` or ``depth``), None when it asked for nothing.
+
+    Read the way a card is always read: a damaged or hand-edited one gives None, never an error.
+    """
+    limits = card.get("limits")
+    value = _count(limits.get(key)) if isinstance(limits, dict) else None
+    return None if value is None else max(1, min(value, CEILING[key]))
 
 
-def exit_holds() -> int:
-    """``JINX_EXIT_HOLDS``: in how many rounds a run that is ready to end waits for its open children (0: never)."""
-    return _env_int("JINX_EXIT_HOLDS", EXIT_HOLDS, 0)
+def children_allowed(card: Dict[str, Any]) -> int:
+    """How many open runs the run of ``card`` may have started: what it asked for, else the default."""
+    return asked(card, "children") or DEFAULT_MAX_CHILDREN
+
+
+def depth_allowed(cards: Dict[str, Dict[str, Any]], ancestors: Sequence[str]) -> Tuple[int, Optional[str]]:
+    """``(level, who)``: the deepest level at which a run may be started below ``ancestors`` (the parent first).
+
+    A run that asked for a depth bounds the runs below it by it, so the lowest of what the runs around the new one asked
+    for counts; when none of them asked, it is the default and ``who`` is None.
+    """
+    best: Tuple[int, Optional[str]] = (DEFAULT_MAX_DEPTH, None)
+    seen = False
+    for sid in ancestors:
+        level = asked(cards.get(sid) or {}, "depth")
+        if level is not None and (not seen or level < best[0]):
+            best, seen = (level, sid), True
+    return best
+
+
+def sessions_allowed(parent: Optional[Dict[str, Any]]) -> int:
+    """How many sessions may be open in the project for a launch started in ``parent`` (None: a launch with no parent).
+
+    The backstop is for a recursion that nobody could link, so it does not depend on what a model asks for; it only
+    follows the room a run was given for its children, and is never below the default.
+    """
+    if parent is None:
+        return DEFAULT_MAX_SESSIONS
+    return max(DEFAULT_MAX_SESSIONS, SESSIONS_PER_CHILD * children_allowed(parent))
 
 
 # --------------------------------------------------------------------------- reading the state
@@ -344,11 +403,16 @@ def admit(office: mail.Office, cards: Dict[str, Dict[str, Any]], task: str, link
         parent = cards[link.parent]
         ancestors = chain(cards, link.parent)
         depth = depth_of(parent) + 1
-        if depth > max_depth():
-            raise Refused(
-                f"nested too deep: this run would be level {depth} inside {' > '.join(reversed(ancestors))} "
-                f"(limit {max_depth()}, JINX_MAX_DEPTH). Do this part in the session you are in instead of "
-                "starting another run.")
+        level, who = depth_allowed(cards, ancestors)
+        if depth > level:
+            by = f", as {who} asked" if who else ""
+            text = (f"nested too deep: this run would be level {depth} inside {' > '.join(reversed(ancestors))} "
+                    f"(the deepest allowed is {level}{by}). Do this part in the session you are in instead of "
+                    "starting another run.")
+            if depth <= CEILING["depth"] and who in (None, link.parent):          # the run that was refused can change it
+                text += (f" If it really needs that level, declare `protocol: {{scope: {{depth: {depth}}}}}` in your "
+                         f"next state block (up to {CEILING['depth']}) and start it after that.")
+            raise Refused(text)
         key = task_key(_card_task(task))
         if key:
             for anc in ancestors:
@@ -358,15 +422,20 @@ def admit(office: mail.Office, cards: Dict[str, Dict[str, Any]], task: str, link
                         "start itself again without end. Do the work in this session, or give the nested run a "
                         "smaller task than its parent's.")
         kids = children(office, cards, link.parent, now)
-        if len(kids) >= max_children():
-            raise Refused(
-                f"{link.parent} already has {len(kids)} open child runs ({', '.join(kids)}; limit {max_children()}, "
-                "JINX_MAX_CHILDREN). Let one of them finish before starting another.")
+        room = children_allowed(parent)
+        if len(kids) >= room:
+            text = (f"{link.parent} already has {len(kids)} open child runs ({', '.join(kids)}; the limit is {room}). "
+                    "Let one of them finish before starting another.")
+            if room < CEILING["children"]:
+                text += (" If the task needs more at once, declare `protocol: {scope: {children: <n>}}` in your next "
+                         f"state block (up to {CEILING['children']}) and start it after that.")
+            raise Refused(text)
         fields = {"parent": link.parent, "root": ancestors[-1], "depth": depth, "via": link.via}
     live = sorted(s for s, c in cards.items() if state_of(office, s, c, now) == OPEN)
-    if len(live) >= max_sessions():
+    room = sessions_allowed(cards.get(link.parent) if link is not None else None)
+    if len(live) >= room:
         raise Refused(
-            f"{len(live)} sessions are open in this project (limit {max_sessions()}, JINX_MAX_SESSIONS): "
+            f"{len(live)} sessions are open in this project (the limit is {room}): "
             f"{', '.join(live[:8])}{' ...' if len(live) > 8 else ''}. Finish some of them, or close abandoned ones "
             f"with `{cmd} --close <id> --force`.")
     return fields
@@ -436,6 +505,23 @@ def step_lock(path: Path, timeout: float = 0.0) -> Iterator[bool]:
         handle.close()
 
 
+@contextlib.contextmanager
+def admission(office: mail.Office) -> Iterator[None]:
+    """One launch at a time is counted against the limits and given its card (:func:`admit`, ``Office.new_session``).
+
+    Launches can start together: a batch that runs ``jinx.py ... &`` a few times, a job that fans out. Each is a process
+    of its own, and each would count the open sessions before any of the others had a card, so all of them would pass a
+    limit that only some fit under. The lock is held for the length of the count and of writing the new card, no longer.
+    It is of the same kind as :func:`step_lock`: the system frees it when its holder dies, and a launch that cannot get
+    it in ``ADMIT_WAIT_S`` (or where it cannot exist) goes on without it, as coordination never stops a run: the limits
+    are then only as exact as they were without it.
+    """
+    with step_lock(office.sessions_dir / ADMIT_LOCK, ADMIT_WAIT_S) as held:
+        if not held:
+            logger.warning("Another launch kept the admission lock for %s s; going on without it", ADMIT_WAIT_S)
+        yield
+
+
 # --------------------------------------------------------------------------- closing a scope
 def _remove(path: Path) -> None:
     try:
@@ -444,28 +530,84 @@ def _remove(path: Path) -> None:
         logger.warning("Could not remove %s: %s", path, e)
 
 
-def _close_one(office: mail.Office, sid: str, ended: str, by: str, wait: float) -> Optional[bool]:
-    """Closes one session from outside: True when it was closed, False when its step is running, None when it is closed already.
+def discard_files(office: mail.Office, sid: str) -> None:
+    """Removes the request, response and run state of a session: a closed one has no run to resume.
 
-    Its request, response and run state go, so that the editor that still drives it is told (by
-    ``sessions.open_session``) that it is closed instead of finding half a run; its leases are released and its card
-    says how it ended. What it changed in the working tree stays, and so do its round files.
+    Its editor is told by ``sessions.open_session`` that it is closed instead of finding half a run.
     """
-    base = office.sessions_dir / sid
-    with step_lock(base / LOCK_NAME, wait) as held:
+    for name in _BATCH_FILES:
+        _remove(office.sessions_dir / sid / name)
+
+
+def _close_locked(office: mail.Office, sid: str, ended: str, by: str) -> bool:
+    """Closes a session whose step lock the caller holds: its files go, its leases are released, its card says how it ended.
+
+    What it changed in the working tree stays, and so do its round files.
+    """
+    discard_files(office, sid)
+    try:
+        office.session(sid).close(ended=ended, closed_by=by, closed_at=mail.utc_iso())
+    except (OSError, mail.MailError) as e:
+        logger.warning("Could not close session %s: %s", sid, e)
+        return False
+    return True
+
+
+def _close_one(office: mail.Office, sid: str, ended: str, by: str, wait: float,
+               still: Optional[Callable[[Dict[str, Any]], bool]] = None) -> Optional[bool]:
+    """Closes one session from outside: True when it was closed, False when its step is running, None when there is nothing to close.
+
+    Nothing to close: it is closed already, or ``still`` (asked about its card as it is under its step lock) says that
+    what made the caller pick it is no longer so. The caller looked at a snapshot of the cards, and the session may have
+    been driven since: closing it on the strength of the snapshot would take away the request it has just written.
+    """
+    with step_lock(office.sessions_dir / sid / LOCK_NAME, wait) as held:
         if not held:
             return False
         card = office.card(sid)
         if not card or card.get("state") == "done":
             return None
-        for name in _BATCH_FILES:
-            _remove(base / name)
-        try:
-            office.session(sid).close(ended=ended, closed_by=by, closed_at=mail.utc_iso())
-        except (OSError, mail.MailError) as e:
-            logger.warning("Could not close session %s: %s", sid, e)
-            return False
-    return True
+        if still is not None and not still(card):
+            return None
+        return _close_locked(office, sid, ended, by)
+
+
+def closed_above(office: mail.Office, card: Dict[str, Any], limit: int = 32) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """The nearest run above the session of ``card`` that is closed, with its card; None when none is (or it is gone).
+
+    Read from the files as they are now: the question is asked when a session is resumed, and a close can have been
+    made a moment ago.
+    """
+    seen: List[str] = []
+    above = str(card.get("parent") or "")
+    while above and above not in seen and len(seen) < limit:
+        seen.append(above)
+        up = office.card(above)
+        if not up:
+            return None                    # archived: nothing says that it was closed
+        if up.get("state") == "done":
+            return above, up
+        above = str(up.get("parent") or "")
+    return None
+
+
+def orphan_close(office: mail.Office, sid: str, card: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """For the call that holds the step lock of ``sid``: closes it when a run above it is closed. Says how it ended.
+
+    ``close_tree`` leaves open what a call was advancing at that moment, and a launch can be admitted a moment before the
+    run it names is closed. Neither goes on: no scope outlives the one it was started in. The session ends here, with the
+    runs inside it, as ``close_tree`` would have ended it: ``orphaned`` when the run above completed, ``cancelled`` when it
+    was cut short. ``{"ended": ..., "closed_by": ...}``, or None when no run above it is closed.
+    """
+    above = closed_above(office, card)
+    if above is None:
+        return None
+    parent, up = above
+    ended = ORPHANED if str(up.get("ended") or "") in (COMPLETE, DEADLOCK, HARD_CAP) else CANCELLED
+    by = f"parent:{parent}"
+    close_tree(office, sid, ended=ended, by=by, include_self=False)
+    _close_locked(office, sid, ended, by)
+    return {"ended": ended, "closed_by": by}
 
 
 def close_tree(office: mail.Office, sid: str, *, ended: str, by: str, kids_ended: Optional[str] = None,
@@ -473,8 +615,9 @@ def close_tree(office: mail.Office, sid: str, *, ended: str, by: str, kids_ended
     """Closes the sessions that are open below ``sid`` (deepest first) and, unless ``include_self`` is False, ``sid``.
 
     Returns ``(closed, busy)``: the ids that were closed now, and those that could not be because a call was
-    advancing them for the whole ``wait`` (they stay open, and their own next call will find their parent gone).
-    A session that is closed already is not named in either list.
+    advancing them for the whole ``wait``. Those stay open, and so does anything started after the snapshot of the
+    cards that this works from; each finds that a run above it is closed at its next call, and ends there
+    (:func:`orphan_close`). A session that is closed already is not named in either list.
     """
     cards = cards_of(office)
     closed: List[str] = []
@@ -491,27 +634,36 @@ def close_tree(office: mail.Office, sid: str, *, ended: str, by: str, kids_ended
     return closed, busy
 
 
+def _abandoned(office: mail.Office, card: Dict[str, Any], now: float,
+               cards: Optional[Dict[str, Dict[str, Any]]] = None) -> bool:
+    """Whether a child is one that nobody drives any more: silent for long, and the run it was started in is not alive.
+
+    With ``cards`` the parent is looked up there (a snapshot), without it in the files as they are.
+    """
+    parent = str(card.get("parent") or "")
+    if not parent or card.get("state") == "done":
+        return False
+    if now - _num(card.get("hb")) < max(REAP_AFTER_S, 4 * (_num(card.get("lease_s")) or mail.DEFAULT_LEASE_S)):
+        return False
+    return state_of(office, parent, None if cards is None else cards.get(parent), now) != OPEN
+
+
 def reap(office: mail.Office, now: Optional[float] = None) -> List[str]:
     """Closes, as ``lost``, the children that nobody drives any more. Safe to run from any process at any time.
 
     A child whose editor gave up used to stay "unfinished" for up to a week (until archived), and kept a bare call
     from being matched to its session. It is closed only when it has been silent for a long time (at least
     ``REAP_AFTER_S`` and four leases) *and* the run it was started in is not alive either (closed, silent or
-    gone): while the parent is alive somebody still may come back for the child.
+    gone): while the parent is alive somebody still may come back for the child. The snapshot of the cards only
+    names the candidates. Each is asked again under its own step lock, with its parent read afresh: a child that has
+    been driven since (or whose parent has) must not be closed on what the snapshot said.
     """
     now = time.time() if now is None else now
     cards = cards_of(office)
     out: List[str] = []
     for sid, card in cards.items():
-        if not card.get("parent") or card.get("state") == "done":
-            continue
-        silent = now - _num(card.get("hb"))
-        if silent < max(REAP_AFTER_S, 4 * (_num(card.get("lease_s")) or mail.DEFAULT_LEASE_S)):
-            continue
-        parent = str(card["parent"])
-        if state_of(office, parent, cards.get(parent), now) == OPEN:
-            continue
-        if _close_one(office, sid, "lost", "sweep", 0.0):
+        if _abandoned(office, card, now, cards) and _close_one(
+                office, sid, "lost", "sweep", 0.0, still=lambda fresh: _abandoned(office, fresh, now)):
             out.append(sid)
     return out
 
