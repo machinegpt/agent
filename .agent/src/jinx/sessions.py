@@ -22,6 +22,7 @@ bookkeeping; none of them raises for an I/O problem, because coordination must n
 stops a run that would otherwise succeed (a failure is logged and the work goes on, unprotected).
 """
 
+import contextlib
 import logging
 import os
 import re
@@ -30,7 +31,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import export, identity, mail, selfpatch, team
+from . import export, identity, mail, scope, selfpatch, team
 from .state import AGENT_DIR
 
 logger = logging.getLogger("jinx.sessions")
@@ -142,6 +143,8 @@ class Context:
         self.briefing_pending = False                # ... it is in a request that has not been written out yet
         self.resume_cmd = ""                         # what the editor runs to call this session again
         self.others = 0                              # live sessions besides this one when this call began
+        self.parent = ""                             # the session this run was started inside (scope.py), or ""
+        self.depth = 0                               # how many runs deep it is nested
         self._round: Optional[mail.Round] = None
 
     @property
@@ -204,6 +207,11 @@ def _seed(ctx: Context, office: mail.Office) -> None:
             shutil.copyfile(base, ctx.manifest)
         except OSError as e:
             logger.warning("Could not seed %s from %s: %s", ctx.manifest, base, e)
+    try:
+        for sid in scope.reap(office):             # runs started inside others that nobody drives any more
+            logger.info("Session %s was closed as lost: nobody has driven it for a long time", sid)
+    except (OSError, ValueError, TypeError, mail.MailError) as e:
+        logger.warning("Could not look for abandoned runs: %s", e)
     office.sweep()
 
 
@@ -244,8 +252,10 @@ def _join(office: mail.Office, host: str, task: Optional[str], session_id: Optio
     if session_id and (office.sessions_dir / session_id).exists():
         raise SessionError(f"session {session_id} already exists; leave --session out to start a new one")
     text = " ".join((task or "").split()) or f"Help session {host}: {hcard.get('task') or ''}".strip()
-    sess = office.new_session(text, sid=session_id or None, editor=os.environ.get("JINX_EDITOR", ""),
-                              lease_s=_lease(), room=hcard.get("room") or host, who=who)
+    with scope.admission(office):
+        scope.admit(office, scope.cards_of(office), text, None)  # a helper is no child, but it is one more open session
+        sess = office.new_session(text, sid=session_id or None, editor=os.environ.get("JINX_EDITOR", ""),
+                                  lease_s=_lease(), room=hcard.get("room") or host, who=who)
     ctx = Context(office, sess)
     _seed(ctx, office)
     try:
@@ -259,13 +269,46 @@ def _join(office: mail.Office, host: str, task: Optional[str], session_id: Optio
     return ctx
 
 
-def open_session(task: Optional[str], session_id: Optional[str], join: Optional[str] = None) -> Context:
+def _lineage(office: mail.Office, task: str, parent: Optional[str]) -> Dict[str, Any]:
+    """The lineage fields for the card of a new session (``parent``, ``root``, ``depth``, ``via``); {} for an independent one.
+
+    Raises ``scope.Refused`` when the launch is not allowed (too deep, a task that repeats an ancestor's, too many
+    children or open sessions). ``parent`` is ``--parent``; ``JINX_PARENT`` is read here too (see scope.resolve_parent).
+    """
+    cards = scope.cards_of(office)
+    link = scope.resolve_parent(office, cards, flag=parent, env=(os.environ.get("JINX_PARENT") or "").strip() or None,
+                                task=task)
+    return scope.admit(office, cards, task, link)
+
+
+def _hold(ctx: Context, hold: Optional[contextlib.ExitStack]) -> None:
+    """Takes the step lock of the session before anything is written to its card, and keeps it until ``hold`` closes.
+
+    One call advances a session at a time (scope.step_lock), and a call that finds the lock taken must change nothing,
+    not even the heartbeat. Raises ``scope.Busy`` when another call holds it.
+    """
+    if hold is not None and not hold.enter_context(scope.step_lock(ctx.dir / scope.LOCK_NAME)):
+        raise scope.Busy(ctx.sid)
+
+
+def open_session(task: Optional[str], session_id: Optional[str], join: Optional[str] = None,
+                 parent: Optional[str] = None, ambient: bool = False,
+                 hold: Optional[contextlib.ExitStack] = None) -> Context:
     """Finds or creates the session for this invocation.
 
     The launch command is the same for every agent. A task starts a new session (``join`` makes it a helper
-    in the team of another one). Without a task the session is the one named with ``--session`` (or
-    JINX_SESSION); with neither, the session the runtime recognises as this editor's, which is the only
-    unfinished one when there is just one.
+    in the team of another one; ``parent`` says it runs inside that session, see scope.py). Without a task the
+    session is the one named with ``--session`` (or JINX_SESSION); with neither, the session the runtime
+    recognises as this editor's, which is the only unfinished one when there is just one.
+
+    ``ambient`` says that ``session_id`` came from the JINX_SESSION environment variable and not from ``--session``.
+    An environment is inherited by everything that runs below it, so a task that is started there is not a request to
+    resume (or to name) the session the variable names: when that session exists, the task starts a new one.
+
+    ``hold`` is the ExitStack of the process: the step lock of the session is taken on it (see :func:`_hold`).
+
+    Raises ``scope.Refused`` for a launch the scope rules do not allow, ``scope.Closed`` for the resume of a
+    session that is closed and ``scope.Busy`` for one that another call is advancing.
     """
     try:
         office = _office()
@@ -276,14 +319,21 @@ def open_session(task: Optional[str], session_id: Optional[str], join: Optional[
     try:
         if join:
             ctx = _join(office, join, task, session_id, who)
+            _hold(ctx, hold)
         elif task:
             if session_id and (office.sessions_dir / session_id).exists():
-                raise SessionError(
-                    f"session {session_id} already exists; resume it without a task, or start a new one "
-                    f"by leaving --session out")
-            sess = office.new_session(task, sid=session_id or None, editor=os.environ.get("JINX_EDITOR", ""),
-                                      lease_s=_lease(), who=who)
+                if not ambient:
+                    raise SessionError(
+                        f"session {session_id} already exists; resume it without a task, or start a new one "
+                        f"by leaving --session out")
+                logger.info("JINX_SESSION=%s names a session that exists; the task starts a new one", session_id)
+                session_id = None
+            with scope.admission(office):        # launches that start together are counted and given a card one by one
+                extra = _lineage(office, task, parent)
+                sess = office.new_session(task, sid=session_id or None, editor=os.environ.get("JINX_EDITOR", ""),
+                                          lease_s=_lease(), who=who, extra=extra)
             ctx = Context(office, sess)
+            _hold(ctx, hold)
             _seed(ctx, office)
         else:
             fresh = False
@@ -295,9 +345,33 @@ def open_session(task: Optional[str], session_id: Optional[str], join: Optional[
             else:
                 sess = _resolve_bare(office, who)
             ctx = Context(office, sess)
+            _hold(ctx, hold)
+            _require_open(ctx)
     except mail.MailError as e:
         raise SessionError(str(e)) from e
     return _finish(ctx, who, fresh)
+
+
+def _require_open(ctx: Context) -> None:
+    """A session that is closed (finished, cancelled with its parent, closed by hand) cannot be resumed.
+
+    Closed is closed, whatever files are left: a run state that outlived the close (the process was killed between
+    marking the card and removing its files) must not bring the session back, so it is removed here instead of
+    being resumed. The same goes for a session whose parent run is closed: it is closed now, with the runs inside it
+    (``scope.orphan_close``), which is how a child that a call was advancing when its parent ended finds out.
+    """
+    card = ctx.session.card()
+    ended = {k: card.get(k) for k in ("ended", "closed_by")}
+    if card.get("state") != "done":
+        orphaned = scope.orphan_close(ctx.office, ctx.sid, card)
+        if orphaned is None:
+            return
+        ended = orphaned
+    else:
+        scope.discard_files(ctx.office, ctx.sid)
+    raise scope.Closed(
+        f"session {ctx.sid} is closed ({scope.how_ended(ended)}), so there is nothing to resume. "
+        f"`{ctx.office.cmd} --peek {ctx.sid}` shows what it did; start a new session with a task.")
 
 
 def _finish(ctx: Context, who: List[str], fresh: bool) -> Context:
@@ -305,8 +379,9 @@ def _finish(ctx: Context, who: List[str], fresh: bool) -> Context:
     explicit = f"{ctx.office.cmd} --session {ctx.sid}"
     ctx.resume_cmd = explicit
     try:
+        card = ctx.session.card()
+        ctx.parent, ctx.depth = str(card.get("parent") or ""), scope.depth_of(card)
         if not fresh:
-            card = ctx.session.card()
             old, n = [str(t) for t in (card.get("who") or [])], int(card.get("who_n") or 0)
             tokens, seen = identity.refine(old, who, n)
             if tokens != old or seen != n:
@@ -343,7 +418,9 @@ def describe(ctx: Context) -> str:
     resume = ctx.resume_cmd or f"{ctx.office.cmd} --session {ctx.sid}"
     line = '[JINX_SESSION] id=%s request=%s response=%s resume="%s"' % (
         ctx.sid, ctx.rel(ctx.request), ctx.rel(ctx.response), resume)
-    return line + (f" others={ctx.others}" if ctx.others else "")
+    line += f" others={ctx.others}" if ctx.others else ""
+    # A run that was started inside another one says which, so that the editor knows whose tool call it is serving.
+    return line + (f" parent={ctx.parent} depth={ctx.depth}" if ctx.parent else "")
 
 
 def describe_shared() -> str:
@@ -369,6 +446,67 @@ def heartbeat(ctx: Context, rnd: Optional[int] = None) -> None:
         ctx.session.beat(**fields)
     except OSError as e:
         logger.warning("Could not refresh the session heartbeat: %s", e)
+
+
+def mark_waiting(ctx: Context, kind: str) -> None:
+    """Records on the card what the session waits for: ``tool_calls`` (a batch that the editor runs) or ``llm_generate``.
+
+    A run can only be started inside another one while that one waits for its tool batch, so this is the open/closed
+    state of the batch that scope.py checks a launch against. A failure to write it is only logged.
+    """
+    try:
+        ctx.session.beat(waiting=kind)
+    except (OSError, mail.MailError) as e:
+        logger.warning("Could not record what session %s waits for: %s", ctx.sid, e)
+
+
+def declare_scope(ctx: Context, protocol: Any) -> None:
+    """Puts what the model asked for in ``protocol.scope`` on the card, where the launches of the runs inside this one read it.
+
+    The model sizes its rounds in its state block, and nobody has to set the room it needs for runs inside it either
+    (``scope.sized``). A run that never asks has no ``scope`` in its manifest and costs nothing here; a failure to write
+    is only logged, and the defaults go on applying.
+    """
+    try:
+        if not isinstance(protocol, dict) or "scope" not in protocol:
+            return
+        sized = scope.sized(protocol)
+        if sized != (ctx.session.card().get("limits") or {}):
+            ctx.session.beat(limits=sized)
+    except (OSError, ValueError, TypeError, mail.MailError) as e:
+        logger.warning("Could not record the room session %s asked for: %s", ctx.sid, e)
+
+
+def hold_exit(ctx: Context) -> Optional[str]:
+    """The note that holds back the end of a run while runs it started are still open, or None when it may end.
+
+    A run that ends with open runs inside it leaves them with nobody to report to. It is held back for at most
+    ``scope.EXIT_HOLDS`` rounds (counted on the card, so the count survives the process): the model gets one line
+    naming the open runs, and in the next round can take them to their end. After that the run ends anyway and
+    :func:`end` closes whatever is left, so a child that nobody drives cannot keep its parent from finishing.
+    The caller holds nothing back in the last round the loop has (there is none left to read the note in).
+    """
+    try:
+        held = int(ctx.session.card().get("exit_held") or 0)
+        if held >= scope.EXIT_HOLDS:
+            return None
+        kids = scope.children(ctx.office, scope.cards_of(ctx.office), ctx.sid)
+        if not kids:
+            return None
+        ctx.session.beat(exit_held=held + 1)
+        return scope.hold_note(ctx.office, kids)
+    except (OSError, ValueError, TypeError, mail.MailError) as e:
+        logger.warning("Could not check for open runs inside session %s: %s", ctx.sid, e)
+        return None
+
+
+def shared_refusal(run_state: Path, task: str, force: bool) -> Optional[str]:
+    """With ``JINX_SESSIONS=0``: why this task must not replace the run in the shared files, or None (scope.py)."""
+    try:
+        agent = Path(os.path.relpath(AGENT_DIR, project_root())).as_posix()
+    except ValueError:
+        agent = str(AGENT_DIR)
+    return scope.shared_refusal(run_state, task, _lease(), force, mail.jinx_command(agent))
 
 
 def alone(ctx: Context) -> bool:
@@ -859,8 +997,19 @@ def end(ctx: Context, *, completed: bool = False, status: str = "exit") -> str:
     exported = ""
     if completed:
         exported = export.auto(ctx.office, ctx.root, ctx.session.sid, export_dir())
+    # No scope outlives the one it was started in: runs that are still open inside this one are closed with it.
     try:
-        ctx.session.close()
+        closed, busy = scope.close_tree(ctx.office, ctx.sid, ended=scope.ORPHANED if completed else scope.CANCELLED,
+                                        by="self", include_self=False)
+        if closed:
+            logger.info("Closed with %s: %s", ctx.sid, ", ".join(closed))
+        if busy:
+            logger.warning("Still being advanced, so not closed with %s: %s", ctx.sid, ", ".join(busy))
+    except (OSError, ValueError, TypeError, mail.MailError) as e:
+        logger.warning("Could not close the runs inside %s: %s", ctx.sid, e)
+    try:
+        ended = (scope.COMPLETE if status == "exit" else status) if completed else scope.ABORTED
+        ctx.session.close(ended=ended, closed_by="self", closed_at=mail.utc_iso())
     except OSError as e:
         logger.warning("Could not close the session cleanly: %s", e)
     return exported

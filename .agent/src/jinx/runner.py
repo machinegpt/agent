@@ -1660,6 +1660,7 @@ def write_llm_request(
     # Only now is the digest in front of the editor: file the mail it showed as read. A crash
     # before this line means the same mail is shown again, never that it is lost.
     if SESSION is not None:
+        sessions.mark_waiting(SESSION, "llm_generate")
         sessions.commit_digest(SESSION)
 
     print(f"[JINX_WAITING] Requesting LLM completion for Round {rnd}...", flush=True)
@@ -1942,6 +1943,9 @@ def _handle_llm_response(
         # give the file leases back. A block that was rejected says nothing about this round.
         said = scores if closed["applied"] else []
         sessions.round_closed(SESSION, rnd, _round_summary(said), _round_evidence(said))
+        if closed["applied"]:
+            # The room the model asks for the runs inside this one (protocol.scope, as it sizes its rounds).
+            sessions.declare_scope(SESSION, jinx.get("protocol"))
     if update:
         outcome: Dict[str, Any] = closed["outcome"]
 
@@ -1971,9 +1975,16 @@ def _handle_llm_response(
                 diagnostics,
             )
             if verdict == "exit":
-                print("[JINX_COMPLETE] Task resolved successfully!", flush=True)
-                _finish_run("exit")
-                return
+                # Runs that this one started and that are still open keep it from ending, for a bounded number
+                # of rounds: the model is told which in one line (scope.py). After that it ends, and they are
+                # closed with it. Not when no round is left to read the line in: the run would end as a hard
+                # cap (exit 2) although it did what it was asked, and an exit has to stay reachable.
+                held = sessions.hold_exit(SESSION) if SESSION is not None and rnd + 1 < HARD_CAP else None
+                if held is None:
+                    print("[JINX_COMPLETE] Task resolved successfully!", flush=True)
+                    _finish_run("exit")
+                    return
+                diagnostics.append(held)
 
             if verdict == "deadlock":
                 print("[JINX_DEADLOCK] Loop aborted due to strategy deadlock.", flush=True)
@@ -2140,6 +2151,9 @@ def _write_tool_request(
     except JinxError as e:
         raise IPCError(f"Failed to write run state: {e}") from e
 
+    if SESSION is not None:
+        sessions.mark_waiting(SESSION, "tool_calls")        # a run can be started inside this one from now on
+
     print(f"[JINX_WAITING] Requesting tool execution for Round {rnd}...", flush=True)
 
 
@@ -2165,6 +2179,9 @@ def _write_llm_request_no_tools(
         Yaml.safe_atomic_write(RUN_STATE_PATH, run_state)
     except JinxError as e:
         raise IPCError(f"Failed to write run state: {e}") from e
+
+    if SESSION is not None:
+        sessions.mark_waiting(SESSION, "llm_generate")
 
     print(f"[JINX_WAITING] Requesting final summary for Round {rnd}...", flush=True)
 

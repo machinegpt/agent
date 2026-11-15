@@ -21,9 +21,10 @@ rather than by convention:
   built inside ``merge_state``, which is protected brake logic, so they stay
   where they are. Moving them out would mean editing a function JINX refuses to
   edit.
-* ``mail.py``, ``sessions.py`` and ``team.py`` — the text of the several-sessions
-  feature (the board, the mail how-to, the refusals about another session's files).
-  It describes the mail protocol those modules validate, and a session that runs
+* ``mail.py``, ``sessions.py``, ``scope.py`` and ``team.py`` — the text of the several-sessions
+  feature (the board, the mail how-to, the refusals about another session's files, the
+  refusals and the one-line hold of runs started inside runs).
+  It describes the mail protocol and the rules those modules validate, and a session that runs
   alone never sends it.
 * ``selfpatch.py`` (``guard_tool_call``'s refusal text) and ``learning.py``
   (``LEARNED_RULES_HEADER``) are protected files that JINX refuses to rewrite

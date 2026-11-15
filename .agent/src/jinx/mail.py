@@ -629,9 +629,11 @@ class Office:
     # -- sessions -----------------------------------------------------------------
     def new_session(self, task: str = "", *, sid: Optional[str] = None, editor: str = "",
                     lease_s: int = DEFAULT_LEASE_S, room: Optional[str] = None,
-                    who: Optional[Sequence[str]] = None) -> "Session":
+                    who: Optional[Sequence[str]] = None, extra: Optional[Dict[str, Any]] = None) -> "Session":
         """Create a session. ``room`` joins it to the team of another session (default: a room of its own);
-        ``who`` is the fingerprint of the editor that starts it (see identity.py)."""
+        ``who`` is the fingerprint of the editor that starts it (see identity.py). ``extra`` are more fields of
+        its first card (the lineage of a run that was started inside another one, see scope.py): they are there
+        from the first moment the session exists, never added later."""
         for _ in range(200):
             cand = sid or "s" + secrets.token_hex(2)   # starts with a letter: YAML can never read it as a number
             if not _SID_RE.match(cand):
@@ -646,7 +648,7 @@ class Office:
             s._make_dirs()
             s.beat(task=" ".join(task.split())[:200], editor=editor, lease_s=lease_s, state="working",
                    round=0, holds={}, seq=0, pid=os.getpid(), started=utc_iso(), room=room or cand,
-                   who=list(who or []), who_n=1 if who else 0)
+                   who=list(who or []), who_n=1 if who else 0, **(extra or {}))
             return s
         raise MailError("could not allocate a session id")
 
@@ -822,18 +824,36 @@ def touched_of(card: Dict[str, Any]) -> Dict[str, int]:
     return {}
 
 
-def peer_line(p: Dict[str, Any], mine: Iterable[str] = ()) -> str:
+CLOSED_FROM_OUTSIDE = ("cancelled", "orphaned", "lost")   # how scope.py ends a session that did not end by itself
+
+
+def closed_word(card: Dict[str, Any]) -> str:
+    """What the board and ``--peek`` call a session that is done: ``finished``, as it always was, except for one that was
+    closed from outside (scope.py), which says how: cancelled, orphaned or lost."""
+    ended = str(card.get("ended") or "")
+    return ended if ended in CLOSED_FROM_OUTSIDE else "finished"
+
+
+def peer_line(p: Dict[str, Any], mine: Iterable[str] = (), reader: str = "", parent: str = "") -> str:
     """What the board says about one live session, in one line.
 
     ``r4 fixing the table; holds a.py, b.py; on your files: c.py``. ``mine`` are the files the reader works
     with: those the other session also holds or has changed are named apart, because that is the part of
     its work the reader has to know about. Everything else about it is one ``--peek`` away.
+
+    A run that was started inside another one says so, to the two of them only: ``r2 child ...`` on the line of a
+    session that ``reader`` started, ``r2 parent ...`` on the line of the session ``parent`` that started the reader
+    (a word each, and only when runs are nested at all).
     """
     mine = set(mine)
     holds = sorted((p.get("holds") or {}).keys())
     touched = touched_of(p)
     both = sorted((set(holds) | set(touched)) & mine)
     head = f"r{int(p.get('round') or 0)}"
+    if reader and p.get("parent") == reader:
+        head += " child"
+    elif parent and p.get("id") == parent:
+        head += " parent"
     if p.get("editor"):
         head += f" ({_short(p['editor'], 16)})"
     bits = [f"{head} {_short(p.get('doing') or p.get('task'), DOING_CHARS)}".rstrip()]
@@ -921,9 +941,11 @@ class Session:
         atomic_write(self.dir / "card.yaml", dump_yaml(c), self.office.fsync)
         return c
 
-    def close(self) -> None:
+    def close(self, **fields: Any) -> None:
+        """Release every lease and mark the session done. ``fields`` go on the card with it: how it ended and who
+        closed it (see scope.py)."""
         self.release_all()
-        self.beat(state="done")
+        self.beat(state="done", **fields)
 
     def alone(self) -> bool:
         """True when no other session is alive: the only moment exclusive, project-wide work is safe."""
@@ -1232,8 +1254,9 @@ class Session:
             hot = lambda p: bool(now[p["id"]]["h"] or now[p["id"]]["t"])    # noqa: E731
             order = sorted(peers, key=lambda p: (not in_room(p), not hot(p), p["id"]))
             named = order[:MAX_BOARD]
-            team = {p["id"]: peer_line(p, mine) for p in named if in_room(p)}
-            others = {p["id"]: peer_line(p, mine) for p in named if not in_room(p)}
+            up = str(card.get("parent") or "")
+            team = {p["id"]: peer_line(p, mine, self.sid, up) for p in named if in_room(p)}
+            others = {p["id"]: peer_line(p, mine, self.sid, up) for p in named if not in_room(p)}
             if team:
                 block["team"] = team
             if others or not peers:
@@ -1268,7 +1291,7 @@ class Session:
         c = self.office.card(sid)
         if not c:
             return f"{sid} gone"
-        state = "finished" if c.get("state") == "done" else "stopped (no heartbeat)"
+        state = closed_word(c) if c.get("state") == "done" else "stopped (no heartbeat)"
         newest_first = sorted(reversed(list(touched_of(c).items())), key=lambda kv: -kv[1])
         files = _names([f for f, _ in newest_first])
         return f"{sid} {state}" + (f"; changed {files}" if files else "")

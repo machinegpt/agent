@@ -71,8 +71,10 @@ VERIFY_TIMEOUT: int = int(os.environ.get("JINX_SELF_PATCH_TIMEOUT", "600"))
 
 # Files that may never be self-patched. ``selfpatch.py`` and ``learning.py`` are
 # included because otherwise the agent could disable the gate or the credit
-# assignment that makes the ledger meaningful.
-PROTECTED_FILES = ("selfpatch.py", "learning.py")
+# assignment that makes the ledger meaningful, and ``scope.py`` because it holds
+# the limits on runs started inside runs (depth, repeated tasks, how many are open,
+# the exit hold): a model that is stopped by them must not be able to edit them away.
+PROTECTED_FILES = ("selfpatch.py", "learning.py", "scope.py")
 
 # Brake logic, protected at symbol granularity so the rest of the same file can
 # still be improved. Each entry is (filename, regex) and matches a definition

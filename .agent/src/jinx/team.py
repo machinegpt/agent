@@ -235,7 +235,7 @@ def state_word(card: Dict[str, Any], now: float) -> str:
     if not card:
         return "unknown"
     if card.get("state") == "done":
-        return "finished"
+        return mail.closed_word(card)             # "finished", unless scope.py closed it from outside
     age = now - float(card.get("hb") or 0)
     if age <= float(card.get("lease_s") or mail.DEFAULT_LEASE_S):
         return "working"
@@ -249,6 +249,8 @@ def _line(sid: str, card: Dict[str, Any], now: float, mine: Sequence[str] = ()) 
     head = f"{sid} {word}"
     if card.get("state") != "done" and word == "working":
         head += f" {_ago(now - float(card.get('hb') or now))} ago"
+    if card.get("parent"):
+        head += f" (in {card['parent']})"          # a run that was started inside another one (scope.py)
     return f"{head}; " + mail.peer_line({**card, "id": sid}, mine)
 
 
@@ -301,11 +303,16 @@ def status(office: mail.Office, root: Path, sid: str, *, diff: bool = False, ful
     card, st = read_card(d), read_state(d)
     cmd = cmd or office.cmd
     word = state_word(card, now)
+    by = str(card.get("closed_by") or "")
+    if card.get("state") == "done" and by not in ("", "self"):
+        word += " by " + by.replace(":", " ")              # cancelled by user, orphaned by parent s1 (scope.py)
     head = f"{sid} {word}, round {int(card.get('round') or 0)}"
     if card.get("editor"):
         head += f" ({mail._short(card['editor'], 16)})"
     if card.get("room") and card["room"] != sid:
         head += f", team of {card['room']}"
+    if card.get("parent"):
+        head += f", started inside {card['parent']}"
     lines = [head, "task: " + mail._short(st.get("task") or card.get("task"), 200)]
     if card.get("doing"):
         lines.append("doing: " + mail._short(card["doing"], 120))

@@ -34,15 +34,18 @@ _SESSION_ID = re.compile(r"[a-z][a-z0-9]{2,15}")
 _OPTIONS = {
     "--session": ("1", _SESSION_ID),
     "--join": ("1", _SESSION_ID),
+    "--parent": ("1", _SESSION_ID),
     "--peek": ("?", _SESSION_ID),
     "--diff": ("0", None),
     "--full": ("0", None),
     "--export": ("*", _SESSION_ID),
+    "--close": ("*", _SESSION_ID),
+    "--force": ("0", None),
     "--out": ("1", re.compile(r"[^-].*", re.S)),
     "--min": ("1", re.compile(r"[0-9]+")),
     "--ipc": ("1", re.compile(r"file|rpc")),
 }
-_TASK_AFTER = ("--join",)       # `--join <id> ["task"]`: the one call of an editor with a message behind its options
+_TASK_AFTER = ("--join", "--parent")    # `--join <id> ["task"]`, `--parent <id> "task"`: the calls of an editor with a message behind their options
 _WORD = re.compile(r"\"[^\"]*\"|'[^']*'|\S+")
 
 
@@ -435,12 +438,16 @@ bootstrap_dependencies()
 # Looking at the other sessions (--peek) changes nothing, so it must not run the self-patch preflight (which
 # could judge another session's edit in progress) and does not need the runner either. Collecting the rounds
 # into one .mbox (--export) reads the round files and writes nothing but its own output (.agent/export/).
+# Closing sessions (--close) touches only their own files and cards, never JINX's source, so it needs neither.
 if "--peek" in sys.argv[1:]:
     from jinx.team import peek_main
     sys.exit(_code(peek_main(sys.argv[1:], src_path.parent)))
 if "--export" in sys.argv[1:]:
     from jinx.export import export_main
     sys.exit(_code(export_main(sys.argv[1:], src_path.parent)))
+if "--close" in sys.argv[1:]:
+    from jinx.scope import close_main
+    sys.exit(_code(close_main(sys.argv[1:], src_path.parent)))
 
 # Revert a broken self-edit before importing the package, not after.
 self_patch_preflight()
