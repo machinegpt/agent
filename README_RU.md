@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/version-1.3.2--enterprise-2563EB?style=for-the-badge" alt="Version Badge" />
   <img src="https://img.shields.io/badge/architecture-File_Based_IPC_State_Machine-0D9488?style=for-the-badge" alt="Architecture Badge" />
   <img src="https://img.shields.io/badge/integration-ReEntrant_Single_Step_Process-059669?style=for-the-badge" alt="Integration Badge" />
-  <img src="https://img.shields.io/badge/license-JINX_EULA-B45309?style=for-the-badge" alt="License Badge" />
+  <img src="https://img.shields.io/badge/license-JINX_EULA-DC2626?style=for-the-badge" alt="License Badge" />
 </p>
 
 <h1 align="center">JINX — Спецификация Среды Выполнения Суверенного Корпоративного Агента</h1>
