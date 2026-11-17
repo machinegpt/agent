@@ -346,6 +346,8 @@ def load_yaml(text: "str | bytes", limit: int = MAX_YAML_BYTES) -> Any:
         return yaml.load(doc, Loader=_StrictLoader)
     except UnicodeDecodeError:
         raise InvalidMail("file is not valid UTF-8") from None
+    except ValueError as e:        # a date or timestamp that cannot exist (2026-02-30): the constructor's own ValueError
+        raise InvalidMail(f"not valid YAML: {_one_line(e)}") from None
     except yaml.YAMLError as e:
         raise InvalidMail(f"not valid YAML: {_one_line(e)}") from None
     except RecursionError:
@@ -1481,13 +1483,13 @@ def _has_id(d: Path, msg_id: str) -> bool:
 
 # --------------------------------------------------------------------------- git helpers
 def _git(repo: "str | Path", *args: str, env: Optional[Dict[str, str]] = None,
-         check: bool = True) -> subprocess.CompletedProcess:
+         check: bool = True, input: Optional[bytes] = None) -> subprocess.CompletedProcess:
     # core.autocrlf=false: the bytes of a diff are those of the files, whatever the checkout settings of the platform.
     # GIT_DIFF_OPTS (a person's `-u0` in their shell profile, say) is dropped for the same reason as diff.* settings
     # are overridden in round_diff: what a round records must not depend on whose machine it ran on.
     merged_env = {k: v for k, v in {**os.environ, **(env or {})}.items() if k != "GIT_DIFF_OPTS"}
     r = subprocess.run(["git", "-C", str(repo), "-c", "core.autocrlf=false", *args],
-                       capture_output=True, env=merged_env)
+                       capture_output=True, env=merged_env, input=input)
     if check and r.returncode != 0:
         raise MailError(f"git {' '.join(args[:3])} failed: {r.stderr.decode(errors='replace').strip()[:300]}")
     return r
@@ -1701,9 +1703,23 @@ def blob_entry(repo: "str | Path", rel: str, *, store: bool = True) -> Optional[
     ``store=True`` also writes the blob into git's object database, which a patch needs later,
     when the file will have changed. A plain look at the file (the stale-read guard) passes
     ``store=False``: the id is computed without git and nothing is added to the repository.
+
+    A symbolic link is recorded the way git records it: mode 120000, the blob being the path the
+    link holds. The link is never followed (``hash-object -- rel`` would hash what it points to), and
+    one treated as absent was dropped from a round's patch, or showed as deleted when it was
+    only re-pointed.
     """
     full = Path(repo) / rel
-    if not full.is_file() or full.is_symlink():
+    if full.is_symlink():
+        try:
+            target = os.fsencode(os.readlink(full))
+        except OSError:
+            return None
+        if not store:
+            return "120000", _blob_id(target)
+        blob = _git(repo, "hash-object", "-w", "--no-filters", "--stdin", input=target).stdout.decode().strip()
+        return "120000", blob
+    if not full.is_file():
         return None
     if not store:
         try:

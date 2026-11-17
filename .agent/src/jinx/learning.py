@@ -186,8 +186,11 @@ def add_lessons(
             "confirmed": 0,
             "failed": 0,
         }
+        # A mapping without a "kind" is wrapped above to be read as a rule, but its evidence is still its own:
+        # look for it in the mapping, not in the wrapper, which only ever holds the text.
+        carrier = raw if isinstance(raw, dict) else payload
         evidence = normalize_lesson_text(
-            payload.get("evidence") or payload.get("why") or payload.get("detail")
+            carrier.get("evidence") or carrier.get("why") or carrier.get("detail")
         )
         if evidence:
             entry["evidence"] = evidence
@@ -327,7 +330,7 @@ def load_ledger() -> Dict[str, Any]:
             return {"lessons": []}
         with open(LESSONS_PATH, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-    except (yaml.YAMLError, OSError) as e:
+    except (yaml.YAMLError, OSError, ValueError) as e:      # ValueError: not UTF-8, or a date that cannot exist
         logger.error("Failed to read lessons ledger at %s: %s", LESSONS_PATH, e)
         return {"lessons": []}
     if not isinstance(data, dict):

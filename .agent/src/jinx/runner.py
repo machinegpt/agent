@@ -189,7 +189,10 @@ def parse_state_block(text: str) -> Optional[Dict[str, Any]]:
                         return data
                     if isinstance(nested, dict) and _looks_like_state(nested):
                         return data
-            except yaml.YAMLError:
+            except (yaml.YAMLError, ValueError, RecursionError):
+                # Not only malformed YAML: a date that cannot exist (2026-02-30), an integer past Python's digit
+                # limit, nesting deeper than the parser can follow. A block like that is skipped, as the others are;
+                # an earlier fence that holds the real state must not be lost to a later one that does not parse.
                 continue
 
     logger.debug("No valid state block found in response.")
@@ -394,6 +397,8 @@ def get_tool_result_from_editor(tool_use_id: str, name: str, params: Dict[str, A
             response = json.loads(line)
         except json.JSONDecodeError as e:
             raise IPCError(f"Malformed JSON from editor: {e}") from e
+        if not isinstance(response, dict):          # valid JSON that is a list, a number, a string or null
+            raise IPCError(f"Editor response is not a JSON object: {type(response).__name__}")
 
         status = response.get("status", "")
         is_error = "error" in response or (isinstance(status, str) and "error" in status.lower())
@@ -415,8 +420,10 @@ def request_llm_from_editor(
     try:
         print(json.dumps(payload), flush=True)
     except OSError as e:
+        # Same as for a tool payload: with nobody to receive the request there is no round to go on with. Returning
+        # an empty reply here made every remaining round "succeed" with no content, up to the hard cap.
         logger.error("Failed to transmit LLM request: %s", e)
-        return []
+        raise IPCError(f"Failed to transmit LLM request: {e}") from e
 
     try:
         line = _read_stdin_with_retries(IPC_TIMEOUT, IPC_RETRIES, IPC_BACKOFF)
@@ -1115,6 +1122,8 @@ def _verify_or_revert() -> Optional[str]:
     # only ever sees `file_write`, so a brake weakened through `bash_exec` must
     # never be adopted merely because it passes a later structural check.
     try:
+        baseline = selfpatch._baseline_files()
+        current = selfpatch.snapshot()
         for name in changed:
             # 1. Block any edit to PROTECTED_FILES
             if name in selfpatch.PROTECTED_FILES:
@@ -1124,10 +1133,16 @@ def _verify_or_revert() -> Optional[str]:
 
             # 2. Check for symbol violations in other files.
             # We must treat the change as a whole-file rewrite to detect
-            # deletions or shadowing of protected symbols.
-            base_path = selfpatch._target_for(name)
-            old_text = base_path.read_text(encoding="utf-8", errors="replace")
-            current_text = selfpatch.snapshot().get(name, "")
+            # deletions or shadowing of protected symbols. The prior text is the
+            # BASELINE's: the file under the source tree is the edited one, and
+            # comparing it with itself reports nothing whatever the edit did. A
+            # file the baseline does not have is new (None).
+            base_path = baseline.get(name)
+            old_text = (
+                base_path.read_text(encoding="utf-8", errors="replace")
+                if base_path is not None else None
+            )
+            current_text = current.get(name, "")
 
             violations = selfpatch._violations_against(
                 name, current_text, old_text, whole_file=True
@@ -2041,7 +2056,9 @@ def _handle_tool_response(
         raw_results = [raw_results]
     results = [r for r in raw_results if isinstance(r, dict)] if isinstance(raw_results, list) else []
     tool_results = [
-        {"type": "tool_result", "tool_use_id": r.get("tool_use_id"), "content": r.get("content") or ""}
+        # Only a missing content is empty: a command that printed 0 (or false) did produce an output.
+        {"type": "tool_result", "tool_use_id": r.get("tool_use_id"),
+         "content": "" if r.get("content") is None else r.get("content")}
         for r in results
     ]
 
@@ -2099,6 +2116,10 @@ def _handle_tool_response(
             tid = r.get("tool_use_id")
             if isinstance(tid, str) and tid not in processed:
                 processed.append(tid)
+        # Bounded like the result cache beside it: only the latest batch can be retried, and the list is written
+        # into the run state and re-sent with every request, so unbounded it grows with every call of the run.
+        if len(processed) > TOOL_RESULT_CACHE_CAP:
+            del processed[: len(processed) - TOOL_RESULT_CACHE_CAP]
         run_state["processed_tool_use_ids"] = processed
         run_state["tool_result_cache"] = _update_tool_result_cache(
             run_state.get("tool_result_cache"), results

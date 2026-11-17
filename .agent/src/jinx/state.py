@@ -95,7 +95,10 @@ def atomic_write_yaml(path: Path, data: Any, width: int = sys.maxsize) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         import io
         buf = io.StringIO()
-        yaml.dump(
+        # safe_dump, like the runner's own dumper: the plain ``yaml.dump`` writes a tuple or a set the model's
+        # protocol update carried in as ``!!python/tuple`` & co., which ``safe_load`` (how every reader here loads
+        # the file) refuses, so the whole manifest then read back as empty.
+        yaml.safe_dump(
             data, buf, allow_unicode=True,
             default_flow_style=False, sort_keys=False, width=width,
         )
@@ -200,7 +203,7 @@ class StateManager:
             with open(jinx_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f)
                 return data if isinstance(data, dict) else {}
-        except (yaml.YAMLError, OSError) as e:
+        except (yaml.YAMLError, OSError, ValueError) as e:      # ValueError: not UTF-8, or a date that cannot exist
             logger.error("Failed to read JINX.yaml at %s: %s", jinx_path, e)
             return {}
 
