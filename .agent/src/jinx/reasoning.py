@@ -60,6 +60,7 @@ written so that any failure means no note rather than no notes.
 from __future__ import annotations
 
 import re
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -175,6 +176,25 @@ PLATEAU_WINDOW_CASES: Tuple[Tuple[Tuple[int, ...], Tuple[int, ...], int], ...] =
 # note is never handed over cut off mid-sentence, and spent in priority order:
 # what stops the run, then what was lost, then this round's advice, then the rest.
 MAX_NOTE_CHARS = 1800
+
+# The skill ladder: a score entry may carry ``skill`` (``<name> - <gap it closes>``, or ``none - <what the
+# audit checked>`` once no gap is left). ``check_exit`` waits for a closing ``none`` only in a run whose
+# scores sent one; ``LADDER_CAP`` in the runner is the number of rungs after which it stops waiting, and
+# the value here is only what the mirror assumes when the runner cannot be reached.
+DEFAULT_LADDER_CAP = 12
+# How many earlier rungs the ladder block names (older ones are counted), and how much of a name it keeps.
+LADDER_CLIMBED_SHOWN = 6
+LADDER_NAME_CHARS = 40
+# The size of ``facts`` above which the ladder block asks for a rewrite in the round that writes the skill:
+# a budget on what the model keeps, not a limit the runner enforces (state.py cuts only the single entry).
+FACTS_BUDGET_ITEMS = 24
+FACTS_BUDGET_CHARS = 2400
+# Score entries the round prompt shows in full; the older ones are abridged (see ``compact_dump``). Three is
+# the window of the plateau rule and of the failure notes, so what the model is asked to reason about is shown.
+COMPACT_KEEP_SCORES = 3
+
+_CLOSING_RUNG = re.compile(r"none(?=$|[\s:;,.])", re.IGNORECASE)
+_RUNG_NAME_END = re.compile(r"\s+[-–—]\s+|:\s|;")
 
 
 def _val(entry: Any, key: str, default: Any = None) -> Any:
@@ -665,6 +685,54 @@ def render_requirement_note(scores: List[Any]) -> str:
     )
 
 
+def rungs_of(scores: List[Any]) -> List[str]:
+    """The ``skill`` line of every score entry that sent one, oldest first, on one line each."""
+    out: List[str] = []
+    for entry in scores or []:
+        value = _val(entry, "skill", None)
+        if isinstance(value, str) and value.strip():
+            out.append(" ".join(value.split()))
+    return out
+
+
+def is_closing_rung(rung: str) -> bool:
+    """True for ``none`` followed by nothing, a space or a separator: the audit that ends the ladder.
+
+    ``none-handler - ...`` is a skill that happens to start with the word, not a closing, which is why the
+    word has to be followed by something that is not part of a name.
+    """
+    return bool(_CLOSING_RUNG.match(rung.strip()))
+
+
+def rung_name(rung: str, limit: int = LADDER_NAME_CHARS) -> str:
+    """The name part of ``<name> - <gap it closes>``, cut to ``limit``; the whole line when it has no name."""
+    head = _RUNG_NAME_END.split(rung.strip(), maxsplit=1)[0].strip()
+    return (head or rung.strip())[:limit]
+
+
+def ladder_cap() -> int:
+    """The number of rungs after which the exit rule stops waiting for the ladder to close.
+
+    Read from the runner, where the protected rule lives, so the mirror follows the value in force; the local
+    default is used only when the runner cannot be reached (which the exit probe reports as drift anyway).
+    """
+    cap = getattr(_runner(), "LADDER_CAP", DEFAULT_LADDER_CAP)
+    return cap if isinstance(cap, int) and not isinstance(cap, bool) else DEFAULT_LADDER_CAP
+
+
+def open_rung(scores: List[Any]) -> str:
+    """The name of the latest rung when it keeps the skill ladder open, or '' when the ladder does not.
+
+    The mirror of ``runner._ladder_open``, which is what ``check_exit`` consults. The ladder is open when a
+    run has sent at least one ``skill``, has not yet reached the cap, and its latest ``skill`` is a rung and
+    not a closing ``none``. A run that never sent one is not held by it at all.
+    """
+    rungs = rungs_of(scores)
+    if not rungs or len(rungs) >= ladder_cap() or is_closing_rung(rungs[-1]):
+        return ""
+    return rung_name(rungs[-1])
+
+
 def exit_blockers(scores: List[Any], min_rounds: int, rnd: int) -> List[str]:
     """Every condition runner.check_exit applies, phrased as what is missing.
 
@@ -697,6 +765,9 @@ def exit_blockers(scores: List[Any], min_rounds: int, rnd: int) -> List[str]:
                 prior_best = max(_pass_count(s) for s in prior)
                 if last3 > prior_best:
                     blockers.append(text.exit_blocker_plateau(last3, prior_best))
+        rung = open_rung(scores)
+        if rung:
+            blockers.append(text.exit_blocker_rung_open(rung))
     return blockers
 
 
@@ -740,6 +811,117 @@ def scores_from_dump(state_dump: str) -> List[Any]:
     """The score list out of the serialized state, or [] when there is none."""
     scores = state_from_dump(state_dump).get("scores")
     return scores if isinstance(scores, list) else []
+
+
+class _Flow(dict):
+    """A mapping that is dumped on one line, as an abridged score entry is."""
+
+
+class _ShownDumper(yaml.SafeDumper):
+    """The dumper for the copy of the state that the round prompt shows: the runner's block scalars for
+    multi-line strings, plus one-line (flow) mappings for abridged entries."""
+
+
+def _represent_flow(dumper: Any, data: Any) -> Any:
+    return dumper.represent_mapping("tag:yaml.org,2002:map", data, flow_style=True)
+
+
+def _represent_str(dumper: Any, data: str) -> Any:
+    if "\n" in data:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
+_ShownDumper.add_representer(_Flow, _represent_flow)
+_ShownDumper.add_representer(str, _represent_str)
+
+# What an abridged score entry keeps: which round it was, the approach it tried, how far it got, why it
+# failed and which skill it wrote. What goes is the per-requirement verdicts and the free text of a past round
+# (prediction, hypothesis, plan, graph): the notes read those from the full dump, and the newest entries are
+# shown in full. The entry is marked ``abridged`` so that, if a model sends it back, ``merge_scores`` skips it
+# instead of letting it replace the stored entry that has all of that.
+_ABRIDGED_KEYS = ("round", "approach", "pass_count", "all_pass", "cause")
+
+
+def _abridge_entry(entry: Any) -> Any:
+    """One older score entry as a one-line mapping of what later rounds still reason from."""
+    if not isinstance(entry, dict):
+        return entry
+    short: Dict[str, Any] = {key: entry[key] for key in _ABRIDGED_KEYS if key in entry}
+    rung = entry.get("skill")
+    if isinstance(rung, str) and rung.strip():
+        short["skill"] = rung_name(rung)
+    short["abridged"] = True
+    return _Flow(short)
+
+
+def compact_dump(state_dump: str, keep: int = COMPACT_KEEP_SCORES) -> str:
+    """The serialized state as the round prompt SHOWS it: score entries older than the newest ``keep``
+    abridged to one line each.
+
+    The score history is the one part of the state that grows with every round (``facts`` is capped and
+    replaced), and every round prompt shows all of it, so a long run pays for round N once per later round.
+    Only this copy is shortened: the notes and every check read the full dump, and the stored state is not
+    touched, so nothing a brake decides on depends on what is shown. Each abridged entry is marked
+    ``abridged: true`` and a comment above ``scores`` says they are read-only, and ``state.merge_scores``
+    skips a marked entry that is sent back, so a model that echoes the history cannot overwrite the stored
+    entries (and their per-requirement verdicts, which the deadlock check reads) with the short copies.
+
+    A state with ``keep`` entries or fewer, or one that cannot be read, comes back unchanged: this is an
+    aid and an aid that breaks the round prompt is worse than none.
+    """
+    text = _prompts()
+    if text is None or keep < 1:
+        return state_dump
+    try:
+        data = yaml.safe_load(state_dump)
+        if not isinstance(data, dict):
+            return state_dump
+        holder = data["state"] if isinstance(data.get("state"), dict) else data
+        scores = holder.get("scores")
+        if not isinstance(scores, list) or len(scores) <= keep:
+            return state_dump
+        holder["scores"] = [_abridge_entry(e) for e in scores[:-keep]] + scores[-keep:]
+        shown = yaml.dump(
+            data, Dumper=_ShownDumper, allow_unicode=True, default_flow_style=False,
+            sort_keys=False, width=sys.maxsize,
+        )
+        mark = text.SCORES_ABRIDGED_MARK % keep
+        return re.sub(r"(?m)^( *)scores:\n", lambda m: "%sscores:  %s\n" % (m.group(1), mark), shown, count=1)
+    except Exception:
+        return state_dump
+
+
+def render_skill_ladder(state_dump: str, rnd: int) -> str:
+    """The SKILL LADDER block for the round about to start, or '' when the ladder has nothing to ask.
+
+    Shown from round 2 (round 1 has its own brief) in every round until the ladder is closed by a ``none``
+    rung or reaches the cap, whether or not the model has sent a ``skill`` yet: a run that has not climbed
+    is exactly the one that needs to be told. A closed ladder costs nothing. It also reports when ``facts``
+    has outgrown its budget, because the round that writes a skill is the round that can empty ``facts`` of
+    what the skill now holds.
+    """
+    if rnd < 2:
+        return ""
+    text = _prompts()
+    if text is None:
+        return ""
+    state = state_from_dump(state_dump)
+    scores = state.get("scores") if isinstance(state.get("scores"), list) else []
+    rungs = rungs_of(scores)
+    if rungs and (len(rungs) >= ladder_cap() or is_closing_rung(rungs[-1])):
+        return ""
+    names = [rung_name(r) for r in rungs]
+    shown = names[-LADDER_CLIMBED_SHOWN:]
+    over: Optional[Tuple[int, int]] = None
+    facts = state.get("facts")
+    if isinstance(facts, list):
+        count, chars = len(facts), sum(len(str(f)) for f in facts)
+        if count > FACTS_BUDGET_ITEMS or chars > FACTS_BUDGET_CHARS:
+            over = (count, chars)
+    return text.note_skill_ladder(
+        len(rungs) + 1, shown, len(names) - len(shown), over, (FACTS_BUDGET_ITEMS, FACTS_BUDGET_CHARS),
+    )
 
 
 def _plan_candidates(text: Any) -> List[str]:
@@ -1181,6 +1363,12 @@ def _exit_probe() -> List[Tuple[List[Dict[str, Any]], int, int]]:
         return [{"round": r, "all_pass": True, "pass_count": c,
                  "requirements": {"a": True}} for r, c in zip(rounds, counts)]
 
+    def climb(skills: Any) -> List[Dict[str, Any]]:
+        """Passing rounds with a flat pass_count (so the plateau rule is silent), one ``skill`` each."""
+        return [{"round": i + 1, "all_pass": True, "pass_count": 3, "requirements": {"a": True},
+                 "skill": s} for i, s in enumerate(skills)]
+
+    cap = max(1, min(ladder_cap(), 40))
     return [
         ([], 10, 2),
         ([one(True, 1, 1)], 10, 2),
@@ -1188,6 +1376,15 @@ def _exit_probe() -> List[Tuple[List[Dict[str, Any]], int, int]]:
         (many((1, 2, 3, 4, 5), (1, 2, 3, 4, 5)), 2, 5),
         (many((1, 2, 3, 4), (3, 3, 3, 3)), 2, 4),
         ([one(False, 0, 2)], 2, 2),
+        # The skill ladder: the latest rung open; closed by a `none`; a name that only starts with the word;
+        # a closed ladder whose later entries sent nothing; an empty line; the rung before the cap and the cap.
+        (climb(("a - x", "b - y", "c - z")), 2, 3),
+        (climb(("a - x", "b - y", "none - audited every phrase")), 2, 3),
+        (climb(("a - x", "none-handler - y")), 2, 2),
+        (climb(("a - x", "None: nothing left", "")) + [one(True, 3, 4)], 2, 4),
+        (climb(("a - x", "b - y", "   ")), 2, 3),
+        (climb(("a - x",) * max(cap - 1, 1)), 2, max(cap - 1, 1)),
+        (climb(("a - x",) * cap), 2, cap),
     ]
 
 

@@ -150,9 +150,8 @@ tools:                                                      # tools.tool_schema(
         path: {type: string, description: Path to the file}
         content: {type: string, description: The full content to write}
       required: [path, content]
-processed_tool_use_ids: [call_00, call_01]   # already-executed calls, for editor-side dedupe
-tool_result_cache:                          # memoized results, keyed by tool_use_id
-  call_00: "85 passed in 0.21s"
+processed_tool_use_ids: []                    # always empty here: nothing in a completion request runs
+tool_result_cache: {}                         # always empty here (a tool_calls request carries its own calls' results)
 retry: false                                  # true when reissued after a stale wait
 ```
 
@@ -178,9 +177,8 @@ calls:
   - id: call_123
     name: bash_exec
     params: {script: pytest tests/test_state.py}
-processed_tool_use_ids: []
-tool_result_cache:
-  call_00: "85 passed in 0.21s"
+processed_tool_use_ids: []   # the ids of the calls above that already ran (non-empty on a retry only)
+tool_result_cache: {}        # their stored results, keyed by tool_use_id (non-empty on a retry only)
 retry: false
 ```
 
@@ -218,7 +216,8 @@ ledger instead of a crash.
 to it after a tool response is processed, and reads it back when building the next request, but a
 fresh `llm_generate` request rewrites the run state without the field. Hosts should therefore treat
 the request's `processed_tool_use_ids` as the authoritative signal, and only use the run-state copy to
-recover context for a stale retry.
+recover context for a stale retry. A `tool_calls` request lists only the ids of its own `calls` that
+already ran, and an `llm_generate` request carries the field empty (see the *Dispatch table* in §5).
 
 `history` is a **bounded window**, not the whole transcript. The loop survives process boundaries
 because each round reloads this window, and the window is advanced past a leading `tool_result` block
@@ -233,7 +232,7 @@ not mistake the window for the whole session.
 
 #### Stale-Wait Recovery
 
-If `jinx_run_state.yaml` exists but `jinx_response.yaml` does not, the host failed to answer. JINX then calls `_is_run_state_stale()`: a run is stale only when **both** `updated_at` and the mtimes of `jinx_run_state.yaml` / `jinx_request.yaml` are older than `JINX_BACKGROUND_WAIT_TIMEOUT` (default `30` s). A stale run reissues the same request with `retry: true` and an expanded `processed_tool_use_ids` list so the host can return stored results instead of re-executing side effects; a non-stale run exits `1` and waits for the host to retry.
+If `jinx_run_state.yaml` exists but `jinx_response.yaml` does not, the host failed to answer. JINX then calls `_is_run_state_stale()`: a run is stale only when **both** `updated_at` and the mtimes of `jinx_run_state.yaml` / `jinx_request.yaml` are older than `JINX_BACKGROUND_WAIT_TIMEOUT` (default `30` s). A stale run reissues the same request with `retry: true`, carrying the ids and the stored results of its own calls so the host can return them instead of re-executing side effects; a non-stale run exits `1` and waits for the host to retry.
 
 #### Cleanup and Signals
 
@@ -479,7 +478,7 @@ flowchart LR
 
 4. **Phase IV: Multi-Criteria Convergence & Exit**
    After each round, JINX updates the metrics and checks for exit or deadlock conditions:
-   * **Exit Condition** (`check_exit`): the current round must be `>=` the round count in force (see *Adaptive round count* below), at least 2 score entries must exist, and the **latest** entry must have `all_pass: true`. Once 4 or more entries exist, the best `pass_count` of the last 3 rounds must not exceed the best `pass_count` of everything before them — a still-improving loop is not allowed to exit. The runner additionally refuses an exit from a *dead round* (below).
+   * **Exit Condition** (`check_exit`): the current round must be `>=` the round count in force (see *Adaptive round count* below), at least 2 score entries must exist, and the **latest** entry must have `all_pass: true`. Once 4 or more entries exist, the best `pass_count` of the last 3 rounds must not exceed the best `pass_count` of everything before them — a still-improving loop is not allowed to exit. In a run whose scores carry a `skill`, the latest `skill` sent must also be a closing `none` (see *Skill ladder* below). The runner additionally refuses an exit from a *dead round* (below).
    * **Deadlock Condition** (`check_deadlock`): the round must be `>=` the round floor, and some requirement must have failed across at least **3 semantically distinct strategy clusters**. The model may also declare `deadlock: true` itself (a blocker only the user can remove), but such a claim counts only from the round floor on: an earlier claim is refused, its flag is cleared and the model is told, because "deadlock" is the cheapest way for a tired model to stop.
    * **Hard Cap**: the execution loop is strictly capped at 40 rounds (`HARD_CAP`); the process then exits with status `2` to prevent unbounded token consumption.
    * **Tool Depth Cap**: a single round may chain at most 20 tool calls (`TOOL_DEPTH_CAP`). On breach JINX injects a recovery instruction and issues one final `llm_generate` with `tools: []`, forcing a state block instead of a truncation.
@@ -492,6 +491,24 @@ flowchart LR
    * **Confirming round.** A pass right after a failed round has to be re-verified by one more round (`CONFIRM_ROUNDS` = 1) before it can end the run. It applies to an exit only, never to the deadlock floor: a run that keeps failing must not be able to push a deadlock out of reach.
    * **Repeats.** The same tool call returning the same result 3 times gets a `REPEATED CALL` notice appended to those very results (at 5 it forbids the call until something it depends on changed), and the same `approach` restated with no further requirement passing gets a `REPEATED ATTEMPT` note in the next prompt. The wording escalates with the streak and only ever asks for a *different* approach; no notice offers a way to stop.
    * The notices are advice; the counts are enforced by the runner. The extra rounds never push the count past `HARD_CAP - 1`, so an exit always stays reachable. A model that ignores every notice and repeats itself still ends at the hard cap.
+
+   **Skill ladder.** A loop that stops at its first green checks has written the code once, fixed what the checks found and tested it. A vague or very large request needs more, and the model's own list of requirement keys is where such a request is narrowed first. So from round 2 every round climbs one *rung*:
+   1. Audit the deliverable against each phrase of `task`, not only against the requirement keys, and name the largest gap that is left.
+   2. Write **one new skill** for that class of gap with the editor's own `skill-creator` (an earlier skill is corrected only if it misled; one that the new skill makes redundant is folded into it), and follow it in this round.
+   3. Record it in the round's score entry: `skill: <name> - <gap it closes>`. What the skill holds leaves `facts`.
+
+   Each rung covers what the earlier ones did not, so the skills come newer and newer, and the ladder ends only when a fresh check of every phrase of `task` finds no gap: `skill: none - <what you checked>`. Round 1 writes rung 1, the skill for building and proving the deliverable (`FIRST_ROUND_BRIEF`), and sizes the loop (`protocol.loop.min` 6–10 for a project or a vaguely worded goal; a later rung may also add a requirement key for a gap in the user's words, never drop one). A question or a one-step change writes `skill: none - <why>` at once and pays nothing more. What the runtime enforces:
+   * **A gate, opt-in and stricter-only.** For a run whose scores never carry `skill`, `check_exit` is exactly what it was. In a run that does, the latest `skill` sent must also be a closing `none` (`none` alone, or followed by a space or one of `: ; , .`; `none-handler` is a name, not a closing). Only the latest `skill` sent counts, not the latest entry, so a round that forgets the field neither opens a closed ladder nor closes an open one. The gate can only make an exit later.
+   * **A valve.** `LADDER_CAP` rungs (`JINX_LADDER_CAP`, default **12**; it counts the rounds that sent a `skill`) end the wait, so an exit stays reachable whatever the model writes, and the cap is well under `HARD_CAP`.
+   * **A reason.** An exit claimed on an open ladder is refused, and the next round prompt says why (`EXIT CHECK ... the skill ladder is open (latest rung '<name>')`). The advisory mirror in `reasoning.py` is compared with `check_exit` on probe histories that include the ladder (open, closed, a name that only starts with `none`, the rung before the cap and the cap), so a drift is reported like any other.
+   * **A nudge, from round 2.** The round prompt carries a short `SKILL LADDER` block: the rung number, the names of the latest six rungs and the ask. A closed ladder, a ladder at the cap and round 1 add nothing.
+   * **Protected.** `check_exit`, `_ladder_open` and `LADDER_CAP` are brake logic: `selfpatch.py` refuses a self-patch that touches them.
+
+   **Token economy.** A ladder makes a run longer, so what a round costs has to stay flat as the run grows. Nothing here changes what the brakes decide, and every cut says that it was made:
+   * **The request no longer carries the tool-result memo.** `llm_generate` has it empty and `tool_calls` carries only its own calls' entries (§1.1, §5); the run state keeps all of it. It was the largest part of a long run's request, and the host re-reads the request file at every step.
+   * **The history window is trimmed** (`_trim_past_rounds`): a round prompt that a newer one in the window supersedes becomes a one-line stub, and the output of tool calls ahead of the newest round prompt is cut in the middle to `JINX_HISTORY_RESULT_CHARS` (default **800**; the head and the tail stay, where a command's verdict is). The round being worked is never cut, and the persisted history is untouched.
+   * **The score history is abridged in what is shown.** `CURRENT STATE` shows the newest 3 score entries in full and the older ones as one line (`round`, `approach`, `pass_count`, `all_pass`, `cause`, the rung's name), each marked `abridged: true` under a comment that says they are read-only. The notes and every check read the full state, the stored state is not touched, and `merge_scores` ignores an abridged entry that a model sends back, so an echoed history cannot overwrite the stored entries.
+   * **Memory is kept short.** An entry of `facts`, `debt` or `open` longer than `JINX_TEXT_ITEM_CHARS` (default **400**) is cut with a marker that says how much was left out, and a `skill` line at `JINX_SKILL_CHARS` (default **200**). When `facts` outgrows 24 entries or 2400 characters, the `SKILL LADDER` block asks for it to be resent shorter in the round that writes the skill: what a skill holds is deleted, duplicates merge, one line each.
 
 ### Cognitive Loop Control Flow
 
@@ -616,6 +633,7 @@ state:
         unit_tests: false
       pass_count: 1
       all_pass: false
+      skill: "rs256-baseline - how to build and prove RS256 signing"   # optional — the round's rung of the skill ladder (§2)
       approach_graph:            # optional — enables semantic deadlock clustering
         nodes:
           - {id: "jwt_signer.py", type: file}
@@ -657,9 +675,11 @@ scores:
 
 Both are auto-normalized to the full schema (`requirements: {task_complete: <bool>}`, `pass_count`, `all_pass`, `approach`) before Pydantic validation, so a terse model reply can never be rejected. `round` defaults to `0` and `approach` to `"unspecified"`; `task`, `facts`, `debt`, and `open` are replaced wholesale by whatever the model sends, while `None`-valued keys are ignored so partial updates preserve the rest of the manifest.
 
-`scores` is the exception: it is **merged by round number** rather than replaced (`merge_scores`). An entry whose `round` already exists replaces that stored entry, and rounds absent from the reply are preserved on disk. The model therefore only has to send the current round, while a full re-send remains valid and simply overwrites in place. Merged order is ascending by `round`, and entries without an integer `round` are keyed positionally so they survive the round trip. This removes the previous failure mode where a reply that omitted a round silently deleted it, and it is what lets the prompt stop demanding a full history echo every round.
+`scores` is the exception: it is **merged by round number** rather than replaced (`merge_scores`). An entry whose `round` already exists replaces that stored entry, and rounds absent from the reply are preserved on disk. The model therefore only has to send the current round, while a full re-send remains valid and simply overwrites in place. Merged order is ascending by `round`, and entries without an integer `round` are keyed positionally so they survive the round trip. This removes the previous failure mode where a reply that omitted a round silently deleted it, and it is what lets the prompt stop demanding a full history echo every round. The one exception to "replaces" is an entry marked `abridged: true`: it is the shortened copy of an older entry that the round prompt shows (§2, *Token economy*), so a model that sends the history back cannot overwrite the stored entries with their short copies. The merge skips it when its round is stored, keeps it (without the mark) when it is not, and never stores the mark.
 
-Two working lists are kept bounded on write. Near-duplicate entries in `facts`, `debt`, and `open` collapse into one — comparison ignores case, punctuation, and whitespace, so `"Doesn't work."` and `"doesnt work"` are the same fact — and `facts` is capped at `JINX_FACTS_CAP` (default **60**) with the oldest entries dropped first, because that list is re-sent every round and is otherwise the dominant per-round cost. Facts stay *replaced* rather than accumulated, so the model can still retract a belief it has since disproved.
+`skill` is one short line, `<name> - <gap it closes>` or `none - <what the audit checked>` (§2, *Skill ladder*). It is read through `one_line_skill`, so a list, a mapping or a multi-line string is flattened to one line instead of rejecting the block (validation is all-or-nothing), and a line over `JINX_SKILL_CHARS` (default **200**) is cut. It is optional, and a run that never sends one is judged exactly as before.
+
+Two working lists are kept bounded on write. Near-duplicate entries in `facts`, `debt`, and `open` collapse into one — comparison ignores case, punctuation, and whitespace, so `"Doesn't work."` and `"doesnt work"` are the same fact — and `facts` is capped at `JINX_FACTS_CAP` (default **60**) with the oldest entries dropped first, because that list is re-sent every round and is otherwise the dominant per-round cost. Facts stay *replaced* rather than accumulated, so the model can still retract a belief it has since disproved. The count bounds the list, not an entry, so an entry of any of the three lists longer than `JINX_TEXT_ITEM_CHARS` (default **400**) is cut and ends with a marker that says how much was left out (duplicates are looked for in the part that is kept): one pasted command output would otherwise outweigh the whole list, in every round prompt for the rest of the run.
 
 When a state block fails validation the previous state is kept and the reason is appended to the next round's prompt instead of being logged and discarded. A rejected block now tells the model that its block was rejected, what the validation error was, and the usual causes (an unquoted `:` or `#` inside a scalar, a tab used for indentation, a key nested one level too deep) — silent rejection previously looked identical to a model that had simply done nothing.
 
@@ -698,7 +718,7 @@ The JINX runtime is comprised of the following Python components located in `.ag
   Lets JINX edit its own code without letting it remove its own brakes. `file_write` accepts a bare string path, so the model has always been able to rewrite `.agent/src/jinx/*.py` — and has, which is how this repository's own release work happens. Nothing used to check whether the result still worked. This module adds that check:
   * **Protect, compile and roll back** — `capture_baseline` copies the source tree, `baseline_changed` diffs it, and `restore_baseline` reverts. After a framework-source edit, the gate runs two fast checks: `compileall`, and an import of every module in a child interpreter (with a bytecode cache of its own, so what is checked is what is on disk). A syntax error, a missing import or an exception at load time is reverted and reported to the model. Functional tests are selected and run by the editor CLI for the task at hand, so JINX does not repeat a project suite. The baseline lives for the whole run, not one round: it is captured when the run starts, kept while a round changes nothing, and re-captured after a structurally valid edit is adopted. It is dropped on a clean finish, and deliberately **kept** on an error exit, because that is what lets the next invocation repair the damage.
   * **Bootstrap preflight** — the same check runs once more in `.agent/jinx.py` before JINX is imported, loading `selfpatch.py` directly from its path. Without this, a self-edit that leaves a syntax error would stop the framework from starting at all, and the gate designed to catch exactly that would be unable to run. With no baseline on disk there is nothing to compare against, so a broken tree fails loudly instead of being silently overwritten.
-  * **Brake protection** — `guard_tool_call` refuses a write that would redefine `merge_state`, `StateBlock`, `atomic_write_yaml`, `_resolve_jinx_path`, `_apply_protocol`, `check_exit`, `check_deadlock`, `_resolve_min_rounds`, `_handle_llm_response`, the exit-decision helpers (`_scores_of`, `_loop_of`), the adaptive round-count helpers and constants, or `SYSTEM_PROMPT`, and treats `selfpatch.py`, `learning.py` and `scope.py` as wholly off limits. Refusal happens **before** dispatch, not after, so the model is told it was refused instead of concluding verification is broken. Protection compares the *bodies* of those definitions against what is on disk, not merely their presence, so rewriting a whole protected file is allowed as long as the brake itself is byte-identical. Weakening, rewriting or deleting a brake is refused, and so are the sneakier variants: appending a second definition that shadows the protected one at import time, or editing the file through `bash_exec`, which never passes the guard at all. The gate therefore re-runs the same comparison against the on-disk files and the baseline *before* verification, and a brake touched that way is rolled back without being tested: a green suite cannot justify changing the code that decides what a green suite means.
+  * **Brake protection** — `guard_tool_call` refuses a write that would redefine `merge_state`, `StateBlock`, `atomic_write_yaml`, `_resolve_jinx_path`, `_apply_protocol`, `check_exit`, `check_deadlock`, `_resolve_min_rounds`, `_handle_llm_response`, the exit-decision helpers (`_scores_of`, `_loop_of`, `_ladder_open`), the adaptive round-count helpers and constants (`LADDER_CAP` among them), or `SYSTEM_PROMPT`, and treats `selfpatch.py`, `learning.py` and `scope.py` as wholly off limits. Refusal happens **before** dispatch, not after, so the model is told it was refused instead of concluding verification is broken. Protection compares the *bodies* of those definitions against what is on disk, not merely their presence, so rewriting a whole protected file is allowed as long as the brake itself is byte-identical. Weakening, rewriting or deleting a brake is refused, and so are the sneakier variants: appending a second definition that shadows the protected one at import time, or editing the file through `bash_exec`, which never passes the guard at all. The gate therefore re-runs the same comparison against the on-disk files and the baseline *before* verification, and a brake touched that way is rolled back without being tested: a green suite cannot justify changing the code that decides what a green suite means.
 * **`mail.py`** (Office: Mail, Leases, Round Files):
   The coordination layer for several sessions, with no dependency beyond the standard library, PyYAML and Pydantic. Key responsibilities:
   * `Office` / `Session` — presence cards with heartbeats, per-session inbox and outbox, atomic publish-by-link and consume-by-rename delivery, a validated `Mail` schema, and the digest shown to the model: the board (`peer_line`, a snapshot of what concerns the reader, the `news` that differ from what was last shown) and unread mail.
@@ -717,9 +737,9 @@ The JINX runtime is comprised of the following Python components located in `.ag
 * **`evidence.py`** (Failed Checks Grouped by Cause):
   Turns the captured tail of a failed check into evidence grouped by cause instead of dozens of near-identical lines: `parse_failures` reads pytest-style `FAILED` / `ERROR` lines and the closing counts, `canonical_reason` masks what changes from run to run (long numbers, hex ids, durations, paths) so that one cause is not split into several, and `render_digest` / `evidence_from_check` print one line per distinct cause. It renders the notice that follows a reverted self-patch (`_render_check_failures` in `runner.py`). Pure functions: it reformats output that already exists and decides nothing.
 * **`reasoning.py`** (Reasoning Notes from the Score History):
-  Derives advisory notes from the scores the model itself wrote and renders them as one bounded block for the round prompt (`render_notes`): whether the prediction held (`classify_prediction`, `prediction_stats`), whether a failure repeats under a new name, why a run that looks finished is not allowed to exit (`exit_blockers`), renamed requirement keys, regressions, contradictions between a round's own claims, plan and citation checks against the file system, and a check that these notes still mirror the brake logic they describe. It adds no state and decides nothing: `check_exit` and `check_deadlock` remain the only code that ends a run.
+  Derives advisory notes from the scores the model itself wrote and renders them as one bounded block for the round prompt (`render_notes`): whether the prediction held (`classify_prediction`, `prediction_stats`), whether a failure repeats under a new name, why a run that looks finished is not allowed to exit (`exit_blockers`), renamed requirement keys, regressions, contradictions between a round's own claims, plan and citation checks against the file system, and a check that these notes still mirror the brake logic they describe. It also builds the `SKILL LADDER` block (`render_skill_ladder`, with `rungs_of`, `open_rung` and the mirror of the ladder gate) and the abridged copy of the state that the round prompt shows (`compact_dump`). It adds no state and decides nothing: `check_exit` and `check_deadlock` remain the only code that ends a run.
 * **`prompts.py`** (Prompt Templates):
-  Holds `SYSTEM_PROMPT` (sent with every request, so kept short: the loop, the state contract and the SKILLS rule — a task enters through `find-skills` and leaves through `skill-creator`, which the prompt names and does not explain), `FIRST_ROUND_BRIEF` (the setup steps, appended to round 1 only), `REASONING_PROTOCOL` (the failure-analysis steps, delivered after a failed round instead of in the system prompt), the `MISSING_STATE_WARNING` injected when a round omits its state block, the `TOOL_DEPTH_CRITICAL_MSG` recovery directive, and `construct_round_prompt()`.
+  Holds `SYSTEM_PROMPT` (sent with every request, so kept short: the loop, the state contract and the SKILLS rule — a task enters through `find-skills` and every round after it climbs one rung of the skill ladder with `skill-creator`, which the prompt names and does not explain), `FIRST_ROUND_BRIEF` (the setup steps, appended to round 1 only), `REASONING_PROTOCOL` (the failure-analysis steps, delivered after a failed round instead of in the system prompt), the `MISSING_STATE_WARNING` injected when a round omits its state block, the `TOOL_DEPTH_CRITICAL_MSG` recovery directive, and `construct_round_prompt()`.
 
 ### Runtime Environment Variables
 
@@ -732,7 +752,11 @@ The JINX runtime is comprised of the following Python components located in `.ag
 | `JINX_BACKGROUND_WAIT_TIMEOUT` | `30` | `--ipc file` | Seconds before an unanswered run is considered stale |
 | `JINX_HISTORY_WINDOW` | `6` | both | Messages shipped in each `llm_generate` request |
 | `JINX_HISTORY_PERSIST_WINDOW` | `8` | both | Messages retained in `jinx_run_state.yaml` |
+| `JINX_HISTORY_RESULT_CHARS` | `800` | `--ipc file` | A tool result of an earlier round is cut to this many characters (head and tail) in the request window; `0` disables the cut |
 | `JINX_FACTS_CAP` | `60` | both | Max `facts` entries kept; oldest dropped first |
+| `JINX_TEXT_ITEM_CHARS` | `400` | both | An entry of `facts`, `debt` or `open` longer than this is cut, with a marker; `0` disables the cut |
+| `JINX_SKILL_CHARS` | `200` | both | A `skill` line of a score entry is cut to this many characters |
+| `JINX_LADDER_CAP` | `12` | both | Number of rungs (rounds that sent a `skill`) after which an exit stops waiting for the skill ladder to close (*Skill ladder*) |
 | `JINX_KEEP_IPC_ON_SIGNAL` | *(unset)* | both | Set to `1` to keep IPC files on Ctrl+C for inspection |
 | `JINX_TOOL_RESULT_CACHE_CAP` | `64` | both | Max memoized tool results kept; oldest evicted |
 | `JINX_SESSIONS` | `1` | `--ipc file` | `0`, `false`, `no` or `off` turns sessions off: one shared set of files in `.agent/` (§1.3) |
@@ -983,7 +1007,7 @@ if __name__ == "__main__":
 | `llm_generate` | `system`, `messages`, `tools` | `content:` list of `text` / `tool_use` blocks |
 | `tool_calls` | `calls[]` with `id`, `name`, `params` | `results[]` with `tool_use_id`, `content` |
 
-Both request types carry `tool_result_cache`, a map of `tool_use_id` to the result that call produced. The runner records every result it receives and persists the map (bounded by `JINX_TOOL_RESULT_CACHE_CAP`, default **64**, oldest evicted), so a later request — including a `retry: true` reissue after a stale wait — can be answered from memory.
+A `tool_calls` request carries `tool_result_cache`, a map of `tool_use_id` to the result that call produced, **for the calls it asks for**; an `llm_generate` request carries the field (and `processed_tool_use_ids`) empty, because nothing in a completion request runs. The runner records every result it receives and persists the whole map in the run state (bounded by `JINX_TOOL_RESULT_CACHE_CAP`, default **64**, oldest evicted), so a later `tool_calls` request — including a `retry: true` reissue after a stale wait — can be answered from memory. Only the entries of the request's own call ids are sent: the host reads the request file at every step, and the whole map used to ride along in every one of them, which in a long run was most of what was sent.
 
 This is what makes `processed_tool_use_ids` sufficient. The id list alone tells the host *that* a call already ran but not *what it returned*, so the only safe response was to skip the call and drop its output — losing the result the model needed. With the cache the host can replay the exact stored content under the same `tool_use_id` and the side effect is not repeated. Hosts should therefore check `tool_result_cache` first and fall back to `processed_tool_use_ids` only if a cache is unavailable, since a call may legitimately be re-requested later with a different parameter set.
 

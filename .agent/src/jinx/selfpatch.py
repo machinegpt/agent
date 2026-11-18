@@ -97,10 +97,10 @@ PROTECTED_SYMBOLS: Tuple[Tuple[str, str], ...] = (
     # that did nothing, and what refuses an early stop. An agent that could edit
     # these could make the loop shorter, which is the one thing they exist to stop.
     ("runner.py", r"^def (_ledger_of|_finish_round|_note_round_result|_discard_sizing)\b"),
-    ("runner.py", r"^def (_scores_of|_loop_of)\b"),
+    ("runner.py", r"^def (_scores_of|_loop_of|_ladder_open)\b"),
     ("runner.py", r"^def (_declared_base|_store_declared|_round_floors)\b"),
     ("runner.py", r"^def (_close_round|_round_verdict|_record_tool_results)\b"),
-    ("runner.py", r"^(DEFAULT_MIN_ROUNDS|SIZING_ROUNDS|CONFIRM_ROUNDS|DEAD_ROUND_CAP)\b"),
+    ("runner.py", r"^(DEFAULT_MIN_ROUNDS|SIZING_ROUNDS|CONFIRM_ROUNDS|DEAD_ROUND_CAP|LADDER_CAP)\b"),
     # The prompt contract itself.
     ("prompts.py", r"^SYSTEM_PROMPT"),
 )

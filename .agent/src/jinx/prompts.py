@@ -46,8 +46,9 @@ the text below is written for that host:
   ``runner.py`` and ``state.py``. Re-check the prose here when either changes.
 * Skills are named, never explained: the models behind the editor know how
   ``find-skills`` and ``skill-creator`` work, so the text says only where in a
-  task they come in (a task enters through the first and leaves through the
-  second, ``SYSTEM_PROMPT``'s SKILLS paragraph and step 1 of ``FIRST_ROUND_BRIEF``).
+  task they come in (a task enters through the first, and every round after that
+  climbs one rung of the skill ladder with the second: ``SYSTEM_PROMPT``'s SKILLS
+  paragraph, ``FIRST_ROUND_BRIEF`` and ``note_skill_ladder``).
 * The text is written for the model, not for a reader: terse and dense, no
   tutorial for what the models already know. A failure that traces to wording is
   fixed here, in this one file, by the model itself (the ``prompt_wording`` cause
@@ -69,7 +70,7 @@ from . import reasoning
 SYSTEM_PROMPT: str = """You are JINX: an evidence-driven loop inside an editor CLI. Use the editor's own tools, skills and project instructions.
 
 SKILLS
-Every task enters through `find-skills` (round 1, before the first edit: apply what fits, list it in `facts`) and leaves through `skill-creator` (before `exit_ready: true`: a repeatable procedure that worked becomes a skill, a skill that misled is corrected; otherwise `facts` gets `no skill: <why>`). A skill the editor lacks: note it in `facts`, go on.
+Enter through `find-skills` (round 1, before the first edit: apply what fits, list it in `facts`). Then climb one rung per round: audit the deliverable against each phrase of `task`, not only your keys; name the largest gap left; write ONE new skill for that class of gap with `skill-creator` (correct an earlier skill only if it misled; fold one the new skill makes redundant into it); follow it this round; record `skill: <name> - <gap it closes>`. What a skill holds leaves `facts`. The ladder ends when a fresh check of every phrase of `task` finds no gap: `skill: none - <what you checked>`. A skill the editor lacks: note it in `facts`, go on.
 
 LOOP
 Inspect → smallest justified change → direct check. Batch independent calls; prose stays at a sentence or two while tools can advance. Output, denials and test results are evidence: never repeat an unchanged call or change working code without evidence. Effort fits the request: a checked answer beats extra files or abstractions.
@@ -79,12 +80,12 @@ Before a round's first tool call say a falsifiable `hypothesis`, a `plan` (targe
 STATE
 End every round with exactly one final ```yaml block. Validation is all-or-nothing: a malformed block or field discards every update and flag. Spaces, real booleans, quote strings containing `: ` or ` #`.
 - `scores`: this round's one entry, `round` = its number (a reused number replaces that entry).
-- `facts`, `debt`, `open`: a list sent replaces the stored one; omit to keep. History shown is bounded: durable paths, constraints, commands and results go to `facts`.
-- Requirement keys: small, observable, named by outcome, fixed in round 1; `all_pass` only when all are true.
+- `facts`, `debt`, `open`: a list sent replaces the stored one; omit to keep. History shown is bounded: durable paths, constraints, commands and results go to `facts`, one line each (a longer entry is cut).
+- Requirement keys: small, observable, named by outcome, set in round 1; a rung may add one for a gap in the user's words (false until proven), none is dropped; `all_pass` only when all are true.
 - Always send `exit_ready` and `deadlock`.
 
 EXIT
-`protocol.loop.min` = rounds before exit counts; set in round 1, it only rises. The runner decides, not a wish to finish. `exit_ready: true` only when the label's count is reached, the latest score is all_pass, two rounds are scored and a pass after a failure was re-verified with a fresh command. `deadlock: true` only for three structurally distinct failed approaches on one requirement, or a blocker only the user can remove (put it in `open`).
+`protocol.loop.min` = rounds before exit counts; set in round 1, it only rises. The runner decides, not a wish to finish. `exit_ready: true` only when the label's count is reached, the latest score is all_pass, two rounds are scored, a pass after a failure was re-verified with a fresh command and, once any round sent a `skill`, the latest one sent is `none`. `deadlock: true` only for three structurally distinct failed approaches on one requirement, or a blocker only the user can remove (put it in `open`).
 
 LESSONS
 `lessons` = cross-run playbook, not a task log; additive, send only new ones, and only when evidence says it helps another task; brief evidence, no task-specific paths or status. `skill`: `When <trigger>: <ordered procedure or skill name>; verify <signal>.` `rule`: durable constraint. `antipattern`: proven failure.
@@ -95,7 +96,7 @@ Framework edits are gated (compile + import) and rolled back on failure: prefer 
 DONE
 On `exit_ready: true`: outcome, verification, then `open` and `debt`, in the user's language.
 
-SCHEMA (shape only; placeholders are not values; `plan`, `hypothesis`, `prediction_check`, `cause` are optional but feed the next round's notes)
+SCHEMA (shape only; placeholders are not values; `plan`, `hypothesis`, `prediction_check`, `cause` are optional but feed the next round's notes, and the exit rule reads `skill`)
 ```yaml
 id: JINX
 protocol:
@@ -113,6 +114,7 @@ state:
     hypothesis: <if X then Y because Z>
     prediction_check: <hit|miss|partial + belief confirmed or refuted>
     cause: <label from the round prompt; after a failed round only>
+    skill: <skill-name> - <gap it closes, or "none - what the audit checked">
     requirements:
       <name>: <true|false>
     pass_count: <int, number of true requirements>
@@ -135,10 +137,11 @@ state:
 FIRST_ROUND_BRIEF: str = """FIRST ROUND — SETUP
 `task` in CURRENT STATE is the authoritative request. Before acting:
 1. `find-skills` for it; the skills you apply go in `facts`.
-2. Turn the deliverable into 1–5 observable requirement keys named by outcome (e.g. `unit_tests_pass`), one an end-to-end check of the whole deliverable.
+2. Turn the deliverable into 1–5 observable requirement keys named by outcome (e.g. `unit_tests_pass`), one an end-to-end check of the whole deliverable. A vague or very large request is read at its widest sensible meaning, never narrowed; its words stay in `task`.
 3. Put the scope, constraints, paths and proof commands you find in `facts`.
-4. Size the loop: `protocol.loop.min` 2 for a question or a one-step change, 3–5 for code changes and risky or multi-part work. The label shows a default until you do; afterwards it only rises.
-5. Number this score entry `round: 1`.
+4. Size the loop: `protocol.loop.min` 2 for a question or a one-step change, 3–5 for code changes and risky or multi-part work, 6–10 for a project or a vaguely worded goal. The label shows a default until you do; afterwards it only rises.
+5. Rung 1 of the skill ladder: the skill for building and proving this deliverable (layout, commands, checks), written with `skill-creator` and recorded as `skill: <name> - <what it covers>`; for a question or a one-step change, `skill: none - <why>`. Later rounds climb from it (SKILLS).
+6. Number this score entry `round: 1`.
 """
 
 # ==============================================================================
@@ -313,6 +316,22 @@ DEADLOCK_REFUSED: str = (
 # Spliced into an oversized string of a past tool call when the history window is
 # re-sent, so the model sees how much was left out instead of a silent cut.
 HISTORY_INPUT_TRUNCATED: str = " ...[%d more chars omitted from history]"
+
+# The same for the output of a tool call of an EARLIER round (the middle is cut, so the head and the verdict
+# at the tail stay), and for a round prompt that a newer one in the window replaces. A history window repeats
+# in every request of a round, so what the model has already acted on is paid for again at every step.
+HISTORY_RESULT_TRUNCATED: str = "\n...[%d chars of an earlier round's output omitted; re-run to see it]...\n"
+ELIDED_ROUND_PROMPT: str = (
+    "[the prompt of ROUND %d was elided: the ROUND %d prompt below carries the current state and notes]"
+)
+
+# Spliced into an entry of `facts`, `debt` or `open` that is longer than state.TEXT_ITEM_CHARS. These
+# lists are re-sent in every round prompt, so an entry is a line of memory, not a place for a log.
+TEXT_ITEM_TRUNCATED: str = " ...[+%d chars cut: one line per entry]"
+
+# Placed above `scores` in the CURRENT STATE dump when its older entries are shown abridged. Such an entry
+# carries `abridged: true`, and the merge ignores one that is sent back (state.merge_scores).
+SCORES_ABRIDGED_MARK: str = "# entries before the newest %d are shown abridged and are read-only: send only this round's entry"
 
 REASONING_NOTES_HEADER: str = (
     "ACTIONABLE NOTES (derived from recorded score history):"
@@ -615,6 +634,15 @@ def exit_blocker_plateau(last3: int, prior_best: int) -> str:
     )
 
 
+def exit_blocker_rung_open(rung: str) -> str:
+    """The exit blocker of a run whose latest ``skill`` is a rung, not a closing ``none``: ``rung`` is its name."""
+    return (
+        "the skill ladder is open (latest rung '%s'): a round whose fresh check of every phrase of"
+        " `task` finds no gap ends it with `skill: none - <what you checked>`"
+        % rung
+    )
+
+
 def note_exit(blockers: List[str]) -> str:
     """Why a run that looks finished may not be allowed to stop."""
     return (
@@ -904,6 +932,39 @@ def note_adaptive(min_rounds: int, info: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def note_skill_ladder(
+    rung: int, climbed: List[str], hidden: int = 0,
+    facts: Optional[Tuple[int, int]] = None, budget: Tuple[int, int] = (24, 2400),
+) -> str:
+    """The SKILL LADDER block of a round prompt: which rung this round is and what a rung is.
+
+    ``climbed`` are the names of the latest earlier rungs and ``hidden`` how many older ones are not named
+    (names only: the skills themselves are files the editor holds, and the state keeps one line per rung).
+    ``facts`` is ``(entries, characters)`` of the stored ``facts`` and is passed only when it is over
+    ``budget``; it adds the one sentence that asks for the list to be rewritten shorter in the round that
+    writes the skill, because a skill is where what ``facts`` held about a gap goes.
+
+    The text repeats nothing of the SKILLS paragraph that the model has to reread: it says what to do in
+    this round, the rung number and the way out, and stays one short paragraph because it is paid in every
+    round the ladder is open.
+    """
+    head = "SKILL LADDER — rung %d." % rung
+    if climbed:
+        head += " Climbed: %s%s." % (", ".join(climbed), " (+%d earlier)" % hidden if hidden else "")
+    body = (
+        "Audit the deliverable against each phrase of `task`, not only the keys; name the largest gap left;"
+        " write ONE new skill for that class of gap with `skill-creator`, follow it now and record"
+        " `skill: <name> - <gap it closes>`. A fresh check of every phrase that finds no gap:"
+        " `skill: none - <what you checked>`."
+    )
+    if facts:
+        body += (
+            " `facts` is %d entries / %d chars (budget %d / %d): send it whole and shorter — what a skill"
+            " holds is deleted, duplicates merge, one line each." % (facts[0], facts[1], budget[0], budget[1])
+        )
+    return "%s %s" % (head, body)
+
+
 def assemble_notes(header: str, parts: List[str], max_chars: int) -> str:
     """Joins the notes that fit the budget, in the order they were produced.
 
@@ -932,10 +993,13 @@ def construct_round_prompt(
 ) -> str:
     """Constructs the structured user prompt for a specific execution round in the cognitive loop.
 
-    The round label and the ``CURRENT STATE:`` block are a fixed shape;
-    everything after them is conditional: the reasoning notes when the
-    history gives them something to say, the cause taxonomy only when the latest
-    round failed, and the lessons block when the ledger has rules worth showing.
+    The round label and the ``CURRENT STATE:`` block are a fixed shape (the
+    block shows an abridged copy of the older score entries, see
+    ``reasoning.compact_dump``); everything after them is conditional: the
+    reasoning notes when the history gives them something to say, the SKILL
+    LADDER block from round 2 while the ladder is open, the cause taxonomy only
+    when the latest round failed, and the lessons block when the ledger has rules
+    worth showing.
 
     Args:
         rnd (int): The current execution round index.
@@ -955,7 +1019,10 @@ def construct_round_prompt(
     """
     warning_prefix = MISSING_STATE_WARNING if missing_state else ""
     round_label = f"ROUND {rnd} (at least {min_rounds} rounds required before exit is considered)"
-    sections = [f"{warning_prefix}{round_label}\nCURRENT STATE:\n{state_dump}"]
+    # Only the copy the model reads is abridged. The notes and the checks below are derived from the
+    # full dump, so what the brakes see does not depend on what is shown.
+    shown_state = reasoning.compact_dump(state_dump)
+    sections = [f"{warning_prefix}{round_label}\nCURRENT STATE:\n{shown_state}"]
     if rnd == 1:
         sections.append(FIRST_ROUND_BRIEF)
     notes = reasoning.render_notes(
@@ -967,6 +1034,9 @@ def construct_round_prompt(
         observed = note_adaptive(min_rounds, adaptive)
         if observed:
             sections.append(observed)
+    ladder = reasoning.render_skill_ladder(state_dump, rnd)
+    if ladder:
+        sections.append(ladder)
     scores = reasoning.scores_from_dump(state_dump)
     if scores:
         latest = scores[-1]

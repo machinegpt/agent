@@ -14,7 +14,7 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Union
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import prompts
 
@@ -27,6 +27,16 @@ AGENT_DIR: Path = Path(__file__).resolve().parent.parent.parent
 # task runs long. Oldest entries are dropped first.
 FACTS_CAP: int = int(os.environ.get("JINX_FACTS_CAP", "60"))
 
+# The count above bounds how many entries ``facts``, ``debt`` and ``open`` hold, not how long each one is,
+# and every entry is re-sent in each round prompt: a command output pasted into ``facts`` costs its whole
+# length once per round for the rest of the run. An entry longer than this is cut, and the cut says how
+# much was left out; 0 disables it.
+TEXT_ITEM_CHARS: int = int(os.environ.get("JINX_TEXT_ITEM_CHARS", "400"))
+
+# The ``skill`` of a score entry is one short line (``<name>: <the gap it closes>``). Every round of the
+# run keeps one, so its length is paid per round of the run, and a longer line is cut.
+SKILL_CHARS: int = int(os.environ.get("JINX_SKILL_CHARS", "200"))
+
 
 def _safe_approach_text(value: Any, default: str = "unspecified") -> str:
     """Coerce LLM-produced values to a short, safe string for state summaries."""
@@ -37,6 +47,27 @@ def _safe_approach_text(value: Any, default: str = "unspecified") -> str:
     if not text:
         return default
     return text[:80]
+
+
+def one_line_skill(value: Any) -> Optional[str]:
+    """One short line out of whatever a reply put in ``skill``, or None when it holds nothing.
+
+    The reply is typed by a model, and a rung is as easy to write as a list or a mapping as a string. Validation
+    is all-or-nothing, so a type error here would discard every update of the round over a label: what is
+    written is read as what it means (the parts of a list or mapping joined), not refused.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, dict):
+        value = ": ".join(str(v) for v in value.values() if v not in (None, ""))
+    elif isinstance(value, (list, tuple)):
+        value = "; ".join(str(v) for v in value if v not in (None, ""))
+    text = " ".join(str(value).split())
+    if not text:
+        return None
+    if SKILL_CHARS > 0 and len(text) > SKILL_CHARS:
+        text = text[:SKILL_CHARS].rstrip() + "…"
+    return text
 
 
 def _resolve_jinx_path() -> Path:
@@ -161,9 +192,22 @@ class ScoreEntry(BaseModel):
     prediction_check: Optional[str] = None
     cause: Optional[str] = None
     plan: Optional[str] = None
+    # The skill this round wrote or refined, as ``<name>: <the gap it closes>``, or ``none: <what the
+    # audit checked>`` once the goal has no gap left (the SKILL LADDER of the prompts). Optional, so a run
+    # that never sends one is judged exactly as before; ``check_exit`` reads it only when one was sent.
+    skill: Optional[str] = None
+    # Set only on the shortened copies of older entries that the round prompt shows. It has to be declared
+    # for it to reach ``merge_scores``, which skips such an entry instead of letting it replace the full one.
+    abridged: Optional[bool] = None
     # Simplified format fields (optional, auto-converted)
     verdict: Optional[str] = None
     detail: Optional[str] = None
+
+    @field_validator("skill", mode="before")
+    @classmethod
+    def _skill_is_one_line(cls, value: Any) -> Optional[str]:
+        """Reads ``skill`` through ``one_line_skill``, so its shape never rejects the block."""
+        return one_line_skill(value)
 
     def model_post_init(self, __context: Any) -> None:
         """Normalize simplified verdict format to full format."""
@@ -244,7 +288,7 @@ def _normalize_score_entry(entry: Any) -> Dict[str, Any]:
             normalized["prior_failure"] = entry["prior_failure"]
         if entry.get("approach_graph"):
             normalized["approach_graph"] = entry["approach_graph"]
-        for field in ("hypothesis", "prediction_check", "cause", "plan"):
+        for field in ("hypothesis", "prediction_check", "cause", "plan", "skill"):
             value = entry.get(field)
             if value is not None and str(value).strip():
                 normalized[field] = value
@@ -284,6 +328,12 @@ def merge_scores(
     round-trips without colliding with numbered entries. Unnumbered entries are
     emitted BEFORE the numbered history: ``check_exit`` reads ``scores[-1]`` as the
     current round, so a legacy entry sitting last would be mistaken for it.
+
+    An incoming entry marked ``abridged`` is the shortened copy of a stored entry that the
+    round prompt shows (``reasoning.compact_dump``). A model that sends the history back
+    sends those copies, and a copy has lost what the stored entry holds, so it never
+    replaces one: it is skipped when its round is stored and kept (without the mark) when
+    it is not. The mark itself is never stored.
     """
     merged: Dict[Any, Dict[str, Any]] = {}
     anon = 0
@@ -296,6 +346,10 @@ def merge_scores(
         else:
             key = ("anon", anon)
             anon += 1
+        if "abridged" in entry:
+            if entry["abridged"] and key in merged:
+                continue
+            entry = {k: v for k, v in entry.items() if k != "abridged"}
         merged[key] = entry
 
     numbered = sorted((k, v) for k, v in merged.items() if isinstance(k, int))
@@ -303,7 +357,9 @@ def merge_scores(
     return unnumbered + [v for _, v in numbered]
 
 
-def normalize_text_list(items: List[str], cap: int = 0) -> List[str]:
+def normalize_text_list(
+    items: List[str], cap: int = 0, item_chars: Optional[int] = None
+) -> List[str]:
     """Deduplicate a prose list, preserving order, then apply an optional cap.
 
     ``facts``, ``debt`` and ``open`` are curated working memory: the model sends
@@ -313,9 +369,16 @@ def normalize_text_list(items: List[str], cap: int = 0) -> List[str]:
     one, and ``facts`` (re-sent every round, so the dominant per-round cost in a
     long task) is capped, oldest dropped first.
 
+    An entry longer than ``item_chars`` (``TEXT_ITEM_CHARS`` when not given) is cut and
+    marked with how much was left out. Duplicates are looked for in the part that is
+    kept, so two entries that only differ in a pasted tail collapse. The count of entries
+    bounds the list and this bounds each entry; without it a single pasted output
+    outweighs the whole list.
+
     Duplicate detection ignores case, punctuation and whitespace, so
     "Doesn't work." and "doesnt work" collapse into a single entry.
     """
+    limit = TEXT_ITEM_CHARS if item_chars is None else item_chars
     out: List[str] = []
     seen = set()
     for raw in items or []:
@@ -324,11 +387,14 @@ def normalize_text_list(items: List[str], cap: int = 0) -> List[str]:
         text = raw.strip()
         if not text:
             continue
+        cut = len(text) - limit if limit > 0 and len(text) > limit else 0
+        if cut:
+            text = text[:limit].rstrip()
         norm = _normalize_fact(text)
         if norm in seen:
             continue
         seen.add(norm)
-        out.append(text)
+        out.append(text + prompts.TEXT_ITEM_TRUNCATED % cut if cut else text)
     if cap and len(out) > cap:
         logger.debug("text list cap %d dropped %d oldest entries", cap, len(out) - cap)
         out = out[-cap:]

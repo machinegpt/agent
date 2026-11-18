@@ -150,9 +150,8 @@ tools:                                                      # tools.tool_schema(
         path: {type: string, description: Path to the file}
         content: {type: string, description: The full content to write}
       required: [path, content]
-processed_tool_use_ids: [call_00, call_01]   # 已执行的调用，供编辑器侧去重
-tool_result_cache:                          # memoized results, keyed by tool_use_id
-  call_00: "85 passed in 0.21s"
+processed_tool_use_ids: []                    # 此处始终为空：补全请求中没有任何东西会被执行
+tool_result_cache: {}                         # 此处始终为空（tool_calls 请求只携带它自己那些调用的结果）
 retry: false                                  # 因等待超时而重新下发时为 true
 ```
 
@@ -178,9 +177,8 @@ calls:
   - id: call_123
     name: bash_exec
     params: {script: pytest tests/test_state.py}
-processed_tool_use_ids: []
-tool_result_cache:
-  call_00: "85 passed in 0.21s"
+processed_tool_use_ids: []   # 上面这些调用中已经执行过的调用 id（仅在重试时非空）
+tool_result_cache: {}        # 它们已保存的结果，按 tool_use_id 索引（仅在重试时非空）
 retry: false
 ```
 
@@ -216,13 +214,14 @@ history:                       # 最近消息的有界窗口
 `processed_tool_use_ids` 是**可选且临时**的字段。运行器在处理工具结果后，会把每个已执行的
 `tool_use_id` 追加到该字段，并在构建下一个请求时将其读回；但新的 `llm_generate` 请求会在不包含该
 字段的情况下重写运行状态。因此宿主应把请求中的 `processed_tool_use_ids` 视为权威来源，而运行状态中
-的副本仅用于在等待超时时重新下发请求的场景下恢复上下文。
+的副本仅用于在等待超时时重新下发请求的场景下恢复上下文。`tool_calls` 请求只列出其自身 `calls` 中已经执行过的 id，而 `llm_generate`
+请求中该字段为空（见 §5 的*路由表*）。
 
 `history` 是一个**有界窗口**，而不是完整记录。循环能够跨越进程边界，是因为每一轮都会重新加载这个窗口；窗口会跳过开头的 `tool_result` 块，并裁掉结尾悬空的 `tool_use` 块，因此模型绝不会收到孤立的工具结果（`compact_history_for_request`）。这里有两个彼此独立的尺寸：run state 保留最新的 `JINX_HISTORY_PERSIST_WINDOW` 条消息（默认 **8**），而每个 `llm_generate` 请求只发送最新的 `JINX_HISTORY_WINDOW` 条（默认 **6**）。被丢弃的消息永远不会被回读——退出判定与死锁检测读取的是 `JINX.yaml` 中的评分历史，而工具调度只需要最近的调用——因此 run state 大小固定，不再随轮数增长。窗口被截断时，提示词中会附上一行说明，告知有多少条消息被省略，避免模型把窗口误认为整个会话。
 
 #### 等待超时后的恢复机制
 
-若 `jinx_run_state.yaml` 存在而 `jinx_response.yaml` 不存在，说明宿主未能应答。此时 JINX 调用 `_is_run_state_stale()`：只有当 `updated_at` 与 `jinx_run_state.yaml` / `jinx_request.yaml` 的修改时间 **同时** 超过 `JINX_BACKGROUND_WAIT_TIMEOUT`（默认 `30` 秒）时，才判定为超时。超时的运行会以 `retry: true` 重新下发同一请求，并附带扩充后的 `processed_tool_use_ids`，使宿主返回已保存的结果而非重复产生副作用；未超时的运行则以退出码 `1` 结束，等待宿主重试。
+若 `jinx_run_state.yaml` 存在而 `jinx_response.yaml` 不存在，说明宿主未能应答。此时 JINX 调用 `_is_run_state_stale()`：只有当 `updated_at` 与 `jinx_run_state.yaml` / `jinx_request.yaml` 的修改时间 **同时** 超过 `JINX_BACKGROUND_WAIT_TIMEOUT`（默认 `30` 秒）时，才判定为超时。超时的运行会以 `retry: true` 重新下发同一请求，并附带其自身各调用的 id 与已保存的结果，使宿主返回这些结果而非重复产生副作用；未超时的运行则以退出码 `1` 结束，等待宿主重试。
 
 #### 清理与信号处理
 
@@ -468,7 +467,7 @@ flowchart LR
 
 4. **阶段 IV：多条件收敛与退出**
    每轮结束后，JINX 更新度量指标并检查退出或死锁条件：
-   * **退出条件**（`check_exit`）：当前轮次必须 `>=` 当前生效的轮数（见下文*自适应轮数*），必须至少存在 2 条评分记录，且 **最后一条** 记录的 `all_pass` 必须为 `true`。一旦记录数达到 4 条或更多，最近 3 轮的最优 `pass_count` 不得高于此前所有记录的最优 `pass_count` —— 仍在改进中的循环不允许退出。此外，运行器会拒绝在*死轮*上退出（见下文）。
+   * **退出条件**（`check_exit`）：当前轮次必须 `>=` 当前生效的轮数（见下文*自适应轮数*），必须至少存在 2 条评分记录，且 **最后一条** 记录的 `all_pass` 必须为 `true`。一旦记录数达到 4 条或更多，最近 3 轮的最优 `pass_count` 不得高于此前所有记录的最优 `pass_count` —— 仍在改进中的循环不允许退出。在评分记录带有 `skill` 的运行中，最近发送的那个 `skill` 还必须是收尾的 `none`（见下文*技能阶梯*）。此外，运行器会拒绝在*死轮*上退出（见下文）。
    * **死锁条件**（`check_deadlock`）：轮次必须 `>=` 轮数下限，且某个需求必须在 **至少 3 个语义上不同的策略簇** 上失败。模型亦可自行声明 `deadlock: true`（只有用户才能解除的阻塞），但这样的声明只从轮数下限起才算数：更早的声明会被拒绝、其标志被清除并告知模型 —— 因为"死锁"是疲惫的模型最廉价的收工方式。
    * **硬上限**：迭代轮次总数被严格限制为 40（`HARD_CAP`）；达到后进程以状态码 `2` 退出，以防令牌消耗无度增长。
    * **工具深度上限**：单轮内最多串联 20 次工具调用（`TOOL_DEPTH_CAP`）。一旦突破，JINX 会注入恢复指令并发出一次 `tools: []` 的最终 `llm_generate`，强制要求输出状态块而非被截断。
@@ -481,6 +480,24 @@ flowchart LR
    * **确认轮。** 紧接在失败轮之后的通过，必须再经一轮重新验证（`CONFIRM_ROUNDS` = 1）才能结束运行。它只作用于退出，绝不作用于死锁下限：持续失败的运行不应该有能力把死锁推到遥不可及的地方。
    * **重复。** 同一个工具调用第 3 次返回相同结果时，会在这些结果后面直接追加一条 `REPEATED CALL` 提示（第 5 次起禁止该调用，直到它所依赖的内容发生变化）；而同一个 `approach` 在没有更多需求通过的情况下被重复，则会在下一个提示中出现 `REPEATED ATTEMPT` 说明。措辞随连续次数升级，并且只要求*换一种*做法；没有任何提示会给出停止的出路。
    * 提示只是建议，轮数由运行器强制执行。额外增加的轮数绝不会把总数推过 `HARD_CAP - 1`，因此退出始终可达。忽略所有提示、反复做同一件事的模型，最终仍会停在硬上限。
+
+   **技能阶梯。** 在第一次检查全绿时就停下的循环，只是把代码写了一遍、修好了检查发现的问题、再测了一遍。含糊的或体量很大的请求需要更多，而这类请求首先是在模型自己列出的需求键里被收窄的。因此从第 2 轮起，每一轮都向上走一级*台阶*：
+   1. 对照 `task` 的每一个短语审计交付物，而不只是对照需求键，并指出剩下的最大缺口。
+   2. 用编辑器自带的 `skill-creator` 为这一类缺口写**一个新技能**（只有早先的技能起了误导作用时才修正它；被新技能变得多余的技能并入新技能），并在本轮遵循它。
+   3. 把它记入该轮的评分记录：`skill: <名称> - <它补上的缺口>`。技能里已经包含的内容从 `facts` 中移除。
+
+   每一级台阶覆盖前面几级没有覆盖的部分，所以技能越来越新；只有当对 `task` 的每个短语重新检查都找不到缺口时，阶梯才结束：`skill: none - <检查了什么>`。第 1 轮写第 1 级台阶，即用于构建并证明交付物的技能（`FIRST_ROUND_BRIEF`），并估算循环长度（项目或表述含糊的目标，`protocol.loop.min` 取 6–10；后面的台阶也可以为用户措辞里的缺口新增需求键，但绝不删除任何一个）。一个问题或一步修改会立刻写出 `skill: none - <原因>`，不再付出任何额外代价。运行时强制执行的是：
+   * **一道闸门：可选加入，且只会更严。** 对评分从不带 `skill` 的运行，`check_exit` 与原来完全相同。对带 `skill` 的运行，最近发送的 `skill` 还必须是收尾的 `none`（单独的 `none`，或其后跟空格或 `: ; , .` 之一；`none-handler` 是名称，不是收尾）。只有最近发送的 `skill` 算数，而不是最近的那条记录，所以忘记填该字段的一轮既不会重新打开已关闭的阶梯，也不会关闭未关闭的阶梯。这道闸门只会让退出更晚。
+   * **一个泄压阀。** `LADDER_CAP` 级台阶（`JINX_LADDER_CAP`，默认 **12**；计数的是发送了 `skill` 的轮次）会结束等待，因此无论模型写什么，退出始终可达，且该上限远低于 `HARD_CAP`。
+   * **一个理由。** 在阶梯未关闭时声明的退出会被拒绝，下一轮提示会说明原因（`EXIT CHECK ... the skill ladder is open (latest rung '<name>')`）。`reasoning.py` 中的建议性镜像会在包含阶梯的探测历史上与 `check_exit` 比对（未关闭、已关闭、仅以 `none` 开头的名称、上限前一级以及上限本身），因此偏差会像其他偏差一样被报告。
+   * **一次提示，从第 2 轮起。** 轮次提示带有一个简短的 `SKILL LADDER` 块：台阶编号、最近六级台阶的名称，以及要求。阶梯已关闭、已到上限以及第 1 轮，都不添加任何内容。
+   * **受保护。** `check_exit`、`_ladder_open` 与 `LADDER_CAP` 属于闸门逻辑：`selfpatch.py` 会拒绝触及它们的自我修补。
+
+   **令牌经济。** 阶梯会让运行变长，所以运行越长，一轮的成本越必须保持平稳。这里没有任何内容会改变闸门的决定，而且每一次截断都会声明自己做过截断：
+   * **请求不再携带工具结果的记忆表。** `llm_generate` 中它为空，`tool_calls` 只携带自己那些调用的条目（§1.1、§5）；运行状态则保留全部内容。它曾是长时间运行中请求的最大组成部分，而宿主在每一步都会重新读取请求文件。
+   * **历史窗口被修剪**（`_trim_past_rounds`）：窗口内已被更新轮次取代的那条轮次提示，变成一行存根；位于最新一条轮次提示之前的工具调用输出，会被从中间截断到 `JINX_HISTORY_RESULT_CHARS`（默认 **800**；保留头部和尾部，命令的结论就在那里）。正在处理的这一轮绝不会被截断，已持久化的历史也不动。
+   * **展示出来的评分历史被缩略。** `CURRENT STATE` 完整展示最新 3 条评分记录，更旧的各缩成一行（`round`、`approach`、`pass_count`、`all_pass`、`cause`、台阶名称），每条都标有 `abridged: true`，并带有一条说明它们只读的注释。推理提示与所有检查读取的是完整状态，存储的状态不受影响，而 `merge_scores` 会忽略模型回传的缩略记录，因此回显的历史不会覆盖已存储的记录。
+   * **记忆保持简短。** `facts`、`debt` 或 `open` 中长于 `JINX_TEXT_ITEM_CHARS`（默认 **400**）的条目会被截断，并附一个说明丢弃了多少内容的标记；`skill` 行则按 `JINX_SKILL_CHARS`（默认 **200**）截断。当 `facts` 超过 24 条或 2400 个字符时，`SKILL LADDER` 块会要求在写技能的那一轮把它缩短后重发：技能已包含的内容删除，重复项合并，每条一行。
 
 ### 认知循环控制流
 
@@ -605,6 +622,7 @@ state:
         unit_tests: false
       pass_count: 1
       all_pass: false
+      skill: "rs256-baseline - 如何构建并证明 RS256 签名"   # 可选 —— 本轮在技能阶梯上的台阶（§2）
       approach_graph:            # 可选 —— 启用语义化死锁聚类
         nodes:
           - {id: "jwt_signer.py", type: file}
@@ -645,9 +663,11 @@ scores:
 
 两者都会在 Pydantic 校验之前自动归一化为完整结构（`requirements: {task_complete: <bool>}`、`pass_count`、`all_pass`、`approach`），因此模型过于简略的回复也绝不会被拒绝。`round` 默认为 `0`，`approach` 默认为 `"unspecified"`；`task`、`facts`、`debt`、`open` 会被模型所发送的内容整体替换，而值为 `None` 的键则被忽略，使局部更新能够保留清单的其余部分。
 
-例外是 `scores`：它**按轮号合并**而非整体替换（`merge_scores`）。已存在 `round` 的条目会覆盖该条目，而回复中缺失的轮次会保留在磁盘上。因此模型只需发送当前轮次；完整重发依然有效，只会在原处覆盖。合并后按 `round` 升序排列，没有整数 `round` 的条目按位置编键，不会在保存与读取中丢失。这消除了此前「回复漏掉某轮就静默删除该轮」的缺陷，也正是提示词得以不再要求每轮回显全部历史的原因。
+例外是 `scores`：它**按轮号合并**而非整体替换（`merge_scores`）。已存在 `round` 的条目会覆盖该条目，而回复中缺失的轮次会保留在磁盘上。因此模型只需发送当前轮次；完整重发依然有效，只会在原处覆盖。合并后按 `round` 升序排列，没有整数 `round` 的条目按位置编键，不会在保存与读取中丢失。这消除了此前「回复漏掉某轮就静默删除该轮」的缺陷，也正是提示词得以不再要求每轮回显全部历史的原因。「整体替换」的唯一例外是带有 `abridged: true` 标记的条目：它是轮次提示所展示的某条旧记录的缩略副本（§2，*令牌经济*），因此回传历史的模型不会用这些短副本去覆盖已存储的记录。合并时，若该轮次已有存储则跳过它；若尚未存储则保留它（去掉标记）；标记本身绝不会被存储。
 
-两个工作列表在写入时会被限长。`facts`、`debt`、`open` 中含义相近的重复项会合并为一条——比较时忽略大小写、标点与空白，因此 `"Doesn't work."` 与 `"doesnt work"` 视为同一条事实——而 `facts` 上限为 `JINX_FACTS_CAP`（默认 **60**），超出时优先丢弃最旧的条目，因为该列表每轮都要重发，否则会成为最主要的每轮开销。`facts` 仍然是*替换*而非累加，这样模型才能撤回后来被证伪的判断。
+`skill` 是一行简短的文字：`<名称> - <它补上的缺口>`，或 `none - <审计检查了什么>`（§2，*技能阶梯*）。它经由 `one_line_skill` 读取，因此列表、映射或多行字符串都会被压平成一行，而不是让整个状态块被拒绝（校验是全有或全无的）；超过 `JINX_SKILL_CHARS`（默认 **200**）的行会被截断。该字段是可选的，从不发送它的运行，评判方式与以前完全相同。
+
+两个工作列表在写入时会被限长。`facts`、`debt`、`open` 中含义相近的重复项会合并为一条——比较时忽略大小写、标点与空白，因此 `"Doesn't work."` 与 `"doesnt work"` 视为同一条事实——而 `facts` 上限为 `JINX_FACTS_CAP`（默认 **60**），超出时优先丢弃最旧的条目，因为该列表每轮都要重发，否则会成为最主要的每轮开销。`facts` 仍然是*替换*而非累加，这样模型才能撤回后来被证伪的判断。条数限制的是列表而不是单条，因此这三个列表中任何一条长于 `JINX_TEXT_ITEM_CHARS`（默认 **400**）的条目都会被截断，并以一个说明丢弃了多少内容的标记结尾（查重在保留下来的部分里进行）：否则，一段粘贴进来的命令输出就会比整个列表还重，并且在此后运行的每一轮提示词里都要带着它。
 
 当状态块校验失败时，先前的状态会被保留，拒绝原因会追加到下一轮的提示词中，而不再只是写进日志后丢弃。被拒绝的块现在会告知模型其块已被拒绝、具体的校验错误是什么，以及常见原因（标量值中未加引号的 `:` 或 `#`、用制表符缩进、键多嵌套了一层）——此前的静默拒绝与「模型什么都没做」在表现上完全无法区分。
 
@@ -686,7 +706,7 @@ JINX 运行时由以下位于 `.agent/` 目录下的 Python 组件构成（核�
   允许 JINX 修改自己的代码，同时不允许它拆掉自己的安全闸。`file_write` 接受的是裸字符串路径，因此模型一直都能重写 `.agent/src/jinx/*.py`——事实上本仓库自身的发布工作正是这样完成的。此前没有任何机制检查结果是否还能工作，本模块补上了这一环：
   * **保护、编译与回滚** — `capture_baseline` 复制源码树，`baseline_changed` 比对差异，`restore_baseline` 执行回滚。框架源码变更后，闸门运行两项快速检查：`compileall`，以及在子解释器中导入每个模块（使用它自己的字节码缓存，因此检查的就是磁盘上的内容）。语法错误、缺失的导入或加载时抛出的异常都会被回滚并反馈给模型。功能测试由编辑器 CLI 按当前任务选择和运行，因此 JINX 不重复项目测试套件。基线覆盖整个运行，而非单轮：运行开始时采集，某个轮次没有改动时保留，结构正确的修改被采纳后重新采集。正常结束时清除；出错退出时**刻意保留**——正是它让下一次启动能够修复损坏。
   * **启动前预检** — 同一检查会在 `.agent/jinx.py` 中、在导入 JINX 之前再运行一次，并按路径直接加载 `selfpatch.py`。否则，留下语法错误的自修改会让框架根本无法启动，而本该捕捉该问题的闸门也根本无法运行。磁盘上没有基线时无从比较，此时损坏的代码树会明确报错，而不是被悄悄覆盖。
-  * **闸门保护** — `guard_tool_call` 拒绝任何会重定义 `merge_state`、`StateBlock`、`atomic_write_yaml`、`_resolve_jinx_path`、`_apply_protocol`、`check_exit`、`check_deadlock`、`_resolve_min_rounds`、`_handle_llm_response`、退出决策辅助函数（`_scores_of`、`_loop_of`）和自适应轮数的辅助函数与常量或 `SYSTEM_PROMPT` 的写入，并将 `selfpatch.py`、`learning.py` 与 `scope.py` 整体列为禁区。拒绝发生在**派发之前**而非事后撤销，模型因此会知道自己被拒绝，而不会误以为校验机制坏了。保护比较这些定义的*函数体*与磁盘上的实际内容，而不仅仅检查名字是否存在，因此只要闸门本身逐字节未变，就可以整体重写受保护的文件。削弱、改写、删除闸门都会被拒绝，更隐蔽的做法同样会被识破：在文件末尾追加一个在导入时覆盖受保护定义的第二份定义，或是通过 `bash_exec` 动手——它根本不经过这道检查。因此在真正校验之前，机制会对磁盘上的文件与 baseline 重新做一次同样的比较；一旦发现闸门被这样动过，就直接回滚而不运行测试：一次通过的测试无法成为修改「决定测试是否通过的那段代码」的理由。
+  * **闸门保护** — `guard_tool_call` 拒绝任何会重定义 `merge_state`、`StateBlock`、`atomic_write_yaml`、`_resolve_jinx_path`、`_apply_protocol`、`check_exit`、`check_deadlock`、`_resolve_min_rounds`、`_handle_llm_response`、退出决策辅助函数（`_scores_of`、`_loop_of`、`_ladder_open`）、自适应轮数的辅助函数与常量（其中包括 `LADDER_CAP`）或 `SYSTEM_PROMPT` 的写入，并将 `selfpatch.py`、`learning.py` 与 `scope.py` 整体列为禁区。拒绝发生在**派发之前**而非事后撤销，模型因此会知道自己被拒绝，而不会误以为校验机制坏了。保护比较这些定义的*函数体*与磁盘上的实际内容，而不仅仅检查名字是否存在，因此只要闸门本身逐字节未变，就可以整体重写受保护的文件。削弱、改写、删除闸门都会被拒绝，更隐蔽的做法同样会被识破：在文件末尾追加一个在导入时覆盖受保护定义的第二份定义，或是通过 `bash_exec` 动手——它根本不经过这道检查。因此在真正校验之前，机制会对磁盘上的文件与 baseline 重新做一次同样的比较；一旦发现闸门被这样动过，就直接回滚而不运行测试：一次通过的测试无法成为修改「决定测试是否通过的那段代码」的理由。
 * **`mail.py`**（办公室：邮件、租约、轮次文件）：
   多会话的协调层，除标准库、PyYAML 与 Pydantic 外没有其他依赖。关键职责：
   * `Office` / `Session` —— 带心跳的在线卡片、每个会话的收件箱与发件箱、原子投递（以链接发布、以重命名取走）、经过校验的 `Mail` 结构，以及展示给模型的摘要：看板（`peer_line`、与读者相关内容的快照、与上次展示不同的 `news`）和未读邮件。
@@ -705,9 +725,9 @@ JINX 运行时由以下位于 `.agent/` 目录下的 Python 组件构成（核�
 * **`evidence.py`**（按原因归并的失败检查）：
   把失败检查所捕获的输出尾部整理为按原因归并的证据，而不是几十行几乎相同的文字：`parse_failures` 读取 pytest 风格的 `FAILED` / `ERROR` 行与末尾计数，`canonical_reason` 屏蔽每次运行都会变化的内容（长数字、十六进制 ID、耗时、路径），使同一个原因不会被拆成几个，`render_digest` / `evidence_from_check` 为每个不同的原因输出一行。它用于生成 self-patch 被回滚之后的通知（`runner.py` 中的 `_render_check_failures`）。纯函数：只重新整理已经产生的输出，不做任何决定。
 * **`reasoning.py`**（基于评分历史的推理提示）：
-  从模型自己写下的评分中推导出建议性提示，并汇成一个有界的块放进该轮提示词（`render_notes`）：预测是否成立（`classify_prediction`、`prediction_stats`）、失败是否换了名字重复出现、为什么看似已完成的运行不被允许退出（`exit_blockers`）、被改名的需求键、回归、同一轮自身说法之间的矛盾、针对文件系统的计划与引用检查，以及核对这些提示仍然与它们所描述的闸门逻辑一致。它不增加状态，也不做决定：终止运行的仍然只有 `check_exit` 和 `check_deadlock`。
+  从模型自己写下的评分中推导出建议性提示，并汇成一个有界的块放进该轮提示词（`render_notes`）：预测是否成立（`classify_prediction`、`prediction_stats`）、失败是否换了名字重复出现、为什么看似已完成的运行不被允许退出（`exit_blockers`）、被改名的需求键、回归、同一轮自身说法之间的矛盾、针对文件系统的计划与引用检查，以及核对这些提示仍然与它们所描述的闸门逻辑一致。它还构建 `SKILL LADDER` 块（`render_skill_ladder`，连同 `rungs_of`、`open_rung` 以及阶梯闸门的镜像）和轮次提示所展示的状态缩略副本（`compact_dump`）。它不增加状态，也不做决定：终止运行的仍然只有 `check_exit` 和 `check_deadlock`。
 * **`prompts.py`**（提示词模板）：
-  包含 `SYSTEM_PROMPT`（随每个请求发送，因此保持简短：循环、状态契约，以及 SKILLS 规则——任务从 `find-skills` 进入、经 `skill-creator` 离开，提示词只点名、不作解释）、`FIRST_ROUND_BRIEF`（初始设置步骤，只追加到第 1 轮）、`REASONING_PROTOCOL`（失败分析步骤，在某轮失败之后交付，而不放在系统提示词里）、当某轮遗漏状态块时注入的 `MISSING_STATE_WARNING`、恢复指令 `TOOL_DEPTH_CRITICAL_MSG`，以及 `construct_round_prompt()`。
+  包含 `SYSTEM_PROMPT`（随每个请求发送，因此保持简短：循环、状态契约，以及 SKILLS 规则——任务从 `find-skills` 进入，此后每一轮借助 `skill-creator` 向技能阶梯上走一级，提示词只点名、不作解释）、`FIRST_ROUND_BRIEF`（初始设置步骤，只追加到第 1 轮）、`REASONING_PROTOCOL`（失败分析步骤，在某轮失败之后交付，而不放在系统提示词里）、当某轮遗漏状态块时注入的 `MISSING_STATE_WARNING`、恢复指令 `TOOL_DEPTH_CRITICAL_MSG`，以及 `construct_round_prompt()`。
 
 ### 运行时环境变量
 
@@ -720,7 +740,11 @@ JINX 运行时由以下位于 `.agent/` 目录下的 Python 组件构成（核�
 | `JINX_BACKGROUND_WAIT_TIMEOUT` | `30` | `--ipc file` | 未响应运行被判定为过期的秒数 |
 | `JINX_HISTORY_WINDOW` | `6` | 两者 | 每个 `llm_generate` 请求发送的消息条数 |
 | `JINX_HISTORY_PERSIST_WINDOW` | `8` | 两者 | `jinx_run_state.yaml` 中保留的消息条数 |
+| `JINX_HISTORY_RESULT_CHARS` | `800` | `--ipc file` | 较早轮次的工具结果在请求窗口中被截断到这么多个字符（保留头部和尾部）；`0` 表示不截断 |
 | `JINX_FACTS_CAP` | `60` | 两者 | `facts` 保留的最大条目数，优先丢弃最旧的 |
+| `JINX_TEXT_ITEM_CHARS` | `400` | 两者 | `facts`、`debt` 或 `open` 中长于此值的条目会被截断并附标记；`0` 表示不截断 |
+| `JINX_SKILL_CHARS` | `200` | 两者 | 评分记录中的 `skill` 行被截断到这么多个字符 |
+| `JINX_LADDER_CAP` | `12` | 两者 | 台阶数（发送了 `skill` 的轮次数），达到后退出不再等待技能阶梯关闭（*技能阶梯*） |
 | `JINX_KEEP_IPC_ON_SIGNAL` | *(未设置)* | 两者 | 设为 `1` 时在 Ctrl+C 后保留 IPC 文件以便排查 |
 | `JINX_TOOL_RESULT_CACHE_CAP` | `64` | 两者 | 保留的记忆化工具结果上限，超出时淘汰最旧的条目 |
 | `JINX_SESSIONS` | `1` | `--ipc file` | `0`、`false`、`no` 或 `off` 关闭会话：`.agent/` 中只有一套共享文件（§1.3） |
@@ -970,7 +994,7 @@ if __name__ == "__main__":
 | `llm_generate` | `system`、`messages`、`tools` | `content:`，即 `text` / `tool_use` 块列表 |
 | `tool_calls` | `calls[]`，含 `id`、`name`、`params` | `results[]`，含 `tool_use_id`、`content` |
 
-两种请求类型都带有 `tool_result_cache`，即 `tool_use_id` 到该调用实际返回结果的映射。运行器会记录收到的每一个结果并持久化该映射（上限为 `JINX_TOOL_RESULT_CACHE_CAP`，默认 **64**，超出时淘汰最旧的条目），因此后续请求 —— 包括等待超时后以 `retry: true` 重新下发的请求 —— 都可以直接从记忆中作答。
+`tool_calls` 请求带有 `tool_result_cache`，即 `tool_use_id` 到该调用实际返回结果的映射，**只含它所请求的那些调用**；`llm_generate` 请求中该字段（以及 `processed_tool_use_ids`）为空，因为补全请求里没有任何东西会被执行。运行器会记录收到的每一个结果，并把整个映射持久化到运行状态中（上限为 `JINX_TOOL_RESULT_CACHE_CAP`，默认 **64**，超出时淘汰最旧的条目），因此后续的 `tool_calls` 请求 —— 包括等待超时后以 `retry: true` 重新下发的请求 —— 都可以直接从记忆中作答。发送出去的只有请求自身调用 id 对应的条目：宿主在每一步都会重新读取请求文件，而整个映射过去会随每一个请求一起发送，在长时间运行中，它占了发送内容的大部分。
 
 这正是 `processed_tool_use_ids` 得以成立的原因。ID 列表只能告诉宿主某个调用*已经*执行过，却无法告诉它*返回了什么*，于是唯一安全的做法是跳过该调用并丢弃其输出 —— 连模型需要的结果也一并丢失。有了缓存，宿主可以在同一个 `tool_use_id` 下原样重放已保存的内容，副作用不会重复发生。因此宿主应优先检查 `tool_result_cache`，仅在缓存不可用时才回退到 `processed_tool_use_ids`，因为同一个调用之后可能以不同参数被重新请求。
 

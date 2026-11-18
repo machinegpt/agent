@@ -59,6 +59,14 @@ DEFAULT_MIN_ROUNDS: int = 10
 SIZING_ROUNDS: int = 2
 CONFIRM_ROUNDS: int = 1
 DEAD_ROUND_CAP: int = 4
+# The skill ladder. A score entry may carry ``skill``: ``<name> - <gap it closes>`` for a round that wrote a
+# skill, ``none - <what the audit checked>`` once the goal has no gap left. It is opt-in: a run whose scores
+# never sent one is judged by the rules above, unchanged. In a run that did, ``check_exit`` also waits for
+# the latest ``skill`` to be that closing ``none``, so a run does not stop on its first green checks while
+# its own audit still names a gap. ``LADDER_CAP`` rungs end the wait, which keeps an exit reachable whatever
+# the model writes (it is well under HARD_CAP). The gate only ever makes an exit later, never earlier, and
+# is brake logic: selfpatch protects it with the rest.
+LADDER_CAP: int = int(os.getenv("JINX_LADDER_CAP", "12"))
 # Identical (call, result) pairs before the model is told it is repeating itself,
 # and how many of them the ledger remembers (bounded: it lives in the run state).
 REPEAT_NOTICE_AFTER: int = 3
@@ -263,7 +271,30 @@ def check_exit(scores: List[Dict[str, Any]], min_rounds: int, rnd: int) -> bool:
             if last3_best > prior_best:
                 return False
 
+    if _ladder_open(scores):
+        return False
+
     return True
+
+
+def _ladder_open(scores: List[Any]) -> bool:
+    """True while a run that climbs the skill ladder has not closed it, which keeps ``check_exit`` from
+    ending the run.
+
+    Open means: some score entry sent a ``skill``, fewer than ``LADDER_CAP`` did, and the latest one sent is
+    a rung, not a closing ``none`` (``none`` alone or followed by a space or a separator; ``none-handler`` is
+    a skill that happens to start with the word). Only the latest ``skill`` sent counts, not the latest
+    entry, so a round that forgot the field neither opens a closed ladder nor closes an open one. A run that
+    never sent a ``skill`` is not held at all.
+    """
+    rungs = []
+    for entry in scores:
+        value = _get_val(entry, "skill", None)
+        if isinstance(value, str) and value.strip():
+            rungs.append(value.strip())
+    if not rungs or len(rungs) >= LADDER_CAP:
+        return False
+    return re.match(r"none(?=$|[\s:;,.])", rungs[-1], re.IGNORECASE) is None
 
 
 def _get_val(obj: Any, key: str, default: Any = None) -> Any:
@@ -1370,6 +1401,12 @@ HISTORY_PERSIST_WINDOW: int = int(os.getenv("JINX_HISTORY_PERSIST_WINDOW", "8"))
 # the REQUEST window are cut to this many characters; 0 disables the cut. The run
 # state keeps full inputs, because a call that has to be re-issued needs them.
 HISTORY_TOOL_INPUT_CHARS: int = int(os.getenv("JINX_HISTORY_TOOL_INPUT_CHARS", "1500"))
+# The output of a tool call is read once, in the round that ran it, and then the window ships it again in
+# every request until it scrolls out. A result that sits ahead of the newest round prompt of the window
+# belongs to a round that is over, and is cut to this many characters (the head and the tail, where a
+# command's verdict is); 0 disables the cut. The results of the round being worked are never cut, and the run
+# state keeps every result in full.
+HISTORY_RESULT_CHARS: int = int(os.getenv("JINX_HISTORY_RESULT_CHARS", "800"))
 # Bound on the memoized tool results kept in the run state. Large enough to cover
 # a deep tool loop, small enough that the cache never dominates the file.
 TOOL_RESULT_CACHE_CAP: int = int(os.getenv("JINX_TOOL_RESULT_CACHE_CAP", "64"))
@@ -1510,18 +1547,102 @@ def summarize_dropped_history(
     return {"role": "user", "content": notice}
 
 
+_ROUND_PROMPT_LABEL = re.compile(r"(?m)^ROUND (\d+) \(at least ")
+
+
+def _round_prompt_number(msg: Any) -> Optional[int]:
+    """The round number when ``msg`` is the prompt of a round (``construct_round_prompt``), else None.
+
+    The label starts a line, after the missing-state warning when there is one, so a search of the head of the
+    message finds it, and the ``CURRENT STATE:`` marker keeps a message that merely quotes a label out.
+    """
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if not isinstance(content, str) or msg.get("role") != "user" or "CURRENT STATE:" not in content:
+        return None
+    found = _ROUND_PROMPT_LABEL.search(content[:1200])
+    return int(found.group(1)) if found else None
+
+
+def _cap_past_results(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """``msg`` with every tool result longer than ``HISTORY_RESULT_CHARS`` cut in the middle, or ``msg`` itself."""
+    cap = HISTORY_RESULT_CHARS
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if cap <= 0 or not isinstance(content, list):
+        return msg
+    blocks: List[Any] = []
+    changed = False
+    for block in content:
+        text = block.get("content") if isinstance(block, dict) and block.get("type") == "tool_result" else None
+        if isinstance(text, str) and len(text) > cap:
+            head = cap // 2
+            block = dict(block, content=(
+                text[:head] + prompts.HISTORY_RESULT_TRUNCATED % (len(text) - cap) + text[len(text) - (cap - head):]
+            ))
+            changed = True
+        blocks.append(block)
+    return dict(msg, content=blocks) if changed else msg
+
+
+def _trim_past_rounds(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Copies ``messages`` with what the model has already acted on made short; nothing is mutated.
+
+    The window is re-sent in every request of a round, and it holds rounds that are over. Of the round prompts
+    in it only the newest carries a state the model has to act on: an older one is replaced by a one-line stub
+    (its dump is superseded, and a prompt is the largest message of a window after a tool result). The tool
+    results ahead of the newest round prompt are cut (``_cap_past_results``). Everything from the newest round
+    prompt on, which is the round being worked, is untouched. A window with no round prompt in it is returned
+    as it is, because there is then no telling which results are current.
+    """
+    newest: Optional[int] = None
+    for index, msg in enumerate(messages):
+        if _round_prompt_number(msg) is not None:
+            newest = index
+    if newest is None:
+        return messages
+    current = _round_prompt_number(messages[newest])
+    trimmed: List[Dict[str, Any]] = []
+    for index, msg in enumerate(messages):
+        if index >= newest:
+            trimmed.append(msg)
+            continue
+        number = _round_prompt_number(msg)
+        if number is not None:
+            trimmed.append(dict(msg, content=prompts.ELIDED_ROUND_PROMPT % (number, current)))
+        else:
+            trimmed.append(_cap_past_results(msg))
+    return trimmed
+
+
+def _memo_for_calls(
+    calls: List[Dict[str, Any]], processed_ids: List[str], result_cache: Dict[str, str]
+) -> Tuple[List[str], Dict[str, str]]:
+    """The part of the run state's memo of executed calls that a ``tool_calls`` request can use.
+
+    A host looks a call up by its id, so a request needs the ids and results of the calls it asks for, which
+    is everything a retried request replays. The whole memo (up to ``TOOL_RESULT_CACHE_CAP`` results, each as
+    long as the tool printed it) used to ride along in every request of a run, and the host reads the request
+    at every step: it was most of what a long run sent. The run state still keeps all of it.
+    """
+    wanted = {c.get("id") for c in calls if isinstance(c, dict)}
+    return (
+        [i for i in processed_ids if i in wanted],
+        {k: v for k, v in result_cache.items() if k in wanted},
+    )
+
+
 def _request_messages(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """The ``messages`` of an ``llm_generate`` request: the send window plus a notice.
 
     Every such request is built here, the final no-tools one included, so the model
     is always told how much earlier context it is not seeing. Inputs of past tool
-    calls are shortened (``_shrink_tool_inputs``). The notice is measured against
-    the send window and is never persisted.
+    calls are shortened (``_shrink_tool_inputs``), and what a round that is over
+    left in the window is made short (``_trim_past_rounds``). The notice is
+    measured against the send window and is never persisted.
     """
     send_window = compact_history_for_request(history)
     kept = {id(m) for m in send_window}
     dropped = [m for m in history if id(m) not in kept]
-    messages = _shrink_tool_inputs(send_window)
+    messages = _trim_past_rounds(_shrink_tool_inputs(send_window))
     notice = summarize_dropped_history(dropped, send_window)
     if notice:
         messages.insert(0, notice)
@@ -1632,11 +1753,14 @@ def write_llm_request(
         if mail_msg:
             messages.append(mail_msg)
 
+    # The two memo fields stay in the request, empty, so a host that reads them still finds them. Nothing in a
+    # completion request runs, so the memo of executed calls has nothing to say here; the run state below keeps
+    # it for a retried tool_calls request (see ``_memo_for_calls``).
     request_payload = {
         "type": "llm_generate", "system": SYSTEM_PROMPT,
         "messages": messages, "tools": tool_schema(),
-        "processed_tool_use_ids": processed_ids,
-        "tool_result_cache": result_cache, "retry": bool(retry)
+        "processed_tool_use_ids": [],
+        "tool_result_cache": {}, "retry": bool(retry)
     }
     try:
         Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
@@ -2150,10 +2274,11 @@ def _write_tool_request(
         run_state.get("tool_result_cache"), []
     )
 
+    sent_ids, sent_cache = _memo_for_calls(tool_calls, processed_ids, result_cache)
     request_payload = {
         "type": "tool_calls", "calls": tool_calls,
-        "processed_tool_use_ids": processed_ids,
-        "tool_result_cache": result_cache, "retry": bool(retry)
+        "processed_tool_use_ids": sent_ids,
+        "tool_result_cache": sent_cache, "retry": bool(retry)
     }
     try:
         Yaml.safe_atomic_write(REQUEST_PATH, request_payload)
